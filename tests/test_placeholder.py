@@ -1,2 +1,5 @@
+import nexus
+
+
 def test_placeholder() -> None:
-    pass
+    assert nexus is not None
