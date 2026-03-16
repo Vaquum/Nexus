@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vaquum-nexus"
 version = "0.0.1"
-description = "A repo for the template that governs how new repos are created."
+description = "Layer for intelligence and decision-making between signal generation and trade execution."
 readme = "README.md"
 authors = [
   { name = "Mikko Kotila", email = "mailme@mikkokotila.com" },
