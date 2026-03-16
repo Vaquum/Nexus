@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "new-repository-template"
+name = "vaquum-nexus"
 version = "0.0.1"
 description = "A repo for the template that governs how new repos are created."
 readme = "README.md"
@@ -20,20 +20,27 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "mypy>=1.10",
+]
 
 [project.urls]
 Homepage = "https://vaquum.fi"
-Repository = "https://github.com/vaquum/new-repository-template"
+Repository = "https://github.com/Vaquum/Nexus"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["new-repository-template*"]
+include = ["nexus*"]
 exclude = ["tests*", "scripts*"]
 
 [tool.ruff]
 target-version = "py310"
 line-length = 88
 fix = false
+
+[tool.ruff.format]
+quote-style = 'preserve'
 
 [tool.ruff.lint]
 select = [
@@ -93,13 +100,13 @@ ignore = [
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S101", "BLE001"]
+"tests/**/*.py" = ["S101", "BLE001", "PLR2004"]
 
 [tool.ruff.lint.pylint]
 max-statements = 50
 
 [tool.ruff.lint.isort]
-known-first-party = ["new-repository-template"]
+known-first-party = ["nexus"]
 section-order = [
   "future",
   "standard-library",
@@ -110,3 +117,18 @@ section-order = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
