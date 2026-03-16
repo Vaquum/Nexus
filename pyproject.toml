@@ -4,20 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaquum-nexus"
-version = "0.1.0"
+version = "0.2.0"
 description = "Layer for intelligence and decision-making between signal generation and trade execution."
 readme = "README.md"
 authors = [
-  { name = "Mikko Kotila", email = "mailme@mikkokotila.com" },
-  { name = "Prasenjit Dey" },
-  { name = "Arun Raguraman" },
-  { name = "Jatin Thakur" },
-  { name = "Soujanyaa Boruah" },
-  { name = "Ng Wei Da" },
+  { name = "Arun Raguraman", email = "arun@vaquum.fi" },
 ]
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["structlog>=24.0", "orjson>=3.10"]
 
 [project.optional-dependencies]
 dev = [
