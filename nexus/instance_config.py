@@ -40,6 +40,6 @@ class InstanceConfig:
             msg = 'InstanceConfig.venue must be a non-empty string'
             raise ValueError(msg)
 
-        if self.allocated_capital <= 0:
-            msg = 'InstanceConfig.allocated_capital must be positive'
+        if not self.allocated_capital.is_finite() or self.allocated_capital <= 0:
+            msg = 'InstanceConfig.allocated_capital must be a finite positive value'
             raise ValueError(msg)

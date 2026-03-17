@@ -81,3 +81,14 @@ def test_risk_state_hwm_independent() -> None:
     )
     assert rs.high_water_mark == Decimal('50000')
     assert rs.high_water_mark != Decimal('55000')
+
+
+def test_key_mismatch_rejected() -> None:
+    '''Verify dict key not matching strategy_id raises ValueError.'''
+
+    with pytest.raises(ValueError, match='does not match'):
+        RiskState(
+            per_strategy={
+                'wrong_key': StrategyRiskState(strategy_id='momentum'),
+            },
+        )

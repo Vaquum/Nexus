@@ -59,6 +59,14 @@ class RiskState:
     high_water_mark: Decimal = _ZERO
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        '''Validate that dict keys match strategy_id fields.'''
+
+        for key, state in self.per_strategy.items():
+            if key != state.strategy_id:
+                msg = f'RiskState.per_strategy key {key!r} does not match strategy_id {state.strategy_id!r}'
+                raise ValueError(msg)
+
     @property
     def rolling_loss_24h(self) -> Decimal:
         '''Sum of per-strategy 24-hour rolling losses.'''

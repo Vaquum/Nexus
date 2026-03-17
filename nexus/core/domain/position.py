@@ -50,16 +50,16 @@ class Position:
                 msg = f'Position.{field_name} must be a non-empty string'
                 raise ValueError(msg)
 
-        if self.size < _ZERO:
-            msg = 'Position.size must be non-negative'
+        if not self.size.is_finite() or self.size < _ZERO:
+            msg = 'Position.size must be a finite non-negative value'
             raise ValueError(msg)
 
-        if self.entry_price <= _ZERO:
-            msg = 'Position.entry_price must be positive'
+        if not self.entry_price.is_finite() or self.entry_price <= _ZERO:
+            msg = 'Position.entry_price must be a finite positive value'
             raise ValueError(msg)
 
-        if self.pending_exit < _ZERO:
-            msg = 'Position.pending_exit must be non-negative'
+        if not self.pending_exit.is_finite() or self.pending_exit < _ZERO:
+            msg = 'Position.pending_exit must be a finite non-negative value'
             raise ValueError(msg)
 
     @property

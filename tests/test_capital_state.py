@@ -84,3 +84,27 @@ def test_negative_fee_reserve_rejected() -> None:
             capital_pool=Decimal('10000'),
             fee_reserve=Decimal('-1'),
         )
+
+
+def test_nan_capital_pool_rejected() -> None:
+    '''Verify NaN capital_pool raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pool'):
+        CapitalState(capital_pool=Decimal('NaN'))
+
+
+def test_infinity_capital_pool_rejected() -> None:
+    '''Verify Infinity capital_pool raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pool'):
+        CapitalState(capital_pool=Decimal('Infinity'))
+
+
+def test_nan_notional_rejected() -> None:
+    '''Verify NaN position_notional raises ValueError.'''
+
+    with pytest.raises(ValueError, match='position_notional'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            position_notional=Decimal('NaN'),
+        )

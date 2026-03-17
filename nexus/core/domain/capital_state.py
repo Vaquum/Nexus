@@ -37,8 +37,8 @@ class CapitalState:
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
 
-        if self.capital_pool <= _ZERO:
-            msg = 'CapitalState.capital_pool must be positive'
+        if not self.capital_pool.is_finite() or self.capital_pool <= _ZERO:
+            msg = 'CapitalState.capital_pool must be a finite positive value'
             raise ValueError(msg)
 
         for field_name in (
@@ -49,8 +49,8 @@ class CapitalState:
             'reservation_notional',
         ):
             val = getattr(self, field_name)
-            if val < _ZERO:
-                msg = f'CapitalState.{field_name} must be non-negative'
+            if not val.is_finite() or val < _ZERO:
+                msg = f'CapitalState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
 
     @property

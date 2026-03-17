@@ -143,3 +143,31 @@ def test_mutable() -> None:
     )
     pos.size = Decimal('0.3')
     assert pos.size == Decimal('0.3')
+
+
+def test_nan_size_rejected() -> None:
+    '''Verify NaN size raises ValueError.'''
+
+    with pytest.raises(ValueError, match='size'):
+        Position(
+            trade_id='t1',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('NaN'),
+            entry_price=Decimal('50000'),
+        )
+
+
+def test_infinity_entry_price_rejected() -> None:
+    '''Verify Infinity entry_price raises ValueError.'''
+
+    with pytest.raises(ValueError, match='entry_price'):
+        Position(
+            trade_id='t1',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('Infinity'),
+        )
