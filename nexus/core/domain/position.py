@@ -62,6 +62,10 @@ class Position:
             msg = 'Position.pending_exit must be a finite non-negative value'
             raise ValueError(msg)
 
+        if not self.unrealized_pnl.is_finite():
+            msg = 'Position.unrealized_pnl must be finite'
+            raise ValueError(msg)
+
     @property
     def is_closed(self) -> bool:
         '''Return True if position size has reached zero.'''

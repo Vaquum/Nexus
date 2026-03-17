@@ -92,3 +92,45 @@ def test_key_mismatch_rejected() -> None:
                 'wrong_key': StrategyRiskState(strategy_id='momentum'),
             },
         )
+
+
+def test_nan_strategy_hwm_rejected() -> None:
+    '''Verify NaN high_water_mark in StrategyRiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='high_water_mark'):
+        StrategyRiskState(strategy_id='momentum', high_water_mark=Decimal('NaN'))
+
+
+def test_negative_strategy_hwm_rejected() -> None:
+    '''Verify negative high_water_mark in StrategyRiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='high_water_mark'):
+        StrategyRiskState(strategy_id='momentum', high_water_mark=Decimal('-1'))
+
+
+def test_nan_rolling_loss_rejected() -> None:
+    '''Verify NaN rolling_loss_24h in StrategyRiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='rolling_loss_24h'):
+        StrategyRiskState(strategy_id='momentum', rolling_loss_24h=Decimal('NaN'))
+
+
+def test_nan_strategy_pnl_rejected() -> None:
+    '''Verify NaN strategy_realized_pnl raises ValueError.'''
+
+    with pytest.raises(ValueError, match='strategy_realized_pnl'):
+        StrategyRiskState(strategy_id='momentum', strategy_realized_pnl=Decimal('Infinity'))
+
+
+def test_nan_instance_hwm_rejected() -> None:
+    '''Verify NaN high_water_mark in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='high_water_mark'):
+        RiskState(high_water_mark=Decimal('NaN'))
+
+
+def test_negative_instance_hwm_rejected() -> None:
+    '''Verify negative high_water_mark in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='high_water_mark'):
+        RiskState(high_water_mark=Decimal('-1'))

@@ -171,3 +171,18 @@ def test_infinity_entry_price_rejected() -> None:
             size=Decimal('0.5'),
             entry_price=Decimal('Infinity'),
         )
+
+
+def test_nan_unrealized_pnl_rejected() -> None:
+    '''Verify NaN unrealized_pnl raises ValueError.'''
+
+    with pytest.raises(ValueError, match='unrealized_pnl'):
+        Position(
+            trade_id='t1',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+            unrealized_pnl=Decimal('NaN'),
+        )

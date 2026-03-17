@@ -42,6 +42,20 @@ class StrategyRiskState:
             msg = 'StrategyRiskState.strategy_id must be a non-empty string'
             raise ValueError(msg)
 
+        if not self.high_water_mark.is_finite() or self.high_water_mark < _ZERO:
+            msg = 'StrategyRiskState.high_water_mark must be a finite non-negative value'
+            raise ValueError(msg)
+
+        for field_name in ('rolling_loss_24h', 'rolling_loss_7d', 'rolling_loss_30d'):
+            val = getattr(self, field_name)
+            if not val.is_finite():
+                msg = f'StrategyRiskState.{field_name} must be finite'
+                raise ValueError(msg)
+
+        if not self.strategy_realized_pnl.is_finite():
+            msg = 'StrategyRiskState.strategy_realized_pnl must be finite'
+            raise ValueError(msg)
+
 
 @dataclass
 class RiskState:
@@ -60,7 +74,11 @@ class RiskState:
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        '''Validate that dict keys match strategy_id fields.'''
+        '''Validate invariants at construction time.'''
+
+        if not self.high_water_mark.is_finite() or self.high_water_mark < _ZERO:
+            msg = 'RiskState.high_water_mark must be a finite non-negative value'
+            raise ValueError(msg)
 
         for key, state in self.per_strategy.items():
             if key != state.strategy_id:
