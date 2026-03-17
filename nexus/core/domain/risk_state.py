@@ -48,8 +48,8 @@ class StrategyRiskState:
 
         for field_name in ('rolling_loss_24h', 'rolling_loss_7d', 'rolling_loss_30d'):
             val = getattr(self, field_name)
-            if not val.is_finite():
-                msg = f'StrategyRiskState.{field_name} must be finite'
+            if not val.is_finite() or val < _ZERO:
+                msg = f'StrategyRiskState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
 
         if not self.strategy_realized_pnl.is_finite():

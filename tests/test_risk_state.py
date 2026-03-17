@@ -115,8 +115,15 @@ def test_nan_rolling_loss_rejected() -> None:
         StrategyRiskState(strategy_id='momentum', rolling_loss_24h=Decimal('NaN'))
 
 
-def test_nan_strategy_pnl_rejected() -> None:
-    '''Verify NaN strategy_realized_pnl raises ValueError.'''
+def test_negative_rolling_loss_rejected() -> None:
+    '''Verify negative rolling_loss_24h raises ValueError.'''
+
+    with pytest.raises(ValueError, match='rolling_loss_24h'):
+        StrategyRiskState(strategy_id='momentum', rolling_loss_24h=Decimal('-50'))
+
+
+def test_infinity_strategy_pnl_rejected() -> None:
+    '''Verify Infinity strategy_realized_pnl raises ValueError.'''
 
     with pytest.raises(ValueError, match='strategy_realized_pnl'):
         StrategyRiskState(strategy_id='momentum', strategy_realized_pnl=Decimal('Infinity'))
