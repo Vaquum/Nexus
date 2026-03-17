@@ -35,6 +35,19 @@ class InstanceState:
     mode: ModeState = field(default_factory=ModeState)
     strategy_modes: dict[str, StrategyModeState] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        '''Validate that dict keys match their value identifiers.'''
+
+        for key, pos in self.positions.items():
+            if key != pos.trade_id:
+                msg = f'InstanceState.positions key {key!r} does not match trade_id {pos.trade_id!r}'
+                raise ValueError(msg)
+
+        for key, sms in self.strategy_modes.items():
+            if key != sms.strategy_id:
+                msg = f'InstanceState.strategy_modes key {key!r} does not match strategy_id {sms.strategy_id!r}'
+                raise ValueError(msg)
+
     @classmethod
     def from_config(cls, config: InstanceConfig) -> InstanceState:
         '''Create initial state from instance configuration.
