@@ -7,7 +7,6 @@ single top-level container. Created from InstanceConfig at startup.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from decimal import Decimal
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
@@ -48,5 +47,5 @@ class InstanceState:
         '''
 
         return cls(
-            capital=CapitalState(capital_pool=Decimal(config.allocated_capital)),
+            capital=CapitalState(capital_pool=config.allocated_capital),
         )

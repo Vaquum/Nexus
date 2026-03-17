@@ -43,7 +43,6 @@ def test_available_with_deductions() -> None:
 
 
 def test_available_negative_after_pool_reduction() -> None:
-
     '''Verify available can go negative when pool shrinks below deployment via hot-reload.'''
 
     cs = CapitalState(

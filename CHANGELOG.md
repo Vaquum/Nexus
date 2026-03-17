@@ -24,11 +24,11 @@
 
 ## v0.3.0 on 17th of March, 2026
 
-- Add [`enums.py`](nexus/core/domain/enums.py) with `OperationalMode`, `OrderSide`, `BreachLevel`
-- Add [`position.py`](nexus/core/domain/position.py) with mutable `Position` dataclass (trade_id, strategy_id, size, entry_price, pending_exit)
 - Add [`capital_state.py`](nexus/core/domain/capital_state.py) with mutable `CapitalState` dataclass and derived `available` property
-- Add [`risk_state.py`](nexus/core/domain/risk_state.py) with `RiskState` and `StrategyRiskState` (instance-level losses derived from per-strategy state)
-- Add [`operational_mode.py`](nexus/core/domain/operational_mode.py) with `ModeState` and `StrategyModeState` (composes `ModeState`)
+- Add [`enums.py`](nexus/core/domain/enums.py) with `OperationalMode`, `OrderSide`, `BreachLevel`
 - Add [`instance_state.py`](nexus/core/domain/instance_state.py) composing all state with `from_config` factory
-- Wire [`nexus/core/domain/__init__.py`](nexus/core/domain/__init__.py) re-exports
+- Add [`operational_mode.py`](nexus/core/domain/operational_mode.py) with `ModeState` and `StrategyModeState` (composes `ModeState`)
+- Add [`position.py`](nexus/core/domain/position.py) with mutable `Position` dataclass (trade_id, strategy_id, size, entry_price, pending_exit)
+- Add [`risk_state.py`](nexus/core/domain/risk_state.py) with `RiskState` and `StrategyRiskState` (instance-level losses derived from per-strategy state)
+- Add [`nexus/core/domain/__init__.py`](nexus/core/domain/__init__.py) re-exports
 - Add 34 tests covering enums, position, capital state, risk state, operational mode, and instance state composition
