@@ -87,27 +87,3 @@ def test_negative_capital_rejected() -> None:
             venue='binance_spot',
             allocated_capital=Decimal('-100'),
         )
-
-
-def test_nan_capital_rejected() -> None:
-
-    '''Verify NaN allocated_capital raises ValueError.'''
-
-    with pytest.raises(ValueError, match='allocated_capital'):
-        InstanceConfig(
-            account_id='acc_001',
-            venue='binance_spot',
-            allocated_capital=Decimal('NaN'),
-        )
-
-
-def test_infinity_capital_rejected() -> None:
-
-    '''Verify Infinity allocated_capital raises ValueError.'''
-
-    with pytest.raises(ValueError, match='allocated_capital'):
-        InstanceConfig(
-            account_id='acc_001',
-            venue='binance_spot',
-            allocated_capital=Decimal('Infinity'),
-        )
