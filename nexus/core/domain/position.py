@@ -29,7 +29,7 @@ class Position:
         size: Current position size in base asset, must be non-negative.
         entry_price: Volume-weighted average entry price in quote asset.
         unrealized_pnl: Mark-to-market P&L in quote asset.
-        pending_exit: Size of SELL orders in-flight or resting for this trade.
+        pending_exit: Size of exit orders (opposite side) in-flight or resting for this trade.
     '''
 
     trade_id: str
@@ -49,6 +49,10 @@ class Position:
             if not isinstance(val, str) or not val.strip():
                 msg = f'Position.{field_name} must be a non-empty string'
                 raise ValueError(msg)
+
+        if not isinstance(self.side, OrderSide):
+            msg = 'Position.side must be an OrderSide member'
+            raise ValueError(msg)
 
         if not self.size.is_finite() or self.size < _ZERO:
             msg = 'Position.size must be a finite non-negative value'
