@@ -61,8 +61,9 @@ class WriteAheadLog:
         crc = zlib.crc32(payload) & 0xFFFFFFFF
         header = struct.pack(_RECORD_HEADER_FMT, len(payload), crc)
 
-        with self._path.open('ab') as f:
-            if f.tell() == 0:
+        repair = not self._path.exists() or self._path.stat().st_size < _MAGIC_SIZE
+        with self._path.open('wb' if repair else 'ab') as f:
+            if repair:
                 f.write(_MAGIC)
             f.write(header)
             f.write(payload)
@@ -82,6 +83,8 @@ class WriteAheadLog:
         with self._path.open('rb') as f:
             file_magic = f.read(_MAGIC_SIZE)
             if not file_magic:
+                return []
+            if len(file_magic) < _MAGIC_SIZE:
                 return []
             if file_magic != _MAGIC:
                 msg = f"Invalid WAL magic header: {file_magic!r}"

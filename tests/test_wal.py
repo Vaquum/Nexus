@@ -238,6 +238,27 @@ class TestFileFormat:
 class TestCorruptionDetection:
     '''Verify read_all detects corruption and truncation.'''
 
+    def test_partial_magic_returns_empty(self, tmp_path: Path) -> None:
+        '''Verify partial magic header from crash is treated as empty WAL.'''
+
+        path = tmp_path / 'partial.wal'
+        path.write_bytes(b'NXWAL')
+        wal = WriteAheadLog(path)
+
+        assert wal.read_all() == []
+
+    def test_append_repairs_partial_magic(self, tmp_path: Path) -> None:
+        '''Verify append rewrites a partial magic header file.'''
+
+        path = tmp_path / 'partial.wal'
+        path.write_bytes(b'NXW')
+        wal = WriteAheadLog(path)
+        wal.append(_make_entry(0))
+
+        entries = wal.read_all()
+        assert len(entries) == 1
+        assert entries[0].sequence == 0
+
     def test_truncated_record_header_discarded(self, tmp_path: Path) -> None:
         '''Verify truncated tail record header is silently discarded.'''
 

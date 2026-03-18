@@ -16,6 +16,14 @@ from nexus.infrastructure.wal_codec import deserialize_state, serialize_state
 __all__ = ['load_snapshot', 'save_snapshot']
 
 
+def _fsync_directory(dir_path: Path) -> None:
+    fd = os.open(str(dir_path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def save_snapshot(state: InstanceState, path: Path, wal: WriteAheadLog) -> None:
     '''Serialize full InstanceState to disk and truncate the WAL.
 
@@ -33,6 +41,7 @@ def save_snapshot(state: InstanceState, path: Path, wal: WriteAheadLog) -> None:
     with tmp.open('rb') as f:
         os.fsync(f.fileno())
     tmp.replace(path)
+    _fsync_directory(path.parent)
     wal.truncate()
 
 
