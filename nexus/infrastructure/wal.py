@@ -62,6 +62,13 @@ class WriteAheadLog:
         header = struct.pack(_RECORD_HEADER_FMT, len(payload), crc)
 
         repair = not self._path.exists() or self._path.stat().st_size < _MAGIC_SIZE
+        if not repair:
+            with self._path.open('rb') as f:
+                if f.read(_MAGIC_SIZE) != _MAGIC:
+                    msg = (
+                        f"Cannot append to WAL with invalid magic header: {self._path}"
+                    )
+                    raise ValueError(msg)
         with self._path.open('wb' if repair else 'ab') as f:
             if repair:
                 f.write(_MAGIC)
@@ -136,9 +143,16 @@ def _deserialize_entry(data: bytes) -> WALEntry:
     '''Deserialize msgpack bytes to a WALEntry.'''
 
     d = msgpack.unpackb(data, raw=False)
-    return WALEntry(
-        sequence=d['seq'],
-        timestamp=datetime.fromisoformat(d['ts']),
-        entry_type=WALEntryType(d['type']),
-        payload=d['payload'],
-    )
+    if not isinstance(d, dict):
+        msg = f'Expected dict from WAL entry, got {type(d).__name__}'
+        raise ValueError(msg)
+    try:
+        return WALEntry(
+            sequence=d['seq'],
+            timestamp=datetime.fromisoformat(d['ts']),
+            entry_type=WALEntryType(d['type']),
+            payload=d['payload'],
+        )
+    except KeyError as exc:
+        msg = f'WAL entry missing required field: {exc}'
+        raise ValueError(msg) from exc

@@ -17,6 +17,8 @@ __all__ = ['load_snapshot', 'save_snapshot']
 
 
 def _fsync_directory(dir_path: Path) -> None:
+    '''Fsync a directory to make rename/replace durable across power loss.'''
+
     fd = os.open(str(dir_path), os.O_RDONLY)
     try:
         os.fsync(fd)
