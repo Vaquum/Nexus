@@ -12,7 +12,7 @@ authors = [
 ]
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = ["structlog>=24.0", "orjson>=3.10"]
+dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0"]
 
 [project.optional-dependencies]
 dev = [
@@ -122,6 +122,10 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
 no_implicit_optional = true
+
+[[tool.mypy.overrides]]
+module = ["msgpack", "msgpack.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
