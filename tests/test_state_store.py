@@ -99,7 +99,6 @@ class TestAppendMutation:
     def test_sequence_increments(self, tmp_path: Path) -> None:
         '''Verify WAL entry sequence numbers increment.'''
 
-
         store = StateStore(tmp_path / 'state')
         store.append_mutation(_make_state('1000'))
         store.append_mutation(_make_state('2000'))
@@ -108,6 +107,20 @@ class TestAppendMutation:
         entries = wal.read_all()
         assert entries[0].sequence == 0
         assert entries[1].sequence == 1
+
+    def test_sequence_continues_without_recover(self, tmp_path: Path) -> None:
+        '''Verify new StateStore on existing WAL continues sequence.'''
+
+        store = StateStore(tmp_path / 'state')
+        store.append_mutation(_make_state('1000'))
+        store.append_mutation(_make_state('2000'))
+
+        store2 = StateStore(tmp_path / 'state')
+        store2.append_mutation(_make_state('3000'))
+
+        wal = WriteAheadLog(tmp_path / 'state' / 'wal' / 'wal.bin')
+        entries = wal.read_all()
+        assert entries[-1].sequence == 2
 
 
 class TestRecover:
@@ -156,7 +169,6 @@ class TestRecover:
 
     def test_sequence_resumes_after_recover(self, tmp_path: Path) -> None:
         '''Verify sequence counter resumes from WAL after recovery.'''
-
 
         store = StateStore(tmp_path / 'state')
         store.append_mutation(_make_state('1000'))

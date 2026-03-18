@@ -238,26 +238,40 @@ class TestFileFormat:
 class TestCorruptionDetection:
     '''Verify read_all detects corruption and truncation.'''
 
-    def test_truncated_record_header(self, tmp_path: Path) -> None:
-        '''Verify truncated record header raises ValueError.'''
+    def test_truncated_record_header_discarded(self, tmp_path: Path) -> None:
+        '''Verify truncated tail record header is silently discarded.'''
 
         path = tmp_path / 'corrupt.wal'
         path.write_bytes(_MAGIC + b'\x00\x00')
         wal = WriteAheadLog(path)
 
-        with pytest.raises(ValueError, match='Truncated WAL record header'):
-            wal.read_all()
+        assert wal.read_all() == []
 
-    def test_truncated_record_payload(self, tmp_path: Path) -> None:
-        '''Verify truncated record payload raises ValueError.'''
+    def test_truncated_record_payload_discarded(self, tmp_path: Path) -> None:
+        '''Verify truncated tail record payload is silently discarded.'''
 
         path = tmp_path / 'corrupt.wal'
         header = struct.pack(_RECORD_HEADER_FMT, 100, 0)
         path.write_bytes(_MAGIC + header + b'\x00' * 10)
         wal = WriteAheadLog(path)
 
-        with pytest.raises(ValueError, match='Truncated WAL record payload'):
-            wal.read_all()
+        assert wal.read_all() == []
+
+    def test_truncated_tail_preserves_valid_entries(self, tmp_path: Path) -> None:
+        '''Verify valid entries before truncated tail are returned.'''
+
+        path = tmp_path / 'test.wal'
+        wal = WriteAheadLog(path)
+        wal.append(_make_entry(0))
+        wal.append(_make_entry(1))
+
+        raw = path.read_bytes()
+        path.write_bytes(raw + b'\x00\x00')
+
+        entries = wal.read_all()
+        assert len(entries) == 2
+        assert entries[0].sequence == 0
+        assert entries[1].sequence == 1
 
     def test_crc_mismatch_detected(self, tmp_path: Path) -> None:
         '''Verify flipped bit in payload triggers CRC mismatch.'''

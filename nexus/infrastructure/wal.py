@@ -93,13 +93,11 @@ class WriteAheadLog:
                 if not record_header:
                     break
                 if len(record_header) < _RECORD_HEADER_SIZE:
-                    msg = 'Truncated WAL record header'
-                    raise ValueError(msg)
+                    break
                 length, expected_crc = struct.unpack(_RECORD_HEADER_FMT, record_header)
                 payload = f.read(length)
                 if len(payload) < length:
-                    msg = 'Truncated WAL record payload'
-                    raise ValueError(msg)
+                    break
                 actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
                 if actual_crc != expected_crc:
                     msg = f"WAL record CRC32 mismatch: expected {expected_crc:#010x}, got {actual_crc:#010x}"
@@ -114,7 +112,9 @@ class WriteAheadLog:
         '''
 
         if self._path.exists():
-            self._path.write_bytes(b'')
+            with self._path.open('wb') as f:
+                f.flush()
+                os.fsync(f.fileno())
 
 
 def _serialize_entry(entry: WALEntry) -> bytes:

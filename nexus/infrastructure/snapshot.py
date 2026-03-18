@@ -32,7 +32,7 @@ def save_snapshot(state: InstanceState, path: Path, wal: WriteAheadLog) -> None:
     tmp.write_bytes(data)
     with tmp.open('rb') as f:
         os.fsync(f.fileno())
-    tmp.rename(path)
+    tmp.replace(path)
     wal.truncate()
 
 

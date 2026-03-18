@@ -46,7 +46,8 @@ class StateStore:
         wal_dir.mkdir(parents=True, exist_ok=True)
         self._wal = WriteAheadLog(wal_dir / _WAL_FILENAME)
         self._snapshot_path = snap_dir / _SNAPSHOT_FILENAME
-        self._sequence = 0
+        existing = self._wal.read_all()
+        self._sequence = existing[-1].sequence + 1 if existing else 0
 
     @property
     def base_path(self) -> Path:

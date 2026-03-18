@@ -241,6 +241,20 @@ class TestCodecVersioning:
             deserialize_state(bad_data)
 
 
+class TestMalformedPayload:
+    '''Verify deserialize_state rejects non-dict payloads.'''
+
+    def test_non_dict_payload_raises(self) -> None:
+        '''Verify non-dict msgpack payload raises ValueError.'''
+
+        import msgpack
+
+        bad_data = bytes(msgpack.packb([1, 2, 3]))
+
+        with pytest.raises(ValueError, match='Expected dict from WAL payload'):
+            deserialize_state(bad_data)
+
+
 class TestSerializationOutput:
     '''Verify serialization produces expected binary format.'''
 
