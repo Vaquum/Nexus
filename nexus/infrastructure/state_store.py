@@ -20,7 +20,12 @@ from pathlib import Path
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.snapshot import load_snapshot, save_snapshot
 from nexus.infrastructure.wal import WriteAheadLog
-from nexus.infrastructure.wal_codec import deserialize_state, serialize_state
+from nexus.infrastructure.strategy_event import StrategyEvent
+from nexus.infrastructure.wal_codec import (
+    deserialize_state,
+    serialize_event,
+    serialize_state,
+)
 from nexus.infrastructure.wal_entry import WALEntry, WALEntryType
 
 __all__ = ['StateStore']
@@ -76,6 +81,23 @@ class StateStore:
             sequence=self._sequence,
             timestamp=datetime.now(tz=timezone.utc),
             entry_type=WALEntryType.STATE_MUTATION,
+            payload=payload,
+        )
+        self._wal.append(entry)
+        self._sequence += 1
+
+    def append_event(self, event: StrategyEvent) -> None:
+        '''Append a strategy event entry to the WAL.
+
+        Args:
+            event: The strategy event to persist.
+        '''
+
+        payload = serialize_event(event)
+        entry = WALEntry(
+            sequence=self._sequence,
+            timestamp=datetime.now(tz=timezone.utc),
+            entry_type=WALEntryType.STRATEGY_EVENT,
             payload=payload,
         )
         self._wal.append(entry)

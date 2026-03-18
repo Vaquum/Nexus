@@ -1,14 +1,18 @@
-'''Verify StateStore checkpoint, append_mutation, and recover.'''
+'''Verify StateStore checkpoint, append_mutation, append_event, and recover.'''
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal import WriteAheadLog
+from nexus.infrastructure.wal_codec import deserialize_event
+from nexus.infrastructure.wal_entry import WALEntryType
 
 
 def _make_state(pool: str = '10000') -> InstanceState:
@@ -206,3 +210,60 @@ class TestCheckpointRecoverCycle:
         final = store3.recover()
         assert final is not None
         assert final.capital.capital_pool == Decimal('14000')
+
+
+def _make_event(strategy_id: str = 'strat_a', pnl: str = '-50.25') -> StrategyEvent:
+    return StrategyEvent(
+        strategy_id=strategy_id,
+        event_type='trade_outcome',
+        realized_pnl=Decimal(pnl),
+        timestamp=datetime(2026, 3, 19, 12, 0, 0),
+    )
+
+
+class TestAppendEvent:
+    def test_event_written_to_wal(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        store.append_event(_make_event())
+
+        wal = WriteAheadLog(tmp_path / 'state' / 'wal' / 'wal.bin')
+        entries = wal.read_all()
+        assert len(entries) == 1
+        assert entries[0].entry_type == WALEntryType.STRATEGY_EVENT
+
+    def test_event_payload_round_trips(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        original = _make_event(pnl='-123.456')
+        store.append_event(original)
+
+        wal = WriteAheadLog(tmp_path / 'state' / 'wal' / 'wal.bin')
+        entries = wal.read_all()
+        recovered = deserialize_event(entries[0].payload)
+        assert recovered.strategy_id == original.strategy_id
+        assert recovered.realized_pnl == original.realized_pnl
+
+    def test_event_sequence_increments(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        store.append_event(_make_event())
+        store.append_event(_make_event(pnl='100'))
+
+        wal = WriteAheadLog(tmp_path / 'state' / 'wal' / 'wal.bin')
+        entries = wal.read_all()
+        assert entries[0].sequence == 0
+        assert entries[1].sequence == 1
+
+    def test_mixed_mutations_and_events(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        store.append_mutation(_make_state('1000'))
+        store.append_event(_make_event())
+        store.append_mutation(_make_state('2000'))
+
+        wal = WriteAheadLog(tmp_path / 'state' / 'wal' / 'wal.bin')
+        entries = wal.read_all()
+        assert len(entries) == 3
+        assert entries[0].entry_type == WALEntryType.STATE_MUTATION
+        assert entries[1].entry_type == WALEntryType.STRATEGY_EVENT
+        assert entries[2].entry_type == WALEntryType.STATE_MUTATION
+        assert entries[0].sequence == 0
+        assert entries[1].sequence == 1
+        assert entries[2].sequence == 2
