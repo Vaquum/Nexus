@@ -39,11 +39,17 @@ class InstanceState:
         '''Validate that dict keys match their value identifiers.'''
 
         for key, pos in self.positions.items():
+            if not isinstance(pos, Position):
+                msg = f'InstanceState.positions value for key {key!r} must be a Position'
+                raise ValueError(msg)
             if key != pos.trade_id:
                 msg = f'InstanceState.positions key {key!r} does not match trade_id {pos.trade_id!r}'
                 raise ValueError(msg)
 
         for key, sms in self.strategy_modes.items():
+            if not isinstance(sms, StrategyModeState):
+                msg = f'InstanceState.strategy_modes value for key {key!r} must be a StrategyModeState'
+                raise ValueError(msg)
             if key != sms.strategy_id:
                 msg = f'InstanceState.strategy_modes key {key!r} does not match strategy_id {sms.strategy_id!r}'
                 raise ValueError(msg)

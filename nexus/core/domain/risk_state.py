@@ -81,6 +81,9 @@ class RiskState:
             raise ValueError(msg)
 
         for key, state in self.per_strategy.items():
+            if not isinstance(state, StrategyRiskState):
+                msg = f'RiskState.per_strategy value for key {key!r} must be a StrategyRiskState'
+                raise ValueError(msg)
             if key != state.strategy_id:
                 msg = f'RiskState.per_strategy key {key!r} does not match strategy_id {state.strategy_id!r}'
                 raise ValueError(msg)
