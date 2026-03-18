@@ -90,7 +90,6 @@ def test_negative_capital_rejected() -> None:
 
 
 def test_nan_capital_rejected() -> None:
-
     '''Verify NaN allocated_capital raises ValueError.'''
 
     with pytest.raises(ValueError, match='allocated_capital'):
@@ -102,7 +101,6 @@ def test_nan_capital_rejected() -> None:
 
 
 def test_infinity_capital_rejected() -> None:
-
     '''Verify Infinity allocated_capital raises ValueError.'''
 
     with pytest.raises(ValueError, match='allocated_capital'):
