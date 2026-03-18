@@ -83,6 +83,8 @@ class WriteAheadLog:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
+        if repair:
+            _fsync_directory(self._path.parent)
 
     def _find_valid_end(self) -> int:
         '''Return the file offset after the last fully valid record.'''
@@ -153,6 +155,16 @@ class WriteAheadLog:
             with self._path.open('wb') as f:
                 f.flush()
                 os.fsync(f.fileno())
+
+
+def _fsync_directory(dir_path: Path) -> None:
+    '''Fsync a directory to make rename/create durable across power loss.'''
+
+    fd = os.open(str(dir_path), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _serialize_entry(entry: WALEntry) -> bytes:

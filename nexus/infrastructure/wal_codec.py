@@ -78,7 +78,7 @@ def deserialize_state(data: bytes) -> InstanceState:
                 for k, v in d['strategy_modes'].items()
             },
         )
-    except (KeyError, TypeError) as exc:
+    except (KeyError, TypeError, AttributeError) as exc:
         msg = f'Malformed WAL codec payload: {exc}'
         raise ValueError(msg) from exc
 
