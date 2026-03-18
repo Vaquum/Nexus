@@ -29,10 +29,10 @@ def serialize_state(state: InstanceState) -> bytes:
     '''Serialize InstanceState to compact binary format.
 
     Args:
-        state: The instance state to serialize.
+        state (InstanceState): The instance state to serialize
 
     Returns:
-        Msgpack-encoded bytes.
+        bytes: Msgpack-encoded bytes
     '''
 
     d: dict[str, Any] = {
@@ -52,10 +52,10 @@ def deserialize_state(data: bytes) -> InstanceState:
     '''Deserialize InstanceState from compact binary format.
 
     Args:
-        data: Msgpack-encoded bytes.
+        data (bytes): Msgpack-encoded bytes
 
     Returns:
-        Reconstructed InstanceState.
+        InstanceState: Reconstructed InstanceState
     '''
 
     d = msgpack.unpackb(data, raw=False)
@@ -76,6 +76,16 @@ def deserialize_state(data: bytes) -> InstanceState:
 
 
 def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
+
+    '''Encode CapitalState to string-valued dict for msgpack.
+
+    Args:
+        cs (CapitalState): Capital state to encode
+
+    Returns:
+        dict[str, str]: String-keyed dict with Decimal values as strings
+    '''
+
     return {
         'capital_pool': str(cs.capital_pool),
         'position_notional': str(cs.position_notional),
@@ -87,6 +97,16 @@ def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
 
 
 def _decode_capital_state(d: dict[str, str]) -> CapitalState:
+
+    '''Decode string-valued dict to CapitalState.
+
+    Args:
+        d (dict[str, str]): Encoded capital state dict
+
+    Returns:
+        CapitalState: Reconstructed capital state
+    '''
+
     return CapitalState(
         capital_pool=Decimal(d['capital_pool']),
         position_notional=Decimal(d['position_notional']),
@@ -98,6 +118,16 @@ def _decode_capital_state(d: dict[str, str]) -> CapitalState:
 
 
 def _encode_strategy_risk_state(srs: StrategyRiskState) -> dict[str, str]:
+
+    '''Encode StrategyRiskState to string-valued dict for msgpack.
+
+    Args:
+        srs (StrategyRiskState): Strategy risk state to encode
+
+    Returns:
+        dict[str, str]: String-keyed dict with Decimal values as strings
+    '''
+
     return {
         'strategy_id': srs.strategy_id,
         'high_water_mark': str(srs.high_water_mark),
@@ -109,6 +139,16 @@ def _encode_strategy_risk_state(srs: StrategyRiskState) -> dict[str, str]:
 
 
 def _decode_strategy_risk_state(d: dict[str, str]) -> StrategyRiskState:
+
+    '''Decode string-valued dict to StrategyRiskState.
+
+    Args:
+        d (dict[str, str]): Encoded strategy risk state dict
+
+    Returns:
+        StrategyRiskState: Reconstructed strategy risk state
+    '''
+
     return StrategyRiskState(
         strategy_id=d['strategy_id'],
         high_water_mark=Decimal(d['high_water_mark']),
@@ -120,6 +160,16 @@ def _decode_strategy_risk_state(d: dict[str, str]) -> StrategyRiskState:
 
 
 def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
+
+    '''Encode RiskState to nested dict for msgpack.
+
+    Args:
+        rs (RiskState): Risk state to encode
+
+    Returns:
+        dict[str, Any]: Nested dict with per-strategy risk states
+    '''
+
     return {
         'high_water_mark': str(rs.high_water_mark),
         'per_strategy': {
@@ -129,6 +179,16 @@ def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
 
 
 def _decode_risk_state(d: dict[str, Any]) -> RiskState:
+
+    '''Decode nested dict to RiskState.
+
+    Args:
+        d (dict[str, Any]): Encoded risk state dict
+
+    Returns:
+        RiskState: Reconstructed risk state with per-strategy entries
+    '''
+
     return RiskState(
         high_water_mark=Decimal(d['high_water_mark']),
         per_strategy={
@@ -138,6 +198,16 @@ def _decode_risk_state(d: dict[str, Any]) -> RiskState:
 
 
 def _encode_position(pos: Position) -> dict[str, str]:
+
+    '''Encode Position to string-valued dict for msgpack.
+
+    Args:
+        pos (Position): Position to encode
+
+    Returns:
+        dict[str, str]: String-keyed dict with Decimal and enum values as strings
+    '''
+
     return {
         'trade_id': pos.trade_id,
         'strategy_id': pos.strategy_id,
@@ -151,6 +221,16 @@ def _encode_position(pos: Position) -> dict[str, str]:
 
 
 def _decode_position(d: dict[str, str]) -> Position:
+
+    '''Decode string-valued dict to Position.
+
+    Args:
+        d (dict[str, str]): Encoded position dict
+
+    Returns:
+        Position: Reconstructed position
+    '''
+
     return Position(
         trade_id=d['trade_id'],
         strategy_id=d['strategy_id'],
@@ -164,6 +244,16 @@ def _decode_position(d: dict[str, str]) -> Position:
 
 
 def _encode_mode_state(ms: ModeState) -> dict[str, str]:
+
+    '''Encode ModeState to string-valued dict for msgpack.
+
+    Args:
+        ms (ModeState): Mode state to encode
+
+    Returns:
+        dict[str, str]: String-keyed dict with enum and datetime as strings
+    '''
+
     return {
         'mode': ms.mode.value,
         'trigger': ms.trigger,
@@ -172,6 +262,16 @@ def _encode_mode_state(ms: ModeState) -> dict[str, str]:
 
 
 def _decode_mode_state(d: dict[str, str]) -> ModeState:
+
+    '''Decode string-valued dict to ModeState.
+
+    Args:
+        d (dict[str, str]): Encoded mode state dict
+
+    Returns:
+        ModeState: Reconstructed mode state
+    '''
+
     return ModeState(
         mode=OperationalMode(d['mode']),
         trigger=d['trigger'],
@@ -180,6 +280,16 @@ def _decode_mode_state(d: dict[str, str]) -> ModeState:
 
 
 def _encode_strategy_mode_state(sms: StrategyModeState) -> dict[str, Any]:
+
+    '''Encode StrategyModeState to nested dict for msgpack.
+
+    Args:
+        sms (StrategyModeState): Strategy mode state to encode
+
+    Returns:
+        dict[str, Any]: Nested dict with encoded mode state
+    '''
+
     return {
         'strategy_id': sms.strategy_id,
         'state': _encode_mode_state(sms.state),
@@ -187,6 +297,16 @@ def _encode_strategy_mode_state(sms: StrategyModeState) -> dict[str, Any]:
 
 
 def _decode_strategy_mode_state(d: dict[str, Any]) -> StrategyModeState:
+
+    '''Decode nested dict to StrategyModeState.
+
+    Args:
+        d (dict[str, Any]): Encoded strategy mode state dict
+
+    Returns:
+        StrategyModeState: Reconstructed strategy mode state
+    '''
+
     return StrategyModeState(
         strategy_id=d['strategy_id'],
         state=_decode_mode_state(d['state']),

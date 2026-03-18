@@ -8,6 +8,7 @@ from pathlib import Path
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.wal import WriteAheadLog
 
 
 def _make_state(pool: str = '10000') -> InstanceState:
@@ -98,7 +99,6 @@ class TestAppendMutation:
     def test_sequence_increments(self, tmp_path: Path) -> None:
         '''Verify WAL entry sequence numbers increment.'''
 
-        from nexus.infrastructure.wal import WriteAheadLog
 
         store = StateStore(tmp_path / 'state')
         store.append_mutation(_make_state('1000'))
@@ -157,7 +157,6 @@ class TestRecover:
     def test_sequence_resumes_after_recover(self, tmp_path: Path) -> None:
         '''Verify sequence counter resumes from WAL after recovery.'''
 
-        from nexus.infrastructure.wal import WriteAheadLog
 
         store = StateStore(tmp_path / 'state')
         store.append_mutation(_make_state('1000'))

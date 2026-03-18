@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import struct
 import zlib
+from datetime import datetime
 from pathlib import Path
 
 import msgpack
@@ -130,8 +131,6 @@ def _serialize_entry(entry: WALEntry) -> bytes:
 
 def _deserialize_entry(data: bytes) -> WALEntry:
     '''Deserialize msgpack bytes to a WALEntry.'''
-
-    from datetime import datetime
 
     d = msgpack.unpackb(data, raw=False)
     return WALEntry(
