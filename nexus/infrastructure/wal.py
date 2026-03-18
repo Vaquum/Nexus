@@ -69,6 +69,13 @@ class WriteAheadLog:
                         f"Cannot append to WAL with invalid magic header: {self._path}"
                     )
                     raise ValueError(msg)
+            valid_end = self._find_valid_end()
+            file_size = self._path.stat().st_size
+            if valid_end < file_size:
+                with self._path.open('r+b') as f:
+                    f.truncate(valid_end)
+                    f.flush()
+                    os.fsync(f.fileno())
         with self._path.open('wb' if repair else 'ab') as f:
             if repair:
                 f.write(_MAGIC)
@@ -76,6 +83,27 @@ class WriteAheadLog:
             f.write(payload)
             f.flush()
             os.fsync(f.fileno())
+
+    def _find_valid_end(self) -> int:
+        '''Return the file offset after the last fully valid record.'''
+
+        with self._path.open('rb') as f:
+            magic = f.read(_MAGIC_SIZE)
+            if len(magic) < _MAGIC_SIZE or magic != _MAGIC:
+                return 0
+            while True:
+                pos = f.tell()
+                record_header = f.read(_RECORD_HEADER_SIZE)
+                if not record_header or len(record_header) < _RECORD_HEADER_SIZE:
+                    return pos
+                length, expected_crc = struct.unpack(_RECORD_HEADER_FMT, record_header)
+                payload = f.read(length)
+                if len(payload) < length:
+                    return pos
+                actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
+                if actual_crc != expected_crc:
+                    return pos
+        return pos  # pragma: no cover
 
     def read_all(self) -> list[WALEntry]:
         '''Read all entries from the WAL file.

@@ -67,15 +67,20 @@ def deserialize_state(data: bytes) -> InstanceState:
         msg = f'Unsupported WAL codec version: {version}'
         raise ValueError(msg)
 
-    return InstanceState(
-        capital=_decode_capital_state(d['capital']),
-        risk=_decode_risk_state(d['risk']),
-        positions={k: _decode_position(v) for k, v in d['positions'].items()},
-        mode=_decode_mode_state(d['mode']),
-        strategy_modes={
-            k: _decode_strategy_mode_state(v) for k, v in d['strategy_modes'].items()
-        },
-    )
+    try:
+        return InstanceState(
+            capital=_decode_capital_state(d['capital']),
+            risk=_decode_risk_state(d['risk']),
+            positions={k: _decode_position(v) for k, v in d['positions'].items()},
+            mode=_decode_mode_state(d['mode']),
+            strategy_modes={
+                k: _decode_strategy_mode_state(v)
+                for k, v in d['strategy_modes'].items()
+            },
+        )
+    except (KeyError, TypeError) as exc:
+        msg = f'Malformed WAL codec payload: {exc}'
+        raise ValueError(msg) from exc
 
 
 def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
