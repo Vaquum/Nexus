@@ -23,6 +23,8 @@ MAX_ALLOCATION_PER_TRADE_PCT = Decimal('0.15')
 MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
 DEFAULT_TTL_SECONDS = 30
 
+_ZERO = Decimal(0)
+
 
 class CapitalController:
     '''Thread-safe capital reservation manager.
@@ -70,12 +72,20 @@ class CapitalController:
                 msg = f'Invalid {name}: {val}'
                 raise ValueError(msg)
 
-        if order_notional < Decimal(0):
+        if not strategy_id or not strategy_id.strip():
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        if order_notional < _ZERO:
             msg = f'order_notional must be non-negative: {order_notional}'
             raise ValueError(msg)
 
-        if estimated_fees < Decimal(0):
+        if estimated_fees < _ZERO:
             msg = f'estimated_fees must be non-negative: {estimated_fees}'
+            raise ValueError(msg)
+
+        if strategy_deployed < _ZERO:
+            msg = f'strategy_deployed must be non-negative: {strategy_deployed}'
             raise ValueError(msg)
 
         if ttl_seconds <= 0:

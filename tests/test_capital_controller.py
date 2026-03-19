@@ -197,31 +197,24 @@ class TestConcurrency:
 
 class TestExpiredPurge:
     def test_expired_reservations_purged_on_reserve(self) -> None:
+        from datetime import datetime, timezone
+
+        past = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
         ctrl = _make_controller()
-        result = _reserve(ctrl, notional='500', fees='5', budget=str(_POOL))
-        assert result.granted is True
-        assert ctrl._state.reservation_notional == Decimal('505')
+        expired_res = Reservation(
+            reservation_id='expired_001',
+            strategy_id='strat_a',
+            notional=Decimal('500'),
+            estimated_fees=Decimal('5'),
+            created_at=past,
+            expires_at=past + timedelta(seconds=1),
+        )
+        ctrl._reservations['expired_001'] = expired_res
+        ctrl._state.reservation_notional = Decimal('505')
 
-        import time
-
-        ctrl2 = CapitalController(ctrl._state)
-        ctrl2._reservations = dict(ctrl._reservations)
-
-        for rid, r in ctrl2._reservations.items():
-            expired = Reservation(
-                reservation_id=r.reservation_id,
-                strategy_id=r.strategy_id,
-                notional=r.notional,
-                estimated_fees=r.estimated_fees,
-                created_at=r.created_at,
-                expires_at=r.created_at + timedelta(seconds=1),
-            )
-            ctrl2._reservations[rid] = expired
-
-        time.sleep(1.1)
-
-        _reserve(ctrl2, notional='100', fees='1', budget=str(_POOL))
-        assert ctrl2._state.reservation_notional == Decimal('101')
+        _reserve(ctrl, notional='100', fees='1', budget=str(_POOL))
+        assert ctrl._state.reservation_notional == Decimal('101')
 
 
 class TestInputValidation:
@@ -239,6 +232,22 @@ class TestInputValidation:
         ctrl = _make_controller()
         with pytest.raises(ValueError, match='strategy_budget'):
             _reserve(ctrl, budget='NaN')
+
+    def test_empty_strategy_id_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='strategy_id'):
+            ctrl.check_and_reserve(
+                strategy_id='',
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                strategy_budget=Decimal('5000'),
+                strategy_deployed=Decimal('0'),
+            )
+
+    def test_negative_deployed_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='strategy_deployed'):
+            _reserve(ctrl, deployed='-1')
 
     def test_zero_ttl_rejected(self) -> None:
         ctrl = _make_controller()
