@@ -1,4 +1,4 @@
-'''Serialization codec for InstanceState to/from bytes via msgpack.
+'''Serialization codec for InstanceState and StrategyEvent via msgpack.
 
 Explicit per-type encode/decode for full type safety. Each domain
 dataclass has a paired _encode / _decode function. Codec version
@@ -8,7 +8,7 @@ is embedded for forward compatibility.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import msgpack
@@ -19,10 +19,17 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
+from nexus.infrastructure.strategy_event import StrategyEvent
 
-__all__ = ['deserialize_state', 'serialize_state']
+__all__ = [
+    'deserialize_event',
+    'deserialize_state',
+    'serialize_event',
+    'serialize_state',
+]
 
 _CODEC_VERSION = 1
+_EVENT_CODEC_VERSION = 1
 
 
 def serialize_state(state: InstanceState) -> bytes:
@@ -307,3 +314,59 @@ def _decode_strategy_mode_state(d: dict[str, Any]) -> StrategyModeState:
         strategy_id=d['strategy_id'],
         state=_decode_mode_state(d['state']),
     )
+
+
+def serialize_event(event: StrategyEvent) -> bytes:
+    '''Serialize a StrategyEvent to compact binary format.
+
+    Args:
+        event: The strategy event to serialize.
+
+    Returns:
+        Msgpack-encoded bytes.
+    '''
+
+    d: dict[str, str | int] = {
+        '_v': _EVENT_CODEC_VERSION,
+        'strategy_id': event.strategy_id,
+        'event_type': event.event_type,
+        'realized_pnl': str(event.realized_pnl),
+        'timestamp': event.timestamp.isoformat(),
+    }
+    return bytes(msgpack.packb(d))
+
+
+def deserialize_event(data: bytes) -> StrategyEvent:
+    '''Deserialize a StrategyEvent from compact binary format.
+
+    Args:
+        data: Msgpack-encoded bytes.
+
+    Returns:
+        Reconstructed StrategyEvent.
+    '''
+
+    d = msgpack.unpackb(data, raw=False)
+    if not isinstance(d, dict):
+        msg = f'Expected dict from event payload, got {type(d).__name__}'
+        raise ValueError(msg)
+    try:
+        version = int(d.get('_v', 0))
+    except (ValueError, TypeError) as exc:
+        msg = f'Malformed event codec version: {exc}'
+        raise ValueError(msg) from exc
+
+    if version != _EVENT_CODEC_VERSION:
+        msg = f'Unsupported event codec version: {version}'
+        raise ValueError(msg)
+
+    try:
+        return StrategyEvent(
+            strategy_id=d['strategy_id'],
+            event_type=d['event_type'],
+            realized_pnl=Decimal(d['realized_pnl']),
+            timestamp=datetime.fromisoformat(d['timestamp']),
+        )
+    except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation) as exc:
+        msg = f'Malformed event codec payload: {exc}'
+        raise ValueError(msg) from exc

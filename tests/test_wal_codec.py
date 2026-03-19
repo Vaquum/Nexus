@@ -1,8 +1,8 @@
-'''Verify WAL codec round-trip serialization for InstanceState.'''
+'''Verify WAL codec round-trip serialization for InstanceState and StrategyEvent.'''
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -13,7 +13,13 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
-from nexus.infrastructure.wal_codec import deserialize_state, serialize_state
+from nexus.infrastructure.strategy_event import StrategyEvent
+from nexus.infrastructure.wal_codec import (
+    deserialize_event,
+    deserialize_state,
+    serialize_event,
+    serialize_state,
+)
 
 
 def _make_minimal_state() -> InstanceState:
@@ -282,3 +288,143 @@ class TestSerializationOutput:
         unpacked = msgpack.unpackb(result, raw=False)
         assert isinstance(unpacked, dict)
         assert unpacked['_v'] == 1
+
+
+def _make_event() -> StrategyEvent:
+    return StrategyEvent(
+        strategy_id='strat_a',
+        event_type='trade_outcome',
+        realized_pnl=Decimal('-50.25'),
+        timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+
+class TestEventRoundTrip:
+    def test_basic_round_trip(self) -> None:
+        event = _make_event()
+        data = serialize_event(event)
+        recovered = deserialize_event(data)
+        assert recovered.strategy_id == event.strategy_id
+        assert recovered.event_type == event.event_type
+        assert recovered.realized_pnl == event.realized_pnl
+        assert recovered.timestamp == event.timestamp
+
+    def test_decimal_precision_preserved(self) -> None:
+        event = StrategyEvent(
+            strategy_id='strat_b',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('123.456789012345678901234567890'),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        recovered = deserialize_event(serialize_event(event))
+        assert recovered.realized_pnl == event.realized_pnl
+
+    def test_negative_pnl_round_trip(self) -> None:
+        event = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-999.99'),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        recovered = deserialize_event(serialize_event(event))
+        assert recovered.realized_pnl == Decimal('-999.99')
+
+    def test_zero_pnl_round_trip(self) -> None:
+        event = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('0'),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
+        )
+        recovered = deserialize_event(serialize_event(event))
+        assert recovered.realized_pnl == Decimal('0')
+
+
+class TestEventCodecVersion:
+    def test_version_embedded(self) -> None:
+        import msgpack
+
+        data = serialize_event(_make_event())
+        unpacked = msgpack.unpackb(data, raw=False)
+        assert unpacked['_v'] == 1
+
+    def test_wrong_version_rejected(self) -> None:
+        import msgpack
+
+        d = {
+            '_v': 99,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': '0',
+            'timestamp': '2026-03-19T12:00:00+00:00',
+        }
+        data = bytes(msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Unsupported event codec version'):
+            deserialize_event(data)
+
+
+class TestEventMalformedPayload:
+    def test_non_dict_rejected(self) -> None:
+        import msgpack
+
+        data = bytes(msgpack.packb([1, 2, 3]))
+
+        with pytest.raises(ValueError, match='Expected dict from event payload'):
+            deserialize_event(data)
+
+    def test_missing_field_rejected(self) -> None:
+        import msgpack
+
+        d = {'_v': 1, 'strategy_id': 'strat_a'}
+        data = bytes(msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_invalid_decimal_rejected(self) -> None:
+        import msgpack
+
+        d = {
+            '_v': 1,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': 'not_a_number',
+            'timestamp': '2026-03-19T12:00:00+00:00',
+        }
+        data = bytes(msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_invalid_timestamp_rejected(self) -> None:
+        import msgpack
+
+        d = {
+            '_v': 1,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': '100',
+            'timestamp': 'not-a-date',
+        }
+        data = bytes(msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+
+class TestEventSerializationOutput:
+    def test_output_is_bytes(self) -> None:
+        result = serialize_event(_make_event())
+        assert isinstance(result, bytes)
+
+    def test_output_is_non_empty(self) -> None:
+        result = serialize_event(_make_event())
+        assert len(result) > 0
+
+    def test_output_is_valid_msgpack(self) -> None:
+        import msgpack
+
+        result = serialize_event(_make_event())
+        unpacked = msgpack.unpackb(result, raw=False)
+        assert isinstance(unpacked, dict)
