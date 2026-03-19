@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.0 on 19th of March, 2026
+
+- Add [`reservation.py`](nexus/core/capital_controller/reservation.py) with frozen `Reservation` dataclass (reservation_id, strategy_id, notional, estimated_fees, TTL) and `ReservationResult` outcome type
+- Add [`capital_controller.py`](nexus/core/capital_controller/capital_controller.py) with thread-safe `CapitalController` guarding `CapitalState` behind `threading.Lock`
+- Add `check_and_reserve()` with 4 ordered atomic checks: per-trade allocation, strategy budget, available capital, total utilization
+- Add `release_reservation()` returning locked capital to the available pool
+- Add constants `MAX_ALLOCATION_PER_TRADE_PCT` (0.15) and `MAX_CAPITAL_UTILIZATION_PCT` (0.80)
+- Add 39 tests covering reservation validation, all check failure paths, release lifecycle, and 10-thread concurrency contention
+
 ## v0.1.0 on 16th of March, 2026
 
 - Add CI pipeline mirroring Praxis: Ruff, Mypy strict, pytest, CodeQL workflows

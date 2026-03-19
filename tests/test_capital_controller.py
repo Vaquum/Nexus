@@ -15,7 +15,6 @@ from nexus.core.domain.capital_state import CapitalState
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
-_BUDGET = Decimal('5000')
 
 
 def _make_controller(**overrides: Decimal) -> CapitalController:
