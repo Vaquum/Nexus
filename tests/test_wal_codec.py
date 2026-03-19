@@ -376,7 +376,37 @@ class TestEventMalformedPayload:
     def test_missing_field_rejected(self) -> None:
         import msgpack
 
-        d = {'_v': '1', 'strategy_id': 'strat_a'}
+        d = {'_v': 1, 'strategy_id': 'strat_a'}
+        data = bytes(msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_invalid_decimal_rejected(self) -> None:
+        import msgpack
+
+        d = {
+            '_v': 1,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': 'not_a_number',
+            'timestamp': '2026-03-19T12:00:00+00:00',
+        }
+        data = bytes(msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_invalid_timestamp_rejected(self) -> None:
+        import msgpack
+
+        d = {
+            '_v': 1,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': '100',
+            'timestamp': 'not-a-date',
+        }
         data = bytes(msgpack.packb(d))
 
         with pytest.raises(ValueError, match='Malformed event codec payload'):

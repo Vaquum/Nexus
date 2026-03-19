@@ -8,7 +8,7 @@ is embedded for forward compatibility.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import msgpack
@@ -367,6 +367,6 @@ def deserialize_event(data: bytes) -> StrategyEvent:
             realized_pnl=Decimal(d['realized_pnl']),
             timestamp=datetime.fromisoformat(d['timestamp']),
         )
-    except (KeyError, TypeError, AttributeError) as exc:
+    except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation) as exc:
         msg = f'Malformed event codec payload: {exc}'
         raise ValueError(msg) from exc
