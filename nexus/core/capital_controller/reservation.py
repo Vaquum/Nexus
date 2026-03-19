@@ -137,3 +137,7 @@ class ReservationResult:
         if not self.granted and self.denial_reason is None:
             msg = 'ReservationResult: granted=False requires a denial_reason'
             raise ValueError(msg)
+
+        if self.granted and self.denial_reason is not None:
+            msg = 'ReservationResult: granted=True must not have a denial_reason'
+            raise ValueError(msg)

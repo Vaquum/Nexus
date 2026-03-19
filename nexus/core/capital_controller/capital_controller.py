@@ -60,17 +60,33 @@ class CapitalController:
             ReservationResult with granted reservation or denial reason.
         '''
 
-        if order_notional < Decimal(0) or not order_notional.is_finite():
-            msg = f'Invalid order_notional: {order_notional}'
+        for name, val in (
+            ('order_notional', order_notional),
+            ('estimated_fees', estimated_fees),
+            ('strategy_budget', strategy_budget),
+            ('strategy_deployed', strategy_deployed),
+        ):
+            if not isinstance(val, Decimal) or not val.is_finite():
+                msg = f'Invalid {name}: {val}'
+                raise ValueError(msg)
+
+        if order_notional < Decimal(0):
+            msg = f'order_notional must be non-negative: {order_notional}'
             raise ValueError(msg)
 
-        if estimated_fees < Decimal(0) or not estimated_fees.is_finite():
-            msg = f'Invalid estimated_fees: {estimated_fees}'
+        if estimated_fees < Decimal(0):
+            msg = f'estimated_fees must be non-negative: {estimated_fees}'
+            raise ValueError(msg)
+
+        if ttl_seconds <= 0:
+            msg = f'ttl_seconds must be positive: {ttl_seconds}'
             raise ValueError(msg)
 
         total = order_notional + estimated_fees
 
         with self._lock:
+            self._purge_expired()
+
             allocation_pct = order_notional / self._state.capital_pool
 
             if allocation_pct > MAX_ALLOCATION_PER_TRADE_PCT:
@@ -82,11 +98,11 @@ class CapitalController:
                     ),
                 )
 
-            if strategy_deployed + order_notional > strategy_budget:
+            if strategy_deployed + total > strategy_budget:
                 return ReservationResult(
                     granted=False,
                     denial_reason=(
-                        f'Strategy deployed {strategy_deployed} + order {order_notional} '
+                        f'Strategy deployed {strategy_deployed} + order {total} '
                         f'exceeds budget {strategy_budget}'
                     ),
                 )
@@ -131,6 +147,14 @@ class CapitalController:
             self._state.reservation_notional += total
 
             return ReservationResult(granted=True, reservation=reservation)
+
+    def _purge_expired(self) -> None:
+        now = datetime.now(tz=timezone.utc)
+        expired = [rid for rid, r in self._reservations.items() if r.is_expired(now)]
+
+        for rid in expired:
+            reservation = self._reservations.pop(rid)
+            self._state.reservation_notional -= reservation.total
 
     def release_reservation(self, reservation_id: str) -> bool:
         '''Release a reservation and return its capital to the available pool.

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import threading
+from datetime import timedelta
 from decimal import Decimal
+
+import pytest
 
 from nexus.core.capital_controller.capital_controller import (
     CapitalController,
     MAX_ALLOCATION_PER_TRADE_PCT,
     MAX_CAPITAL_UTILIZATION_PCT,
 )
-from nexus.core.capital_controller.reservation import ReservationResult
+from nexus.core.capital_controller.reservation import Reservation, ReservationResult
 from nexus.core.domain.capital_state import CapitalState
 
 _POOL = Decimal('10000')
@@ -86,7 +89,9 @@ class TestStrategyBudgetCheck:
 
     def test_at_strategy_budget_passes(self) -> None:
         ctrl = _make_controller()
-        result = _reserve(ctrl, notional='1000', deployed='4000', budget='5000')
+        result = _reserve(
+            ctrl, notional='999', fees='1', deployed='4000', budget='5000'
+        )
         assert result.granted is True
 
     def test_exhausted_budget_denied(self) -> None:
@@ -188,3 +193,61 @@ class TestConcurrency:
         )
         assert total_reserved <= _POOL
         assert ctrl._state.reservation_notional == total_reserved
+
+
+class TestExpiredPurge:
+    def test_expired_reservations_purged_on_reserve(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='500', fees='5', budget=str(_POOL))
+        assert result.granted is True
+        assert ctrl._state.reservation_notional == Decimal('505')
+
+        import time
+
+        ctrl2 = CapitalController(ctrl._state)
+        ctrl2._reservations = dict(ctrl._reservations)
+
+        for rid, r in ctrl2._reservations.items():
+            expired = Reservation(
+                reservation_id=r.reservation_id,
+                strategy_id=r.strategy_id,
+                notional=r.notional,
+                estimated_fees=r.estimated_fees,
+                created_at=r.created_at,
+                expires_at=r.created_at + timedelta(seconds=1),
+            )
+            ctrl2._reservations[rid] = expired
+
+        time.sleep(1.1)
+
+        _reserve(ctrl2, notional='100', fees='1', budget=str(_POOL))
+        assert ctrl2._state.reservation_notional == Decimal('101')
+
+
+class TestInputValidation:
+    def test_nan_notional_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='order_notional'):
+            _reserve(ctrl, notional='NaN')
+
+    def test_negative_notional_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='non-negative'):
+            _reserve(ctrl, notional='-1')
+
+    def test_nan_strategy_budget_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='strategy_budget'):
+            _reserve(ctrl, budget='NaN')
+
+    def test_zero_ttl_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='ttl_seconds'):
+            ctrl.check_and_reserve(
+                strategy_id='strat_a',
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                strategy_budget=Decimal('5000'),
+                strategy_deployed=Decimal('0'),
+                ttl_seconds=0,
+            )

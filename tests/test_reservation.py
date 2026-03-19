@@ -151,6 +151,11 @@ class TestReservationResult:
         with pytest.raises(ValueError, match='granted=False requires'):
             ReservationResult(granted=False)
 
+    def test_granted_with_denial_reason_rejected(self) -> None:
+        r = _make_reservation()
+        with pytest.raises(ValueError, match='granted=True must not'):
+            ReservationResult(granted=True, reservation=r, denial_reason='oops')
+
 
 class TestIsExpiredValidation:
     def test_naive_now_rejected(self) -> None:
