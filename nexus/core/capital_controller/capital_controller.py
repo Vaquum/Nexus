@@ -15,6 +15,10 @@ from nexus.core.capital_controller.reservation import (
     Reservation,
     ReservationResult,
 )
+from nexus.core.capital_controller.tracked_order import (
+    OrderLifecycleState,
+    TrackedOrder,
+)
 from nexus.core.domain.capital_state import CapitalState
 
 __all__ = ['CapitalController']
@@ -37,6 +41,7 @@ class CapitalController:
         self._state = capital_state
         self._lock = threading.Lock()
         self._reservations: dict[str, Reservation] = {}
+        self._orders: dict[str, TrackedOrder] = {}
 
     def check_and_reserve(
         self,
@@ -183,4 +188,113 @@ class CapitalController:
                 return False
 
             self._state.reservation_notional -= reservation.total
+            return True
+
+    def send_order(self, reservation_id: str, order_id: str) -> bool:
+        '''Convert a reservation into an in-flight order.
+
+        Consumes the reservation and creates a TrackedOrder in IN_FLIGHT state.
+        Capital moves from reservation_notional to in_flight_order_notional.
+
+        Args:
+            reservation_id: ID of the reservation to consume.
+            order_id: Venue order ID for tracking.
+
+        Returns:
+            True if successful, False if reservation not found or expired.
+        '''
+
+        if not order_id or not order_id.strip():
+            msg = 'order_id must be a non-empty string'
+            raise ValueError(msg)
+
+        with self._lock:
+            self._purge_expired()
+
+            reservation = self._reservations.pop(reservation_id, None)
+
+            if reservation is None:
+                return False
+
+            now = datetime.now(tz=timezone.utc)
+            order = TrackedOrder(
+                order_id=order_id,
+                reservation_id=reservation_id,
+                strategy_id=reservation.strategy_id,
+                notional=reservation.notional,
+                estimated_fees=reservation.estimated_fees,
+                remaining_notional=reservation.notional,
+                state=OrderLifecycleState.IN_FLIGHT,
+                created_at=now,
+            )
+
+            self._orders[order_id] = order
+            self._state.reservation_notional -= reservation.total
+            self._state.in_flight_order_notional += reservation.total
+
+            return True
+
+    def order_ack(self, order_id: str) -> bool:
+        '''Acknowledge an in-flight order as working on venue.
+
+        Transitions the order from IN_FLIGHT to WORKING state.
+        Capital moves from in_flight_order_notional to working_order_notional.
+
+        Args:
+            order_id: ID of the order to acknowledge.
+
+        Returns:
+            True if successful, False if order not found or not IN_FLIGHT.
+        '''
+
+        with self._lock:
+            order = self._orders.get(order_id)
+
+            if order is None:
+                return False
+
+            if order.state != OrderLifecycleState.IN_FLIGHT:
+                return False
+
+            updated = TrackedOrder(
+                order_id=order.order_id,
+                reservation_id=order.reservation_id,
+                strategy_id=order.strategy_id,
+                notional=order.notional,
+                estimated_fees=order.estimated_fees,
+                remaining_notional=order.remaining_notional,
+                state=OrderLifecycleState.WORKING,
+                created_at=order.created_at,
+            )
+
+            self._orders[order_id] = updated
+            self._state.in_flight_order_notional -= order.total
+            self._state.working_order_notional += order.total
+
+            return True
+
+    def order_reject(self, order_id: str) -> bool:
+        '''Handle venue rejection of an in-flight order.
+
+        Removes the order and releases capital back to available.
+
+        Args:
+            order_id: ID of the rejected order.
+
+        Returns:
+            True if successful, False if order not found or not IN_FLIGHT.
+        '''
+
+        with self._lock:
+            order = self._orders.get(order_id)
+
+            if order is None:
+                return False
+
+            if order.state != OrderLifecycleState.IN_FLIGHT:
+                return False
+
+            self._orders.pop(order_id)
+            self._state.in_flight_order_notional -= order.total
+
             return True
