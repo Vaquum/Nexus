@@ -137,3 +137,23 @@ class TestReservationResult:
         assert result.granted is False
         assert result.reservation is None
         assert result.denial_reason == 'insufficient capital'
+
+    def test_granted_without_reservation_rejected(self) -> None:
+        with pytest.raises(ValueError, match='granted=True requires'):
+            ReservationResult(granted=True)
+
+    def test_denied_with_reservation_rejected(self) -> None:
+        r = _make_reservation()
+        with pytest.raises(ValueError, match='granted=False must not'):
+            ReservationResult(granted=False, reservation=r, denial_reason='x')
+
+    def test_denied_without_reason_rejected(self) -> None:
+        with pytest.raises(ValueError, match='granted=False requires'):
+            ReservationResult(granted=False)
+
+
+class TestIsExpiredValidation:
+    def test_naive_now_rejected(self) -> None:
+        r = _make_reservation()
+        with pytest.raises(ValueError, match='timezone-aware'):
+            r.is_expired(datetime(2026, 3, 19, 12, 0, 30))

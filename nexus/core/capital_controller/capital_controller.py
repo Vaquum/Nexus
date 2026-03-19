@@ -23,8 +23,6 @@ MAX_ALLOCATION_PER_TRADE_PCT = Decimal('0.15')
 MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
 DEFAULT_TTL_SECONDS = 30
 
-_ZERO = Decimal(0)
-
 
 class CapitalController:
     '''Thread-safe capital reservation manager.
@@ -61,6 +59,14 @@ class CapitalController:
         Returns:
             ReservationResult with granted reservation or denial reason.
         '''
+
+        if order_notional < Decimal(0) or not order_notional.is_finite():
+            msg = f'Invalid order_notional: {order_notional}'
+            raise ValueError(msg)
+
+        if estimated_fees < Decimal(0) or not estimated_fees.is_finite():
+            msg = f'Invalid estimated_fees: {estimated_fees}'
+            raise ValueError(msg)
 
         total = order_notional + estimated_fees
 
@@ -100,7 +106,7 @@ class CapitalController:
                 + self._state.in_flight_order_notional
                 + self._state.reservation_notional
             )
-            utilization = (total_deployed + order_notional) / self._state.capital_pool
+            utilization = (total_deployed + total) / self._state.capital_pool
 
             if utilization > MAX_CAPITAL_UTILIZATION_PCT:
                 return ReservationResult(

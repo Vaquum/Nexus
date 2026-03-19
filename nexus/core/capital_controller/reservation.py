@@ -99,8 +99,12 @@ class Reservation:
         '''Check whether this reservation has passed its TTL.
 
         Args:
-            now: Current time to compare against expires_at.
+            now: Timezone-aware current time to compare against expires_at.
         '''
+
+        if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
+            msg = 'Reservation.is_expired requires timezone-aware datetime'
+            raise ValueError(msg)
 
         return now >= self.expires_at
 
@@ -118,3 +122,18 @@ class ReservationResult:
     granted: bool
     reservation: Reservation | None = None
     denial_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        '''Validate granted/reservation/denial_reason consistency.'''
+
+        if self.granted and self.reservation is None:
+            msg = 'ReservationResult: granted=True requires a reservation'
+            raise ValueError(msg)
+
+        if not self.granted and self.reservation is not None:
+            msg = 'ReservationResult: granted=False must not have a reservation'
+            raise ValueError(msg)
+
+        if not self.granted and self.denial_reason is None:
+            msg = 'ReservationResult: granted=False requires a denial_reason'
+            raise ValueError(msg)
