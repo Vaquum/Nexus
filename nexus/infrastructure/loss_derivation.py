@@ -53,6 +53,13 @@ def derive_rolling_losses(
         Mapping of strategy_id to computed rolling losses.
     '''
 
+    if (
+        recovery_time.tzinfo is None
+        or recovery_time.tzinfo.utcoffset(recovery_time) is None
+    ):
+        msg = 'recovery_time must be timezone-aware'
+        raise ValueError(msg)
+
     cutoff_24h = recovery_time - _WINDOW_24H
     cutoff_7d = recovery_time - _WINDOW_7D
     cutoff_30d = recovery_time - _WINDOW_30D

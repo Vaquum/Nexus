@@ -13,8 +13,6 @@ from decimal import Decimal
 
 __all__ = ['StrategyEvent']
 
-_ZERO = Decimal(0)
-
 
 @dataclass(frozen=True)
 class StrategyEvent:
