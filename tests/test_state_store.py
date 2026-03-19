@@ -375,3 +375,33 @@ class TestRecoverWithEvents:
         assert recovered is not None
         assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('10')
         assert recovered.risk.per_strategy['strat_b'].rolling_loss_24h == Decimal('20')
+
+    def test_checkpoint_truncates_pre_checkpoint_events(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        state = _make_state_with_risk()
+        store.append_mutation(state)
+
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-100'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        store.checkpoint(state)
+
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-25'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        store2 = StateStore(tmp_path / 'state')
+        recovered = store2.recover()
+        assert recovered is not None
+        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('25')
