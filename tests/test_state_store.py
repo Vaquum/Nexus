@@ -218,7 +218,7 @@ def _make_event(strategy_id: str = 'strat_a', pnl: str = '-50.25') -> StrategyEv
         strategy_id=strategy_id,
         event_type='trade_outcome',
         realized_pnl=Decimal(pnl),
-        timestamp=datetime(2026, 3, 19, 12, 0, 0),
+        timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 

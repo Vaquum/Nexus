@@ -53,3 +53,10 @@ class StrategyEvent:
         if not isinstance(self.timestamp, datetime):
             msg = 'StrategyEvent.timestamp must be a datetime'
             raise ValueError(msg)
+
+        if (
+            self.timestamp.tzinfo is None
+            or self.timestamp.tzinfo.utcoffset(self.timestamp) is None
+        ):
+            msg = 'StrategyEvent.timestamp must be timezone-aware'
+            raise ValueError(msg)

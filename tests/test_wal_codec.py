@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -295,7 +295,7 @@ def _make_event() -> StrategyEvent:
         strategy_id='strat_a',
         event_type='trade_outcome',
         realized_pnl=Decimal('-50.25'),
-        timestamp=datetime(2026, 3, 19, 12, 0, 0),
+        timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
     )
 
 
@@ -314,7 +314,7 @@ class TestEventRoundTrip:
             strategy_id='strat_b',
             event_type='trade_outcome',
             realized_pnl=Decimal('123.456789012345678901234567890'),
-            timestamp=datetime(2026, 3, 19, 12, 0, 0),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
         )
         recovered = deserialize_event(serialize_event(event))
         assert recovered.realized_pnl == event.realized_pnl
@@ -324,7 +324,7 @@ class TestEventRoundTrip:
             strategy_id='strat_a',
             event_type='trade_outcome',
             realized_pnl=Decimal('-999.99'),
-            timestamp=datetime(2026, 3, 19, 12, 0, 0),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
         )
         recovered = deserialize_event(serialize_event(event))
         assert recovered.realized_pnl == Decimal('-999.99')
@@ -334,7 +334,7 @@ class TestEventRoundTrip:
             strategy_id='strat_a',
             event_type='trade_outcome',
             realized_pnl=Decimal('0'),
-            timestamp=datetime(2026, 3, 19, 12, 0, 0),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
         )
         recovered = deserialize_event(serialize_event(event))
         assert recovered.realized_pnl == Decimal('0')
@@ -346,17 +346,17 @@ class TestEventCodecVersion:
 
         data = serialize_event(_make_event())
         unpacked = msgpack.unpackb(data, raw=False)
-        assert unpacked['_v'] == '1'
+        assert unpacked['_v'] == 1
 
     def test_wrong_version_rejected(self) -> None:
         import msgpack
 
         d = {
-            '_v': '99',
+            '_v': 99,
             'strategy_id': 'strat_a',
             'event_type': 'trade_outcome',
             'realized_pnl': '0',
-            'timestamp': '2026-03-19T12:00:00',
+            'timestamp': '2026-03-19T12:00:00+00:00',
         }
         data = bytes(msgpack.packb(d))
 

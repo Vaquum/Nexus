@@ -15,6 +15,7 @@ Directory layout:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 
 from nexus.core.domain.instance_state import InstanceState
@@ -31,6 +32,8 @@ from nexus.infrastructure.wal_codec import (
 from nexus.infrastructure.wal_entry import WALEntry, WALEntryType
 
 __all__ = ['StateStore']
+
+_ZERO = Decimal(0)
 
 _SNAPSHOTS_DIR = 'snapshots'
 _WAL_DIR = 'wal'
@@ -136,12 +139,21 @@ class StateStore:
 
         recovery_time = datetime.now(tz=timezone.utc)
         losses = derive_rolling_losses(events, recovery_time)
+        seen_strategies = {e.strategy_id for e in events}
 
-        for sid, rolling in losses.items():
-            if sid in state.risk.per_strategy:
-                srs = state.risk.per_strategy[sid]
-                srs.rolling_loss_24h = rolling.rolling_loss_24h
-                srs.rolling_loss_7d = rolling.rolling_loss_7d
-                srs.rolling_loss_30d = rolling.rolling_loss_30d
+        for sid in seen_strategies:
+            if sid not in state.risk.per_strategy:
+                continue
+
+            srs = state.risk.per_strategy[sid]
+
+            if sid in losses:
+                srs.rolling_loss_24h = losses[sid].rolling_loss_24h
+                srs.rolling_loss_7d = losses[sid].rolling_loss_7d
+                srs.rolling_loss_30d = losses[sid].rolling_loss_30d
+            else:
+                srs.rolling_loss_24h = _ZERO
+                srs.rolling_loss_7d = _ZERO
+                srs.rolling_loss_30d = _ZERO
 
         return state

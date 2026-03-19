@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from typing import Any
@@ -17,7 +17,7 @@ def _make_event(**overrides: Any) -> StrategyEvent:
         'strategy_id': 'strat_a',
         'event_type': 'trade_outcome',
         'realized_pnl': Decimal('-50.25'),
-        'timestamp': datetime(2026, 3, 19, 12, 0, 0),
+        'timestamp': datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
     }
     defaults.update(overrides)
     return StrategyEvent(**defaults)
@@ -29,7 +29,7 @@ class TestValidConstruction:
         assert event.strategy_id == 'strat_a'
         assert event.event_type == 'trade_outcome'
         assert event.realized_pnl == Decimal('-50.25')
-        assert event.timestamp == datetime(2026, 3, 19, 12, 0, 0)
+        assert event.timestamp == datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc)
 
     def test_positive_pnl(self) -> None:
         event = _make_event(realized_pnl=Decimal('100'))
@@ -72,3 +72,7 @@ class TestValidation:
     def test_nan_pnl_rejected(self) -> None:
         with pytest.raises(ValueError, match='realized_pnl'):
             _make_event(realized_pnl=Decimal('NaN'))
+
+    def test_naive_timestamp_rejected(self) -> None:
+        with pytest.raises(ValueError, match='timezone-aware'):
+            _make_event(timestamp=datetime(2026, 3, 19, 12, 0, 0))

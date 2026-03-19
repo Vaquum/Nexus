@@ -326,8 +326,8 @@ def serialize_event(event: StrategyEvent) -> bytes:
         Msgpack-encoded bytes.
     '''
 
-    d: dict[str, str] = {
-        '_v': str(_EVENT_CODEC_VERSION),
+    d: dict[str, str | int] = {
+        '_v': _EVENT_CODEC_VERSION,
         'strategy_id': event.strategy_id,
         'event_type': event.event_type,
         'realized_pnl': str(event.realized_pnl),
@@ -350,7 +350,12 @@ def deserialize_event(data: bytes) -> StrategyEvent:
     if not isinstance(d, dict):
         msg = f'Expected dict from event payload, got {type(d).__name__}'
         raise ValueError(msg)
-    version = int(d.get('_v', 0))
+    try:
+        version = int(d.get('_v', 0))
+    except (ValueError, TypeError) as exc:
+        msg = f'Malformed event codec version: {exc}'
+        raise ValueError(msg) from exc
+
     if version != _EVENT_CODEC_VERSION:
         msg = f'Unsupported event codec version: {version}'
         raise ValueError(msg)

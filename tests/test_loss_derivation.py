@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from nexus.infrastructure.loss_derivation import RollingLosses, derive_rolling_losses
 from nexus.infrastructure.strategy_event import StrategyEvent
 
-_NOW = datetime(2026, 3, 19, 12, 0, 0)
+_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc)
 _ZERO = Decimal(0)
 
 
