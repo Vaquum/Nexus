@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-import pytest
 from typing import Any
+
+import pytest
 
 from nexus.infrastructure.strategy_event import StrategyEvent
 

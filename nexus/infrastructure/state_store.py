@@ -20,8 +20,8 @@ from pathlib import Path
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.snapshot import load_snapshot, save_snapshot
 from nexus.infrastructure.wal import WriteAheadLog
-from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.loss_derivation import derive_rolling_losses
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal_codec import (
     deserialize_event,
     deserialize_state,
