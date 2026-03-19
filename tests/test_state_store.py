@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_state import RiskState, StrategyRiskState
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal import WriteAheadLog
@@ -267,3 +268,110 @@ class TestAppendEvent:
         assert entries[0].sequence == 0
         assert entries[1].sequence == 1
         assert entries[2].sequence == 2
+
+
+def _make_state_with_risk(
+    pool: str = '10000',
+    strategy_id: str = 'strat_a',
+) -> InstanceState:
+    srs = StrategyRiskState(
+        strategy_id=strategy_id,
+        rolling_loss_24h=Decimal('999'),
+        rolling_loss_7d=Decimal('999'),
+        rolling_loss_30d=Decimal('999'),
+    )
+    return InstanceState(
+        capital=CapitalState(capital_pool=Decimal(pool)),
+        risk=RiskState(per_strategy={strategy_id: srs}),
+    )
+
+
+class TestRecoverWithEvents:
+    def test_no_events_preserves_snapshot_losses(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        state = _make_state_with_risk()
+        store.append_mutation(state)
+
+        store2 = StateStore(tmp_path / 'state')
+        recovered = store2.recover()
+        assert recovered is not None
+        srs = recovered.risk.per_strategy['strat_a']
+        assert srs.rolling_loss_24h == Decimal('999')
+        assert srs.rolling_loss_7d == Decimal('999')
+        assert srs.rolling_loss_30d == Decimal('999')
+
+    def test_events_overwrite_snapshot_losses(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        state = _make_state_with_risk()
+        store.append_mutation(state)
+
+        event = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-75'),
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        store.append_event(event)
+
+        store2 = StateStore(tmp_path / 'state')
+        recovered = store2.recover()
+        assert recovered is not None
+        srs = recovered.risk.per_strategy['strat_a']
+        assert srs.rolling_loss_24h == Decimal('75')
+        assert srs.rolling_loss_7d == Decimal('75')
+        assert srs.rolling_loss_30d == Decimal('75')
+
+    def test_events_for_unknown_strategy_ignored(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        store.append_mutation(_make_state_with_risk(strategy_id='strat_a'))
+
+        event = StrategyEvent(
+            strategy_id='strat_unknown',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-100'),
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        store.append_event(event)
+
+        store2 = StateStore(tmp_path / 'state')
+        recovered = store2.recover()
+        assert recovered is not None
+        assert 'strat_unknown' not in recovered.risk.per_strategy
+        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('999')
+
+    def test_multiple_strategies_recovered(self, tmp_path: Path) -> None:
+        srs_a = StrategyRiskState(
+            strategy_id='strat_a', rolling_loss_24h=Decimal('999')
+        )
+        srs_b = StrategyRiskState(
+            strategy_id='strat_b', rolling_loss_24h=Decimal('999')
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs_a, 'strat_b': srs_b}),
+        )
+        store = StateStore(tmp_path / 'state')
+        store.append_mutation(state)
+
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-10'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_b',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-20'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        store2 = StateStore(tmp_path / 'state')
+        recovered = store2.recover()
+        assert recovered is not None
+        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('10')
+        assert recovered.risk.per_strategy['strat_b'].rolling_loss_24h == Decimal('20')

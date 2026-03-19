@@ -21,7 +21,9 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.snapshot import load_snapshot, save_snapshot
 from nexus.infrastructure.wal import WriteAheadLog
 from nexus.infrastructure.strategy_event import StrategyEvent
+from nexus.infrastructure.loss_derivation import derive_rolling_losses
 from nexus.infrastructure.wal_codec import (
+    deserialize_event,
     deserialize_state,
     serialize_event,
     serialize_state,
@@ -106,22 +108,40 @@ class StateStore:
     def recover(self) -> InstanceState | None:
         '''Recover instance state from snapshot and WAL.
 
-        Loads the snapshot, then replays WAL entries to reach the
-        latest persisted state. WAL STATE_MUTATION entries contain
-        full serialized state; the last entry wins.
+        Two-pass recovery:
+        1. Load snapshot, replay STATE_MUTATION entries (last wins).
+        2. Scan STRATEGY_EVENT entries, re-derive rolling loss counters.
 
         Returns:
-            Recovered InstanceState, or None if no persisted state exists.
+            Recovered InstanceState with accurate loss counters,
+            or None if no persisted state exists.
         '''
 
         state = load_snapshot(self._snapshot_path)
         wal_entries = self._wal.read_all()
 
+        events = []
+
         for entry in wal_entries:
             if entry.entry_type == WALEntryType.STATE_MUTATION:
                 state = deserialize_state(entry.payload)
+            elif entry.entry_type == WALEntryType.STRATEGY_EVENT:
+                events.append(deserialize_event(entry.payload))
 
         if wal_entries:
             self._sequence = wal_entries[-1].sequence + 1
+
+        if state is None or not events:
+            return state
+
+        recovery_time = datetime.now(tz=timezone.utc)
+        losses = derive_rolling_losses(events, recovery_time)
+
+        for sid, rolling in losses.items():
+            if sid in state.risk.per_strategy:
+                srs = state.risk.per_strategy[sid]
+                srs.rolling_loss_24h = rolling.rolling_loss_24h
+                srs.rolling_loss_7d = rolling.rolling_loss_7d
+                srs.rolling_loss_30d = rolling.rolling_loss_30d
 
         return state
