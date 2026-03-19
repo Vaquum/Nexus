@@ -298,3 +298,92 @@ class CapitalController:
             self._state.in_flight_order_notional -= order.total
 
             return True
+
+    def order_fill(self, order_id: str, fill_notional: Decimal) -> bool:
+        '''Handle a fill (partial or full) on a working order.
+
+        Moves capital from working_order_notional to position_notional.
+        Partial fills update remaining_notional; full fills remove the order.
+
+        Args:
+            order_id: ID of the filled order.
+            fill_notional: Quote capital filled (excluding fees).
+
+        Returns:
+            True if successful, False if order not found, wrong state,
+            or fill_notional exceeds remaining.
+        '''
+
+        if not isinstance(fill_notional, Decimal) or not fill_notional.is_finite():
+            msg = f'fill_notional must be a finite Decimal: {fill_notional}'
+            raise ValueError(msg)
+
+        if fill_notional <= _ZERO:
+            msg = f'fill_notional must be positive: {fill_notional}'
+            raise ValueError(msg)
+
+        with self._lock:
+            order = self._orders.get(order_id)
+
+            if order is None:
+                return False
+
+            if order.state != OrderLifecycleState.WORKING:
+                return False
+
+            if fill_notional > order.remaining_notional:
+                return False
+
+            fee_ratio = (
+                order.estimated_fees / order.notional
+                if order.notional > _ZERO
+                else _ZERO
+            )
+            fill_with_fees = fill_notional * (1 + fee_ratio)
+            new_remaining = order.remaining_notional - fill_notional
+
+            if new_remaining == _ZERO:
+                self._orders.pop(order_id)
+            else:
+                updated = TrackedOrder(
+                    order_id=order.order_id,
+                    reservation_id=order.reservation_id,
+                    strategy_id=order.strategy_id,
+                    notional=order.notional,
+                    estimated_fees=order.estimated_fees,
+                    remaining_notional=new_remaining,
+                    state=OrderLifecycleState.WORKING,
+                    created_at=order.created_at,
+                )
+                self._orders[order_id] = updated
+
+            self._state.working_order_notional -= fill_with_fees
+            self._state.position_notional += fill_with_fees
+
+            return True
+
+    def order_cancel(self, order_id: str) -> bool:
+        '''Handle cancellation of a working order.
+
+        Removes the order and releases remaining capital back to available.
+
+        Args:
+            order_id: ID of the canceled order.
+
+        Returns:
+            True if successful, False if order not found or not WORKING.
+        '''
+
+        with self._lock:
+            order = self._orders.get(order_id)
+
+            if order is None:
+                return False
+
+            if order.state != OrderLifecycleState.WORKING:
+                return False
+
+            self._orders.pop(order_id)
+            self._state.working_order_notional -= order.remaining_total
+
+            return True
