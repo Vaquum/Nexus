@@ -371,3 +371,67 @@ def test_to_drawdown_diagnostics_exposes_telemetry_fields() -> None:
     assert diagnostics.unrealized_drawdown == Decimal('20')
     assert diagnostics.max_drawdown == Decimal('150')
     assert diagnostics.max_drawdown_pct == Decimal('0.15')
+
+
+def test_drawdown_formula_correctness_across_pnl_updates() -> None:
+    '''Verify recompute formulas hold over a multi-step PnL sequence.'''
+
+    rs = RiskState(starting_capital=Decimal('1000'))
+
+    steps = [
+        (Decimal('0'), Decimal('0')),
+        (Decimal('50'), Decimal('25')),
+        (Decimal('20'), Decimal('-100')),
+        (Decimal('-10'), Decimal('-250')),
+        (Decimal('80'), Decimal('10')),
+    ]
+
+    for cumulative_realized_pnl, unrealized_pnl in steps:
+        rs.update_cumulative_realized_pnl(cumulative_realized_pnl)
+        rs.update_unrealized_pnl(unrealized_pnl)
+
+        realized_equity = rs.starting_capital + rs.cumulative_realized_pnl
+        equity = realized_equity + rs.unrealized_pnl
+
+        assert rs.equity == equity
+        assert rs.total_drawdown == max(Decimal('0'), rs.equity_hwm - equity)
+        assert rs.realized_drawdown == max(
+            Decimal('0'), rs.realized_equity_hwm - realized_equity
+        )
+        assert rs.unrealized_drawdown == max(Decimal('0'), -rs.unrealized_pnl)
+        if rs.equity_hwm == Decimal('0'):
+            assert rs.total_drawdown_pct == Decimal('0')
+        else:
+            assert rs.total_drawdown_pct == rs.total_drawdown / rs.equity_hwm
+
+
+def test_equity_hwm_and_max_drawdown_are_monotonic_over_sequence() -> None:
+    '''Verify HWM and max drawdown metrics never decrease over updates.'''
+
+    rs = RiskState(starting_capital=Decimal('1000'))
+    prior_equity_hwm = rs.equity_hwm
+    prior_realized_hwm = rs.realized_equity_hwm
+    prior_max_drawdown = rs.max_drawdown
+    prior_max_drawdown_pct = rs.max_drawdown_pct
+
+    sequence = [
+        (Decimal('0'), Decimal('0')),
+        (Decimal('100'), Decimal('0')),
+        (Decimal('100'), Decimal('-50')),
+        (Decimal('200'), Decimal('25')),
+        (Decimal('-20'), Decimal('-300')),
+    ]
+
+    for cumulative_realized_pnl, unrealized_pnl in sequence:
+        rs.update_cumulative_realized_pnl(cumulative_realized_pnl)
+        rs.update_unrealized_pnl(unrealized_pnl)
+
+        assert rs.equity_hwm >= prior_equity_hwm
+        assert rs.realized_equity_hwm >= prior_realized_hwm
+        assert rs.max_drawdown >= prior_max_drawdown
+        assert rs.max_drawdown_pct >= prior_max_drawdown_pct
+
+        prior_equity_hwm = rs.equity_hwm
+        prior_realized_hwm = rs.realized_equity_hwm
+        prior_max_drawdown = rs.max_drawdown
+        prior_max_drawdown_pct = rs.max_drawdown_pct
