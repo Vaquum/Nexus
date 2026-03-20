@@ -578,7 +578,7 @@ class TestLifecycleConcurrency:
 
         def lifecycle_race(idx: int) -> None:
             try:
-                barrier.wait()
+                barrier.wait(timeout=5)
                 res = ctrl.check_and_reserve(
                     strategy_id='strat_a',
                     order_notional=Decimal('500'),
@@ -607,7 +607,9 @@ class TestLifecycleConcurrency:
         for t in threads:
             t.start()
         for t in threads:
-            t.join()
+            t.join(timeout=10)
+        for t in threads:
+            assert not t.is_alive(), 'Thread did not finish within timeout'
 
         assert not errors, f'Thread errors: {errors}'
         assert len(successes) >= 1, 'At least one lifecycle must succeed'
