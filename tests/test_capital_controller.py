@@ -1,9 +1,9 @@
-'''Verify CapitalController check-and-reserve and release under lock.'''
+'''Verify CapitalController check-and-reserve, release, and lifecycle transitions.'''
 
 from __future__ import annotations
 
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -14,6 +14,7 @@ from nexus.core.capital_controller.capital_controller import (
     MAX_CAPITAL_UTILIZATION_PCT,
 )
 from nexus.core.capital_controller.reservation import Reservation, ReservationResult
+from nexus.core.capital_controller.tracked_order import OrderLifecycleState
 from nexus.core.domain.capital_state import CapitalState
 
 _POOL = Decimal('10000')
@@ -260,3 +261,308 @@ class TestInputValidation:
                 strategy_deployed=Decimal('0'),
                 ttl_seconds=0,
             )
+
+
+class TestSendOrder:
+    def test_send_order_success(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+
+        sent = ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert sent is True
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert 'ORD-001' in ctrl._orders
+        assert ctrl._orders['ORD-001'].state == OrderLifecycleState.IN_FLIGHT
+
+    def test_send_order_reservation_not_found(self) -> None:
+        ctrl = _make_controller()
+        sent = ctrl.send_order('nonexistent', 'ORD-001')
+        assert sent is False
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+    def test_send_order_expired_reservation(self) -> None:
+        ctrl = _make_controller()
+        past = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        expired = Reservation(
+            reservation_id='expired_001',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=past,
+            expires_at=past + timedelta(seconds=1),
+        )
+        ctrl._reservations['expired_001'] = expired
+        ctrl._state.reservation_notional = Decimal('101')
+
+        sent = ctrl.send_order('expired_001', 'ORD-001')
+        assert sent is False
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+    def test_send_order_empty_order_id_rejected(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl)
+        assert result.reservation is not None
+        with pytest.raises(ValueError, match='order_id'):
+            ctrl.send_order(result.reservation.reservation_id, '')
+
+
+class TestOrderAck:
+    def test_order_ack_success(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+
+        acked = ctrl.order_ack('ORD-001')
+        assert acked is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._orders['ORD-001'].state == OrderLifecycleState.WORKING
+
+    def test_order_ack_not_found(self) -> None:
+        ctrl = _make_controller()
+        acked = ctrl.order_ack('nonexistent')
+        assert acked is False
+
+    def test_order_ack_wrong_state(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        acked_again = ctrl.order_ack('ORD-001')
+        assert acked_again is False
+
+
+class TestOrderReject:
+    def test_order_reject_success(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+
+        rejected = ctrl.order_reject('ORD-001')
+        assert rejected is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_order_reject_not_found(self) -> None:
+        ctrl = _make_controller()
+        rejected = ctrl.order_reject('nonexistent')
+        assert rejected is False
+
+    def test_order_reject_wrong_state(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        rejected = ctrl.order_reject('ORD-001')
+        assert rejected is False
+
+
+class TestOrderFill:
+    def test_order_fill_full(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'))
+        assert filled is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.position_notional == Decimal('101')
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_order_fill_partial(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('400'))
+        assert filled is True
+        assert ctrl._state.working_order_notional == Decimal('606')
+        assert ctrl._state.position_notional == Decimal('404')
+        assert 'ORD-001' in ctrl._orders
+        assert ctrl._orders['ORD-001'].remaining_notional == Decimal('600')
+
+    def test_order_fill_overfill_rejected(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('200'))
+        assert filled is False
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._state.position_notional == _ZERO
+
+    def test_order_fill_not_found(self) -> None:
+        ctrl = _make_controller()
+        filled = ctrl.order_fill('nonexistent', Decimal('100'))
+        assert filled is False
+
+    def test_order_fill_wrong_state(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'))
+        assert filled is False
+
+    def test_order_fill_invalid_notional(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        with pytest.raises(ValueError, match='positive'):
+            ctrl.order_fill('ORD-001', Decimal('0'))
+
+
+class TestOrderCancel:
+    def test_order_cancel_success(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        canceled = ctrl.order_cancel('ORD-001')
+        assert canceled is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_order_cancel_after_partial_fill(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+        ctrl.order_fill('ORD-001', Decimal('400'))
+
+        canceled = ctrl.order_cancel('ORD-001')
+        assert canceled is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.position_notional == Decimal('404')
+
+    def test_order_cancel_not_found(self) -> None:
+        ctrl = _make_controller()
+        canceled = ctrl.order_cancel('nonexistent')
+        assert canceled is False
+
+    def test_order_cancel_wrong_state(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+
+        canceled = ctrl.order_cancel('ORD-001')
+        assert canceled is False
+
+
+class TestLifecycleHappyPath:
+    def test_reservation_to_position(self) -> None:
+        ctrl = _make_controller()
+        initial_available = ctrl._state.available
+
+        result = _reserve(ctrl, notional='500', fees='5')
+        assert result.reservation is not None
+        assert ctrl._state.reservation_notional == Decimal('505')
+
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == Decimal('505')
+
+        ctrl.order_ack('ORD-001')
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == Decimal('505')
+
+        ctrl.order_fill('ORD-001', Decimal('500'))
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.position_notional == Decimal('505')
+        assert ctrl._state.available == initial_available - Decimal('505')
+
+
+class TestLifecycleRejectPath:
+    def test_reservation_to_reject(self) -> None:
+        ctrl = _make_controller()
+        initial_available = ctrl._state.available
+
+        result = _reserve(ctrl, notional='500', fees='5')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.available == initial_available - Decimal('505')
+
+        ctrl.order_reject('ORD-001')
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.available == initial_available
+
+
+class TestLifecycleCancelPath:
+    def test_reservation_to_cancel(self) -> None:
+        ctrl = _make_controller()
+        initial_available = ctrl._state.available
+
+        result = _reserve(ctrl, notional='500', fees='5')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+        assert ctrl._state.available == initial_available - Decimal('505')
+
+        ctrl.order_cancel('ORD-001')
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.available == initial_available
+
+
+class TestLifecycleConcurrency:
+    def test_no_double_counting_under_contention(self) -> None:
+        ctrl = _make_controller()
+        results: list[bool] = []
+        barrier = threading.Barrier(10)
+
+        def lifecycle_race(idx: int) -> None:
+            barrier.wait()
+            res = ctrl.check_and_reserve(
+                strategy_id='strat_a',
+                order_notional=Decimal('500'),
+                estimated_fees=Decimal('5'),
+                strategy_budget=_POOL,
+                strategy_deployed=_ZERO,
+            )
+            if res.granted and res.reservation:
+                sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
+                if sent:
+                    ctrl.order_ack(f'ORD-{idx}')
+                    ctrl.order_fill(f'ORD-{idx}', Decimal('500'))
+                    results.append(True)
+
+        threads = [
+            threading.Thread(target=lifecycle_race, args=(i,)) for i in range(10)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        total_position = ctrl._state.position_notional
+        assert total_position <= _POOL
+        total_buckets = (
+            ctrl._state.reservation_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.position_notional
+        )
+        assert total_buckets == total_position
