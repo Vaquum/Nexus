@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -42,6 +43,18 @@ def _make_full_state() -> InstanceState:
         ),
         risk=RiskState(
             high_water_mark=Decimal('110000'),
+            starting_capital=Decimal('100000'),
+            cumulative_realized_pnl=Decimal('450.25'),
+            unrealized_pnl=Decimal('-125.75'),
+            equity=Decimal('100324.50'),
+            equity_hwm=Decimal('111000'),
+            realized_equity_hwm=Decimal('108000'),
+            total_drawdown=Decimal('10675.50'),
+            total_drawdown_pct=Decimal('0.09617567567567567567567567568'),
+            realized_drawdown=Decimal('7550.25'),
+            unrealized_drawdown=Decimal('125.75'),
+            max_drawdown=Decimal('20000'),
+            max_drawdown_pct=Decimal('0.18'),
             per_strategy={
                 'momentum': StrategyRiskState(
                     strategy_id='momentum',
@@ -137,6 +150,21 @@ class TestRoundTrip:
         restored = deserialize_state(serialize_state(original))
 
         assert restored.risk.high_water_mark == original.risk.high_water_mark
+        assert restored.risk.starting_capital == original.risk.starting_capital
+        assert (
+            restored.risk.cumulative_realized_pnl
+            == original.risk.cumulative_realized_pnl
+        )
+        assert restored.risk.unrealized_pnl == original.risk.unrealized_pnl
+        assert restored.risk.equity == original.risk.equity
+        assert restored.risk.equity_hwm == original.risk.equity_hwm
+        assert restored.risk.realized_equity_hwm == original.risk.realized_equity_hwm
+        assert restored.risk.total_drawdown == original.risk.total_drawdown
+        assert restored.risk.total_drawdown_pct == original.risk.total_drawdown_pct
+        assert restored.risk.realized_drawdown == original.risk.realized_drawdown
+        assert restored.risk.unrealized_drawdown == original.risk.unrealized_drawdown
+        assert restored.risk.max_drawdown == original.risk.max_drawdown
+        assert restored.risk.max_drawdown_pct == original.risk.max_drawdown_pct
         assert 'momentum' in restored.risk.per_strategy
 
         orig_srs = original.risk.per_strategy['momentum']
@@ -233,7 +261,7 @@ class TestCodecVersioning:
 
         import msgpack
 
-        bad_data = msgpack.packb({'_v': 999})
+        bad_data = cast(bytes, msgpack.packb({'_v': 999}))
         with pytest.raises(ValueError, match='Unsupported WAL codec version'):
             deserialize_state(bad_data)
 
@@ -242,9 +270,52 @@ class TestCodecVersioning:
 
         import msgpack
 
-        bad_data = msgpack.packb({'capital': {}})
+        bad_data = cast(bytes, msgpack.packb({'capital': {}}))
         with pytest.raises(ValueError, match='Unsupported WAL codec version'):
             deserialize_state(bad_data)
+
+
+class TestRiskDecodeDefaults:
+    '''Verify risk decode defaults for missing fields.'''
+
+    def test_missing_risk_fields_seed_from_high_water_mark(self) -> None:
+        '''Verify missing risk fields default from high_water_mark.'''
+
+        import msgpack
+
+        payload = {
+            '_v': 1,
+            'capital': {
+                'capital_pool': '100000',
+                'position_notional': '0',
+                'working_order_notional': '0',
+                'in_flight_order_notional': '0',
+                'fee_reserve': '0',
+                'reservation_notional': '0',
+            },
+            'risk': {
+                'high_water_mark': '110000',
+                'per_strategy': {},
+            },
+            'positions': {},
+            'mode': {
+                'mode': 'ACTIVE',
+                'trigger': 'init',
+                'transitioned_at': '2026-03-20T00:00:00',
+            },
+            'strategy_modes': {},
+        }
+
+        restored = deserialize_state(cast(bytes, msgpack.packb(payload)))
+
+        assert restored.risk.high_water_mark == Decimal('110000')
+        assert restored.risk.starting_capital == Decimal('110000')
+        assert restored.risk.equity == Decimal('110000')
+        assert restored.risk.equity_hwm == Decimal('110000')
+        assert restored.risk.realized_equity_hwm == Decimal('110000')
+        assert restored.risk.total_drawdown_pct == Decimal('0')
+        assert restored.risk.max_drawdown == Decimal('0')
+        assert restored.risk.max_drawdown_pct == Decimal('0')
 
 
 class TestMalformedPayload:
@@ -255,10 +326,43 @@ class TestMalformedPayload:
 
         import msgpack
 
-        bad_data = bytes(msgpack.packb([1, 2, 3]))
+        bad_data = cast(bytes, msgpack.packb([1, 2, 3]))
 
         with pytest.raises(ValueError, match='Expected dict from WAL payload'):
             deserialize_state(bad_data)
+
+    def test_invalid_decimal_in_risk_payload_raises(self) -> None:
+        '''Verify malformed Decimal risk field raises normalized ValueError.'''
+
+        import msgpack
+
+        payload = {
+            '_v': 1,
+            'capital': {
+                'capital_pool': '100000',
+                'position_notional': '0',
+                'working_order_notional': '0',
+                'in_flight_order_notional': '0',
+                'fee_reserve': '0',
+                'reservation_notional': '0',
+            },
+            'risk': {
+                'high_water_mark': 'not_a_number',
+                'per_strategy': {},
+            },
+            'positions': {},
+            'mode': {
+                'mode': 'ACTIVE',
+                'trigger': 'init',
+                'transitioned_at': '2026-03-20T00:00:00',
+            },
+            'strategy_modes': {},
+        }
+
+        data = cast(bytes, msgpack.packb(payload))
+
+        with pytest.raises(ValueError, match='Malformed WAL codec payload'):
+            deserialize_state(data)
 
 
 class TestSerializationOutput:
@@ -358,7 +462,7 @@ class TestEventCodecVersion:
             'realized_pnl': '0',
             'timestamp': '2026-03-19T12:00:00+00:00',
         }
-        data = bytes(msgpack.packb(d))
+        data = cast(bytes, msgpack.packb(d))
 
         with pytest.raises(ValueError, match='Unsupported event codec version'):
             deserialize_event(data)
@@ -368,7 +472,7 @@ class TestEventMalformedPayload:
     def test_non_dict_rejected(self) -> None:
         import msgpack
 
-        data = bytes(msgpack.packb([1, 2, 3]))
+        data = cast(bytes, msgpack.packb([1, 2, 3]))
 
         with pytest.raises(ValueError, match='Expected dict from event payload'):
             deserialize_event(data)
@@ -377,7 +481,7 @@ class TestEventMalformedPayload:
         import msgpack
 
         d = {'_v': 1, 'strategy_id': 'strat_a'}
-        data = bytes(msgpack.packb(d))
+        data = cast(bytes, msgpack.packb(d))
 
         with pytest.raises(ValueError, match='Malformed event codec payload'):
             deserialize_event(data)
@@ -392,7 +496,7 @@ class TestEventMalformedPayload:
             'realized_pnl': 'not_a_number',
             'timestamp': '2026-03-19T12:00:00+00:00',
         }
-        data = bytes(msgpack.packb(d))
+        data = cast(bytes, msgpack.packb(d))
 
         with pytest.raises(ValueError, match='Malformed event codec payload'):
             deserialize_event(data)
@@ -407,7 +511,7 @@ class TestEventMalformedPayload:
             'realized_pnl': '100',
             'timestamp': 'not-a-date',
         }
-        data = bytes(msgpack.packb(d))
+        data = cast(bytes, msgpack.packb(d))
 
         with pytest.raises(ValueError, match='Malformed event codec payload'):
             deserialize_event(data)

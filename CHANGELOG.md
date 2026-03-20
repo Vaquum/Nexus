@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 on 21st of March, 2026
+
+- Add instance-level drawdown state fields to `RiskState`: starting capital, cumulative realized/unrealized P&L, equity/HWMs, current drawdowns, and max drawdown metrics
+- Add deterministic recompute and update triggers for drawdown metrics via `recompute_drawdown_metrics`, `update_cumulative_realized_pnl`, and `update_unrealized_pnl`
+- Extend WAL risk-state codec to persist and recover all drawdown metrics with backward-compatible defaults for older payloads
+- Expose drawdown views for validator and diagnostics consumers via `to_risk_check_metrics()` and `to_drawdown_diagnostics()`
+- Add comprehensive drawdown tests for formula correctness, monotonic HWM/max drawdown behavior, and codec round-trip coverage (304 total)
+
 ## v0.8.0 on 20th of March, 2026
 
 - Add warning log on reservation TTL expiry with reservation_id, strategy_id, total, held duration
