@@ -198,8 +198,6 @@ class TestConcurrency:
 
 class TestExpiredPurge:
     def test_expired_reservations_purged_on_reserve(self) -> None:
-        from datetime import datetime, timezone
-
         past = datetime(2020, 1, 1, tzinfo=timezone.utc)
 
         ctrl = _make_controller()
