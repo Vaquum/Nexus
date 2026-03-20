@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.0 on 20th of March, 2026
+
+- Add warning log on reservation TTL expiry with reservation_id, strategy_id, total, held duration
+- Add 2 tests for expiry logging (78 total)
+
 ## v0.7.0 on 20th of March, 2026
 
 - Add [`tracked_order.py`](nexus/core/capital_controller/tracked_order.py) with `OrderLifecycleState` enum (IN_FLIGHT, WORKING) and frozen `TrackedOrder` dataclass

@@ -215,6 +215,56 @@ class TestExpiredPurge:
         _reserve(ctrl, notional='100', fees='1', budget=str(_POOL))
         assert ctrl._state.reservation_notional == Decimal('101')
 
+    def test_expired_reservation_logs_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        past = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+        ctrl = _make_controller()
+        expired_res = Reservation(
+            reservation_id='expired_002',
+            strategy_id='strat_b',
+            notional=Decimal('200'),
+            estimated_fees=Decimal('2'),
+            created_at=past,
+            expires_at=past + timedelta(seconds=30),
+        )
+        ctrl._reservations['expired_002'] = expired_res
+        ctrl._state.reservation_notional = Decimal('202')
+
+        with caplog.at_level('WARNING'):
+            _reserve(ctrl)
+
+        assert 'Reservation expired' in caplog.text
+        assert 'expired_002' in caplog.text
+        assert 'strat_b' in caplog.text
+        assert '202' in caplog.text
+
+    def test_multiple_expired_reservations_log_each(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        past = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+        ctrl = _make_controller()
+        for i in range(3):
+            res = Reservation(
+                reservation_id=f'expired_{i}',
+                strategy_id=f'strat_{i}',
+                notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                created_at=past,
+                expires_at=past + timedelta(seconds=30),
+            )
+            ctrl._reservations[f'expired_{i}'] = res
+        ctrl._state.reservation_notional = Decimal('303')
+
+        with caplog.at_level('WARNING'):
+            _reserve(ctrl)
+
+        assert caplog.text.count('Reservation expired') == 3
+        for i in range(3):
+            assert f'expired_{i}' in caplog.text
+
 
 class TestInputValidation:
     def test_nan_notional_rejected(self) -> None:
