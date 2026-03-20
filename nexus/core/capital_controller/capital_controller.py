@@ -307,11 +307,14 @@ class CapitalController:
         '''Handle a fill (partial or full) on a working order.
 
         Moves capital from working_order_notional to position_notional.
-        Partial fills update remaining_notional; full fills remove the order.
+        The moved amount includes the fill plus its proportional share of
+        estimated fees. Partial fills update remaining_notional; full fills
+        remove the order.
 
         Args:
             order_id: ID of the filled order.
-            fill_notional: Quote capital filled (excluding fees).
+            fill_notional: Quote capital filled (excluding fees). The
+                proportional fee component is computed and added.
 
         Returns:
             True if successful, False if order not found, wrong state,

@@ -589,8 +589,14 @@ class TestLifecycleConcurrency:
                 if res.granted and res.reservation:
                     sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
                     if sent:
-                        ctrl.order_ack(f'ORD-{idx}')
-                        ctrl.order_fill(f'ORD-{idx}', Decimal('500'))
+                        acked = ctrl.order_ack(f'ORD-{idx}')
+                        filled = ctrl.order_fill(f'ORD-{idx}', Decimal('500'))
+                        if not acked or not filled:
+                            msg = (
+                                f'Lifecycle failure ORD-{idx}: '
+                                f'acked={acked}, filled={filled}'
+                            )
+                            raise AssertionError(msg)
                         successes.append(True)
             except Exception as e:
                 errors.append(e)
