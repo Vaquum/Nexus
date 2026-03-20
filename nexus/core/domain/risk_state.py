@@ -179,3 +179,23 @@ class RiskState:
 
         self.max_drawdown = max(self.max_drawdown, self.total_drawdown)
         self.max_drawdown_pct = max(self.max_drawdown_pct, self.total_drawdown_pct)
+
+    def update_cumulative_realized_pnl(self, cumulative_realized_pnl: Decimal) -> None:
+        '''Set cumulative realized P&L and recompute drawdown metrics.'''
+
+        if not cumulative_realized_pnl.is_finite():
+            msg = 'cumulative_realized_pnl must be finite'
+            raise ValueError(msg)
+
+        self.cumulative_realized_pnl = cumulative_realized_pnl
+        self.recompute_drawdown_metrics()
+
+    def update_unrealized_pnl(self, unrealized_pnl: Decimal) -> None:
+        '''Set unrealized P&L and recompute drawdown metrics.'''
+
+        if not unrealized_pnl.is_finite():
+            msg = 'unrealized_pnl must be finite'
+            raise ValueError(msg)
+
+        self.unrealized_pnl = unrealized_pnl
+        self.recompute_drawdown_metrics()

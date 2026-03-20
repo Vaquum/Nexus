@@ -282,3 +282,39 @@ def test_recompute_drawdown_metrics_preserves_lifetime_max_drawdown() -> None:
     assert rs.total_drawdown == Decimal('0')
     assert rs.max_drawdown == Decimal('300')
     assert rs.max_drawdown_pct == Decimal('0.3')
+
+
+def test_update_cumulative_realized_pnl_triggers_recompute() -> None:
+    '''Verify updating cumulative realized PnL recomputes drawdown metrics.'''
+
+    rs = RiskState(
+        starting_capital=Decimal('1000'),
+        equity_hwm=Decimal('1100'),
+        realized_equity_hwm=Decimal('1100'),
+    )
+
+    rs.update_cumulative_realized_pnl(Decimal('-50'))
+
+    assert rs.cumulative_realized_pnl == Decimal('-50')
+    assert rs.equity == Decimal('950')
+    assert rs.total_drawdown == Decimal('150')
+    assert rs.total_drawdown_pct == Decimal('0.1363636363636363636363636364')
+
+
+def test_update_unrealized_pnl_triggers_recompute() -> None:
+    '''Verify updating unrealized PnL recomputes drawdown metrics.'''
+
+    rs = RiskState(
+        starting_capital=Decimal('1000'),
+        cumulative_realized_pnl=Decimal('0'),
+        equity_hwm=Decimal('1000'),
+        realized_equity_hwm=Decimal('1000'),
+    )
+
+    rs.update_unrealized_pnl(Decimal('-200'))
+
+    assert rs.unrealized_pnl == Decimal('-200')
+    assert rs.equity == Decimal('800')
+    assert rs.total_drawdown == Decimal('200')
+    assert rs.total_drawdown_pct == Decimal('0.2')
+    assert rs.unrealized_drawdown == Decimal('200')
