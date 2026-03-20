@@ -238,7 +238,8 @@ class TestExpiredPurge:
         assert 'Reservation expired' in caplog.text
         assert 'expired_002' in caplog.text
         assert 'strat_b' in caplog.text
-        assert '202' in caplog.text
+        assert 'total=202' in caplog.text
+        assert 'held=' in caplog.text
 
     def test_multiple_expired_reservations_log_each(
         self, caplog: pytest.LogCaptureFixture
