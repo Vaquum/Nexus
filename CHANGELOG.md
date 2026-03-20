@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 on 20th of March, 2026
+
+- Add fee reconciliation to `order_fill()` — actual vs estimated fees reconciled via `fee_reserve`
+- Extend `order_fill(order_id, fill_notional, actual_fee)` signature
+- Position receives actual cost (`fill_notional + actual_fee`), not estimated
+- Fail fill if `fee_reserve` insufficient for deficit
+- Add 7 tests for fee reconciliation (295 total)
+
 ## v0.8.0 on 20th of March, 2026
 
 - Add warning log on reservation TTL expiry with reservation_id, strategy_id, total, held duration
