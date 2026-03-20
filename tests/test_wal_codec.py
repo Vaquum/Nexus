@@ -50,8 +50,11 @@ def _make_full_state() -> InstanceState:
             equity_hwm=Decimal('111000'),
             realized_equity_hwm=Decimal('108000'),
             total_drawdown=Decimal('10675.50'),
+            total_drawdown_pct=Decimal('0.09617567567567567567567567568'),
             realized_drawdown=Decimal('7550.25'),
             unrealized_drawdown=Decimal('125.75'),
+            max_drawdown=Decimal('20000'),
+            max_drawdown_pct=Decimal('0.18'),
             per_strategy={
                 'momentum': StrategyRiskState(
                     strategy_id='momentum',
@@ -157,8 +160,11 @@ class TestRoundTrip:
         assert restored.risk.equity_hwm == original.risk.equity_hwm
         assert restored.risk.realized_equity_hwm == original.risk.realized_equity_hwm
         assert restored.risk.total_drawdown == original.risk.total_drawdown
+        assert restored.risk.total_drawdown_pct == original.risk.total_drawdown_pct
         assert restored.risk.realized_drawdown == original.risk.realized_drawdown
         assert restored.risk.unrealized_drawdown == original.risk.unrealized_drawdown
+        assert restored.risk.max_drawdown == original.risk.max_drawdown
+        assert restored.risk.max_drawdown_pct == original.risk.max_drawdown_pct
         assert 'momentum' in restored.risk.per_strategy
 
         orig_srs = original.risk.per_strategy['momentum']
@@ -307,6 +313,9 @@ class TestRiskDecodeDefaults:
         assert restored.risk.equity == Decimal('110000')
         assert restored.risk.equity_hwm == Decimal('110000')
         assert restored.risk.realized_equity_hwm == Decimal('110000')
+        assert restored.risk.total_drawdown_pct == Decimal('0')
+        assert restored.risk.max_drawdown == Decimal('0')
+        assert restored.risk.max_drawdown_pct == Decimal('0')
 
 
 class TestMalformedPayload:

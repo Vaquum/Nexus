@@ -74,8 +74,11 @@ class RiskState:
         equity_hwm: Lifetime peak of equity.
         realized_equity_hwm: Lifetime peak of realized equity.
         total_drawdown: Current drawdown from equity_hwm.
+        total_drawdown_pct: Current drawdown as fraction of equity_hwm.
         realized_drawdown: Current drawdown from realized_equity_hwm.
         unrealized_drawdown: Current unrealized-only drawdown component.
+        max_drawdown: Lifetime worst total drawdown.
+        max_drawdown_pct: Lifetime worst drawdown fraction.
         per_strategy: Per-strategy risk state keyed by strategy_id.
     '''
 
@@ -87,8 +90,11 @@ class RiskState:
     equity_hwm: Decimal = _ZERO
     realized_equity_hwm: Decimal = _ZERO
     total_drawdown: Decimal = _ZERO
+    total_drawdown_pct: Decimal = _ZERO
     realized_drawdown: Decimal = _ZERO
     unrealized_drawdown: Decimal = _ZERO
+    max_drawdown: Decimal = _ZERO
+    max_drawdown_pct: Decimal = _ZERO
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -103,8 +109,11 @@ class RiskState:
             'equity_hwm',
             'realized_equity_hwm',
             'total_drawdown',
+            'total_drawdown_pct',
             'realized_drawdown',
             'unrealized_drawdown',
+            'max_drawdown',
+            'max_drawdown_pct',
         ):
             val = getattr(self, field_name)
             if not val.is_finite() or val < _ZERO:
@@ -148,3 +157,25 @@ class RiskState:
         '''Sum of per-strategy cumulative realized P&L.'''
 
         return sum((s.strategy_realized_pnl for s in self.per_strategy.values()), _ZERO)
+
+    def recompute_drawdown_metrics(self) -> None:
+        '''Recompute equity, HWMs, and drawdown diagnostics deterministically.'''
+
+        realized_equity = self.starting_capital + self.cumulative_realized_pnl
+        equity = realized_equity + self.unrealized_pnl
+
+        self.equity = equity
+        self.equity_hwm = max(self.equity_hwm, equity)
+        self.high_water_mark = self.equity_hwm
+        self.realized_equity_hwm = max(self.realized_equity_hwm, realized_equity)
+
+        self.total_drawdown = max(_ZERO, self.equity_hwm - equity)
+        if self.equity_hwm == _ZERO:
+            self.total_drawdown_pct = _ZERO
+        else:
+            self.total_drawdown_pct = self.total_drawdown / self.equity_hwm
+        self.realized_drawdown = max(_ZERO, self.realized_equity_hwm - realized_equity)
+        self.unrealized_drawdown = max(_ZERO, -self.unrealized_pnl)
+
+        self.max_drawdown = max(self.max_drawdown, self.total_drawdown)
+        self.max_drawdown_pct = max(self.max_drawdown_pct, self.total_drawdown_pct)

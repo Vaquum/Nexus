@@ -189,8 +189,11 @@ def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
         'equity_hwm': str(rs.equity_hwm),
         'realized_equity_hwm': str(rs.realized_equity_hwm),
         'total_drawdown': str(rs.total_drawdown),
+        'total_drawdown_pct': str(rs.total_drawdown_pct),
         'realized_drawdown': str(rs.realized_drawdown),
         'unrealized_drawdown': str(rs.unrealized_drawdown),
+        'max_drawdown': str(rs.max_drawdown),
+        'max_drawdown_pct': str(rs.max_drawdown_pct),
         'per_strategy': {
             k: _encode_strategy_risk_state(v) for k, v in rs.per_strategy.items()
         },
@@ -221,8 +224,11 @@ def _decode_risk_state(d: dict[str, Any]) -> RiskState:
         equity_hwm=equity_hwm,
         realized_equity_hwm=Decimal(d.get('realized_equity_hwm', str(equity_hwm))),
         total_drawdown=Decimal(d.get('total_drawdown', '0')),
+        total_drawdown_pct=Decimal(d.get('total_drawdown_pct', '0')),
         realized_drawdown=Decimal(d.get('realized_drawdown', '0')),
         unrealized_drawdown=Decimal(d.get('unrealized_drawdown', '0')),
+        max_drawdown=Decimal(d.get('max_drawdown', '0')),
+        max_drawdown_pct=Decimal(d.get('max_drawdown_pct', '0')),
         per_strategy={
             k: _decode_strategy_risk_state(v) for k, v in d['per_strategy'].items()
         },

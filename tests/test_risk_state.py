@@ -37,8 +37,11 @@ def test_risk_state_empty() -> None:
     assert rs.equity_hwm == Decimal(0)
     assert rs.realized_equity_hwm == Decimal(0)
     assert rs.total_drawdown == Decimal(0)
+    assert rs.total_drawdown_pct == Decimal(0)
     assert rs.realized_drawdown == Decimal(0)
     assert rs.unrealized_drawdown == Decimal(0)
+    assert rs.max_drawdown == Decimal(0)
+    assert rs.max_drawdown_pct == Decimal(0)
     assert rs.rolling_loss_24h == Decimal(0)
     assert rs.rolling_loss_7d == Decimal(0)
     assert rs.rolling_loss_30d == Decimal(0)
@@ -172,3 +175,110 @@ def test_negative_total_drawdown_rejected() -> None:
 
     with pytest.raises(ValueError, match='total_drawdown'):
         RiskState(total_drawdown=Decimal('-1'))
+
+
+def test_negative_total_drawdown_pct_rejected() -> None:
+    '''Verify negative total_drawdown_pct in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='total_drawdown_pct'):
+        RiskState(total_drawdown_pct=Decimal('-0.01'))
+
+
+def test_negative_max_drawdown_rejected() -> None:
+    '''Verify negative max_drawdown in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='max_drawdown'):
+        RiskState(max_drawdown=Decimal('-1'))
+
+
+def test_recompute_drawdown_metrics_updates_peaks_and_resets_drawdowns() -> None:
+    '''Verify recompute updates HWMs and resets drawdowns at new peaks.'''
+
+    rs = RiskState(
+        starting_capital=Decimal('1000'),
+        cumulative_realized_pnl=Decimal('120'),
+        unrealized_pnl=Decimal('30'),
+        equity_hwm=Decimal('1100'),
+        realized_equity_hwm=Decimal('1100'),
+    )
+
+    rs.recompute_drawdown_metrics()
+
+    assert rs.equity == Decimal('1150')
+    assert rs.equity_hwm == Decimal('1150')
+    assert rs.high_water_mark == Decimal('1150')
+    assert rs.realized_equity_hwm == Decimal('1120')
+    assert rs.total_drawdown == Decimal('0')
+    assert rs.total_drawdown_pct == Decimal('0')
+    assert rs.realized_drawdown == Decimal('0')
+    assert rs.unrealized_drawdown == Decimal('0')
+    assert rs.max_drawdown == Decimal('0')
+    assert rs.max_drawdown_pct == Decimal('0')
+
+
+def test_recompute_drawdown_metrics_tracks_losses_without_new_peak() -> None:
+    '''Verify recompute grows drawdowns under worse PnL without updating HWMs.'''
+
+    rs = RiskState(
+        starting_capital=Decimal('1000'),
+        cumulative_realized_pnl=Decimal('50'),
+        unrealized_pnl=Decimal('-80'),
+        equity_hwm=Decimal('1200'),
+        realized_equity_hwm=Decimal('1100'),
+    )
+
+    rs.recompute_drawdown_metrics()
+
+    assert rs.equity == Decimal('970')
+    assert rs.equity_hwm == Decimal('1200')
+    assert rs.high_water_mark == Decimal('1200')
+    assert rs.total_drawdown == Decimal('230')
+    assert rs.total_drawdown_pct == Decimal('0.1916666666666666666666666667')
+    assert rs.realized_drawdown == Decimal('50')
+    assert rs.unrealized_drawdown == Decimal('80')
+    assert rs.max_drawdown == Decimal('230')
+    assert rs.max_drawdown_pct == Decimal('0.1916666666666666666666666667')
+
+
+def test_recompute_drawdown_metrics_sets_unrealized_drawdown_zero_when_flat() -> None:
+    '''Verify unrealized drawdown is zero when unrealized_pnl is zero.'''
+
+    rs = RiskState(
+        starting_capital=Decimal('1000'),
+        cumulative_realized_pnl=Decimal('10'),
+        unrealized_pnl=Decimal('0'),
+        equity_hwm=Decimal('1010'),
+        realized_equity_hwm=Decimal('1010'),
+    )
+
+    rs.recompute_drawdown_metrics()
+
+    assert rs.equity == Decimal('1010')
+    assert rs.total_drawdown == Decimal('0')
+    assert rs.total_drawdown_pct == Decimal('0')
+    assert rs.realized_drawdown == Decimal('0')
+    assert rs.unrealized_drawdown == Decimal('0')
+    assert rs.max_drawdown == Decimal('0')
+    assert rs.max_drawdown_pct == Decimal('0')
+
+
+def test_recompute_drawdown_metrics_preserves_lifetime_max_drawdown() -> None:
+    '''Verify max drawdown metrics remain at lifetime worst after recovery.'''
+
+    rs = RiskState(
+        starting_capital=Decimal('1000'),
+        cumulative_realized_pnl=Decimal('0'),
+        unrealized_pnl=Decimal('-300'),
+        equity_hwm=Decimal('1000'),
+        realized_equity_hwm=Decimal('1000'),
+    )
+
+    rs.recompute_drawdown_metrics()
+    assert rs.max_drawdown == Decimal('300')
+    assert rs.max_drawdown_pct == Decimal('0.3')
+
+    rs.unrealized_pnl = Decimal('50')
+    rs.recompute_drawdown_metrics()
+    assert rs.total_drawdown == Decimal('0')
+    assert rs.max_drawdown == Decimal('300')
+    assert rs.max_drawdown_pct == Decimal('0.3')
