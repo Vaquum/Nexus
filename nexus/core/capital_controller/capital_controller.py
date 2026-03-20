@@ -348,16 +348,6 @@ class CapitalController:
                 fill_with_fees = pre_fill_remaining
                 self._orders.pop(order_id)
             else:
-                if order.notional == _ZERO:
-                    post_fill_remaining = order.estimated_fees
-                else:
-                    proportional_fee = (
-                        new_remaining * order.estimated_fees
-                    ) / order.notional
-                    post_fill_remaining = new_remaining + proportional_fee
-
-                fill_with_fees = pre_fill_remaining - post_fill_remaining
-
                 updated = TrackedOrder(
                     order_id=order.order_id,
                     reservation_id=order.reservation_id,
@@ -368,6 +358,7 @@ class CapitalController:
                     state=OrderLifecycleState.WORKING,
                     created_at=order.created_at,
                 )
+                fill_with_fees = pre_fill_remaining - updated.remaining_total
                 self._orders[order_id] = updated
 
             self._state.working_order_notional -= fill_with_fees
