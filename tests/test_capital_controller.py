@@ -491,6 +491,101 @@ class TestOrderFill:
         with pytest.raises(ValueError, match='positive'):
             ctrl.order_fill('ORD-001', Decimal('0'), Decimal('0'))
 
+    def test_order_fill_invalid_actual_fee(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        with pytest.raises(ValueError, match='non-negative'):
+            ctrl.order_fill('ORD-001', Decimal('100'), Decimal('-1'))
+
+
+class TestFeeReconciliation:
+    def test_fill_actual_equals_estimated(self) -> None:
+        ctrl = _make_controller()
+        ctrl._state.fee_reserve = Decimal('100')
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('10'))
+        assert filled is True
+        assert ctrl._state.fee_reserve == Decimal('100')
+        assert ctrl._state.position_notional == Decimal('110')
+
+    def test_fill_actual_less_than_estimated(self) -> None:
+        ctrl = _make_controller()
+        ctrl._state.fee_reserve = Decimal('100')
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('7'))
+        assert filled is True
+        assert ctrl._state.fee_reserve == Decimal('103')
+        assert ctrl._state.position_notional == Decimal('107')
+
+    def test_fill_actual_greater_than_estimated(self) -> None:
+        ctrl = _make_controller()
+        ctrl._state.fee_reserve = Decimal('100')
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('15'))
+        assert filled is True
+        assert ctrl._state.fee_reserve == Decimal('95')
+        assert ctrl._state.position_notional == Decimal('115')
+
+    def test_fill_deficit_exceeds_fee_reserve(self) -> None:
+        ctrl = _make_controller()
+        ctrl._state.fee_reserve = Decimal('3')
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('20'))
+        assert filled is False
+        assert ctrl._state.fee_reserve == Decimal('3')
+        assert ctrl._state.working_order_notional == Decimal('110')
+        assert ctrl._state.position_notional == _ZERO
+
+    def test_partial_fill_fee_reconciliation(self) -> None:
+        ctrl = _make_controller()
+        ctrl._state.fee_reserve = Decimal('100')
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        filled = ctrl.order_fill('ORD-001', Decimal('50'), Decimal('3'))
+        assert filled is True
+        assert ctrl._state.fee_reserve == Decimal('102')
+        assert ctrl._state.position_notional == Decimal('53')
+        assert ctrl._state.working_order_notional == Decimal('55')
+
+    def test_multiple_partial_fills_reconciliation(self) -> None:
+        ctrl = _make_controller()
+        ctrl._state.fee_reserve = Decimal('100')
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill('ORD-001', Decimal('50'), Decimal('4'))
+        assert ctrl._state.fee_reserve == Decimal('101')
+
+        ctrl.order_fill('ORD-001', Decimal('50'), Decimal('6'))
+        assert ctrl._state.fee_reserve == Decimal('100')
+        assert ctrl._state.position_notional == Decimal('110')
+        assert ctrl._state.working_order_notional == _ZERO
+
 
 class TestOrderCancel:
     def test_order_cancel_success(self) -> None:
