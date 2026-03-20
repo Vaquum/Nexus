@@ -126,5 +126,7 @@ class TrackedOrder:
         if self.notional == _ZERO:
             return self.estimated_fees
 
-        fee_ratio = self.estimated_fees / self.notional
-        return self.remaining_notional * (1 + fee_ratio)
+        proportional_fee = (
+            self.remaining_notional * self.estimated_fees
+        ) / self.notional
+        return self.remaining_notional + proportional_fee

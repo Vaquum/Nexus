@@ -96,6 +96,14 @@ class TestRemainingTotalProperty:
         )
         assert order.remaining_total == Decimal('10')
 
+    def test_remaining_total_non_terminating_ratio(self) -> None:
+        order = _make_order(
+            notional=Decimal('3'),
+            estimated_fees=Decimal('1'),
+            remaining_notional=Decimal('3'),
+        )
+        assert order.remaining_total == order.total
+
 
 class TestImmutability:
     def test_frozen_dataclass(self) -> None:

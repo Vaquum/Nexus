@@ -538,6 +538,37 @@ class TestLifecycleCancelPath:
         assert ctrl._state.available == initial_available
 
 
+class TestNonTerminatingFeeRatio:
+    def test_multi_fill_no_residual(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='3', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill('ORD-001', Decimal('1'))
+        ctrl.order_fill('ORD-001', Decimal('1'))
+        ctrl.order_fill('ORD-001', Decimal('1'))
+
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.position_notional == Decimal('4')
+
+    def test_partial_fill_then_cancel_no_residual(self) -> None:
+        ctrl = _make_controller()
+        initial_available = ctrl._state.available
+        result = _reserve(ctrl, notional='3', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill('ORD-001', Decimal('1'))
+        ctrl.order_cancel('ORD-001')
+
+        assert ctrl._state.working_order_notional == _ZERO
+        position_plus_available = ctrl._state.position_notional + ctrl._state.available
+        assert position_plus_available == initial_available
+
+
 class TestLifecycleConcurrency:
     def test_no_double_counting_under_contention(self) -> None:
         ctrl = _make_controller()

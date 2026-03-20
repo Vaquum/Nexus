@@ -338,17 +338,23 @@ class CapitalController:
             if fill_notional > order.remaining_notional:
                 return False
 
-            fee_ratio = (
-                order.estimated_fees / order.notional
-                if order.notional > _ZERO
-                else _ZERO
-            )
-            fill_with_fees = fill_notional * (1 + fee_ratio)
+            pre_fill_remaining = order.remaining_total
             new_remaining = order.remaining_notional - fill_notional
 
             if new_remaining == _ZERO:
+                fill_with_fees = pre_fill_remaining
                 self._orders.pop(order_id)
             else:
+                if order.notional == _ZERO:
+                    post_fill_remaining = order.estimated_fees
+                else:
+                    proportional_fee = (
+                        new_remaining * order.estimated_fees
+                    ) / order.notional
+                    post_fill_remaining = new_remaining + proportional_fee
+
+                fill_with_fees = pre_fill_remaining - post_fill_remaining
+
                 updated = TrackedOrder(
                     order_id=order.order_id,
                     reservation_id=order.reservation_id,
