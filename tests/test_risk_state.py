@@ -455,3 +455,25 @@ def test_recompute_preserves_legacy_high_water_mark_when_equity_hwm_unset() -> N
     assert rs.equity_hwm == Decimal('1000')
     assert rs.high_water_mark == Decimal('1000')
     assert rs.total_drawdown == Decimal('500')
+
+
+def test_recompute_seeds_hwm_floor_for_deep_initial_loss() -> None:
+    '''Verify first recompute seeds HWM from starting capital under deep loss.'''
+
+    rs = RiskState(
+        high_water_mark=Decimal('0'),
+        starting_capital=Decimal('1000'),
+        cumulative_realized_pnl=Decimal('0'),
+        unrealized_pnl=Decimal('-1200'),
+        equity_hwm=Decimal('0'),
+        realized_equity_hwm=Decimal('0'),
+    )
+
+    rs.recompute_drawdown_metrics()
+
+    assert rs.equity == Decimal('-200')
+    assert rs.equity_hwm == Decimal('1000')
+    assert rs.high_water_mark == Decimal('1000')
+    assert rs.realized_equity_hwm == Decimal('1000')
+    assert rs.total_drawdown == Decimal('1200')
+    assert rs.total_drawdown_pct == Decimal('1.2')

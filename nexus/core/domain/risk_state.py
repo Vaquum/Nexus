@@ -188,11 +188,18 @@ class RiskState:
 
         realized_equity = self.starting_capital + self.cumulative_realized_pnl
         equity = realized_equity + self.unrealized_pnl
+        equity_hwm_seed = max(self.starting_capital, realized_equity, _ZERO)
 
         self.equity = equity
-        self.equity_hwm = max(self.equity_hwm, self.high_water_mark, equity)
+        self.equity_hwm = max(
+            self.equity_hwm, self.high_water_mark, equity_hwm_seed, equity
+        )
         self.high_water_mark = self.equity_hwm
-        self.realized_equity_hwm = max(self.realized_equity_hwm, realized_equity)
+        self.realized_equity_hwm = max(
+            self.realized_equity_hwm,
+            self.starting_capital,
+            realized_equity,
+        )
 
         self.total_drawdown = max(_ZERO, self.equity_hwm - equity)
         if self.equity_hwm == _ZERO:
