@@ -163,8 +163,9 @@ class CapitalController:
 
             return ReservationResult(granted=True, reservation=reservation)
 
-    def _purge_expired(self) -> None:
-        now = datetime.now(tz=timezone.utc)
+    def _purge_expired(self, now: datetime | None = None) -> None:
+        if now is None:
+            now = datetime.now(tz=timezone.utc)
         expired = [rid for rid, r in self._reservations.items() if r.is_expired(now)]
 
         for rid in expired:
@@ -209,7 +210,8 @@ class CapitalController:
             raise ValueError(msg)
 
         with self._lock:
-            self._purge_expired()
+            now = datetime.now(tz=timezone.utc)
+            self._purge_expired(now)
 
             if order_id in self._orders:
                 msg = f'order_id already tracked: {order_id}'
@@ -220,7 +222,10 @@ class CapitalController:
             if reservation is None:
                 return False
 
-            now = datetime.now(tz=timezone.utc)
+            if reservation.is_expired(now):
+                self._state.reservation_notional -= reservation.total
+                return False
+
             order = TrackedOrder(
                 order_id=order_id,
                 reservation_id=reservation_id,
