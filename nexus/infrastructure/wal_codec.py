@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, cast
 
 import msgpack
 
@@ -52,7 +52,7 @@ def serialize_state(state: InstanceState) -> bytes:
             k: _encode_strategy_mode_state(v) for k, v in state.strategy_modes.items()
         },
     }
-    return bytes(msgpack.packb(d))
+    return cast(bytes, msgpack.packb(d))
 
 
 def deserialize_state(data: bytes) -> InstanceState:
@@ -182,6 +182,15 @@ def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
 
     return {
         'high_water_mark': str(rs.high_water_mark),
+        'starting_capital': str(rs.starting_capital),
+        'cumulative_realized_pnl': str(rs.cumulative_realized_pnl),
+        'unrealized_pnl': str(rs.unrealized_pnl),
+        'equity': str(rs.equity),
+        'equity_hwm': str(rs.equity_hwm),
+        'realized_equity_hwm': str(rs.realized_equity_hwm),
+        'total_drawdown': str(rs.total_drawdown),
+        'realized_drawdown': str(rs.realized_drawdown),
+        'unrealized_drawdown': str(rs.unrealized_drawdown),
         'per_strategy': {
             k: _encode_strategy_risk_state(v) for k, v in rs.per_strategy.items()
         },
@@ -198,8 +207,22 @@ def _decode_risk_state(d: dict[str, Any]) -> RiskState:
         Reconstructed risk state with per-strategy entries.
     '''
 
+    legacy_hwm = Decimal(d.get('high_water_mark', d.get('equity_hwm', '0')))
+    equity_hwm = Decimal(d.get('equity_hwm', str(legacy_hwm)))
+    high_water_mark = Decimal(d.get('high_water_mark', str(equity_hwm)))
+    starting_capital = Decimal(d.get('starting_capital', str(legacy_hwm)))
+
     return RiskState(
-        high_water_mark=Decimal(d['high_water_mark']),
+        high_water_mark=high_water_mark,
+        starting_capital=starting_capital,
+        cumulative_realized_pnl=Decimal(d.get('cumulative_realized_pnl', '0')),
+        unrealized_pnl=Decimal(d.get('unrealized_pnl', '0')),
+        equity=Decimal(d.get('equity', str(starting_capital))),
+        equity_hwm=equity_hwm,
+        realized_equity_hwm=Decimal(d.get('realized_equity_hwm', str(equity_hwm))),
+        total_drawdown=Decimal(d.get('total_drawdown', '0')),
+        realized_drawdown=Decimal(d.get('realized_drawdown', '0')),
+        unrealized_drawdown=Decimal(d.get('unrealized_drawdown', '0')),
         per_strategy={
             k: _decode_strategy_risk_state(v) for k, v in d['per_strategy'].items()
         },
@@ -333,7 +356,7 @@ def serialize_event(event: StrategyEvent) -> bytes:
         'realized_pnl': str(event.realized_pnl),
         'timestamp': event.timestamp.isoformat(),
     }
-    return bytes(msgpack.packb(d))
+    return cast(bytes, msgpack.packb(d))
 
 
 def deserialize_event(data: bytes) -> StrategyEvent:

@@ -43,7 +43,7 @@ class StrategyRiskState:
             raise ValueError(msg)
 
         if not self.high_water_mark.is_finite() or self.high_water_mark < _ZERO:
-            msg = 'StrategyRiskState.high_water_mark must be a finite non-negative value'
+            msg = 'StrategyRiskState.high_water_mark must be finite and non-negative'
             raise ValueError(msg)
 
         for field_name in ('rolling_loss_24h', 'rolling_loss_7d', 'rolling_loss_30d'):
@@ -67,10 +67,28 @@ class RiskState:
 
     Args:
         high_water_mark: Lifetime peak total equity.
+        starting_capital: Initial allocated capital for this instance.
+        cumulative_realized_pnl: Cumulative realized P&L at instance scope.
+        unrealized_pnl: Current mark-to-market unrealized P&L.
+        equity: Current equity (realized equity + unrealized P&L).
+        equity_hwm: Lifetime peak of equity.
+        realized_equity_hwm: Lifetime peak of realized equity.
+        total_drawdown: Current drawdown from equity_hwm.
+        realized_drawdown: Current drawdown from realized_equity_hwm.
+        unrealized_drawdown: Current unrealized-only drawdown component.
         per_strategy: Per-strategy risk state keyed by strategy_id.
     '''
 
     high_water_mark: Decimal = _ZERO
+    starting_capital: Decimal = _ZERO
+    cumulative_realized_pnl: Decimal = _ZERO
+    unrealized_pnl: Decimal = _ZERO
+    equity: Decimal = _ZERO
+    equity_hwm: Decimal = _ZERO
+    realized_equity_hwm: Decimal = _ZERO
+    total_drawdown: Decimal = _ZERO
+    realized_drawdown: Decimal = _ZERO
+    unrealized_drawdown: Decimal = _ZERO
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -79,6 +97,25 @@ class RiskState:
         if not self.high_water_mark.is_finite() or self.high_water_mark < _ZERO:
             msg = 'RiskState.high_water_mark must be a finite non-negative value'
             raise ValueError(msg)
+
+        for field_name in (
+            'starting_capital',
+            'equity_hwm',
+            'realized_equity_hwm',
+            'total_drawdown',
+            'realized_drawdown',
+            'unrealized_drawdown',
+        ):
+            val = getattr(self, field_name)
+            if not val.is_finite() or val < _ZERO:
+                msg = f'RiskState.{field_name} must be a finite non-negative value'
+                raise ValueError(msg)
+
+        for field_name in ('cumulative_realized_pnl', 'unrealized_pnl', 'equity'):
+            val = getattr(self, field_name)
+            if not val.is_finite():
+                msg = f'RiskState.{field_name} must be finite'
+                raise ValueError(msg)
 
         for key, state in self.per_strategy.items():
             if not isinstance(state, StrategyRiskState):

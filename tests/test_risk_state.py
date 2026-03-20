@@ -30,6 +30,15 @@ def test_risk_state_empty() -> None:
 
     rs = RiskState()
     assert rs.high_water_mark == Decimal(0)
+    assert rs.starting_capital == Decimal(0)
+    assert rs.cumulative_realized_pnl == Decimal(0)
+    assert rs.unrealized_pnl == Decimal(0)
+    assert rs.equity == Decimal(0)
+    assert rs.equity_hwm == Decimal(0)
+    assert rs.realized_equity_hwm == Decimal(0)
+    assert rs.total_drawdown == Decimal(0)
+    assert rs.realized_drawdown == Decimal(0)
+    assert rs.unrealized_drawdown == Decimal(0)
     assert rs.rolling_loss_24h == Decimal(0)
     assert rs.rolling_loss_7d == Decimal(0)
     assert rs.rolling_loss_30d == Decimal(0)
@@ -125,8 +134,9 @@ def test_negative_rolling_loss_rejected() -> None:
 def test_infinity_strategy_pnl_rejected() -> None:
     '''Verify Infinity strategy_realized_pnl raises ValueError.'''
 
+    inf_value = Decimal('Infinity')
     with pytest.raises(ValueError, match='strategy_realized_pnl'):
-        StrategyRiskState(strategy_id='momentum', strategy_realized_pnl=Decimal('Infinity'))
+        StrategyRiskState(strategy_id='momentum', strategy_realized_pnl=inf_value)
 
 
 def test_nan_instance_hwm_rejected() -> None:
@@ -141,3 +151,24 @@ def test_negative_instance_hwm_rejected() -> None:
 
     with pytest.raises(ValueError, match='high_water_mark'):
         RiskState(high_water_mark=Decimal('-1'))
+
+
+def test_negative_starting_capital_rejected() -> None:
+    '''Verify negative starting_capital in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='starting_capital'):
+        RiskState(starting_capital=Decimal('-1'))
+
+
+def test_nan_equity_rejected() -> None:
+    '''Verify NaN equity in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='equity'):
+        RiskState(equity=Decimal('NaN'))
+
+
+def test_negative_total_drawdown_rejected() -> None:
+    '''Verify negative total_drawdown in RiskState raises ValueError.'''
+
+    with pytest.raises(ValueError, match='total_drawdown'):
+        RiskState(total_drawdown=Decimal('-1'))
