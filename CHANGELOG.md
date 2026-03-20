@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.0 on 20th of March, 2026
+
+- Add [`tracked_order.py`](nexus/core/capital_controller/tracked_order.py) with `OrderLifecycleState` enum (IN_FLIGHT, WORKING) and frozen `TrackedOrder` dataclass
+- Add `CapitalController.send_order()` to convert reservation into in-flight order
+- Add `CapitalController.order_ack()` to transition in-flight → working
+- Add `CapitalController.order_reject()` to release in-flight order capital
+- Add `CapitalController.order_fill()` to handle partial/full fills with proportional fee allocation
+- Add `CapitalController.order_cancel()` to release working order remaining capital
+- Add 45 tests covering TrackedOrder validation, all lifecycle transitions, and concurrency (281 total)
+
 ## v0.6.0 on 19th of March, 2026
 
 - Add [`reservation.py`](nexus/core/capital_controller/reservation.py) with frozen `Reservation` dataclass (reservation_id, strategy_id, notional, estimated_fees, created_at, expires_at) and `ReservationResult` outcome type
