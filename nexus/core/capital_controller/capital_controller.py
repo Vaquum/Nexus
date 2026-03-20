@@ -222,10 +222,6 @@ class CapitalController:
             if reservation is None:
                 return False
 
-            if reservation.is_expired(now):
-                self._state.reservation_notional -= reservation.total
-                return False
-
             order = TrackedOrder(
                 order_id=order_id,
                 reservation_id=reservation_id,
