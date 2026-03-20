@@ -11,16 +11,23 @@ from nexus.core.domain.enums import BreachLevel, OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
 from nexus.core.domain.position import Position
-from nexus.core.domain.risk_state import RiskState, StrategyRiskState
+from nexus.core.domain.risk_state import (
+    DrawdownDiagnostics,
+    RiskCheckMetrics,
+    RiskState,
+    StrategyRiskState,
+)
 
 __all__ = [
     'BreachLevel',
     'CapitalState',
+    'DrawdownDiagnostics',
     'InstanceState',
     'ModeState',
     'OperationalMode',
     'OrderSide',
     'Position',
+    'RiskCheckMetrics',
     'RiskState',
     'StrategyModeState',
     'StrategyRiskState',

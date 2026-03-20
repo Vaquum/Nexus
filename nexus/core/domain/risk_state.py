@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-__all__ = ['RiskState', 'StrategyRiskState']
+__all__ = ['DrawdownDiagnostics', 'RiskCheckMetrics', 'RiskState', 'StrategyRiskState']
 
 _ZERO = Decimal(0)
 
@@ -55,6 +55,31 @@ class StrategyRiskState:
         if not self.strategy_realized_pnl.is_finite():
             msg = 'StrategyRiskState.strategy_realized_pnl must be finite'
             raise ValueError(msg)
+
+
+@dataclass(frozen=True)
+class RiskCheckMetrics:
+    '''Drawdown metrics exposed to risk-limit checks.'''
+
+    total_drawdown: Decimal
+    total_drawdown_pct: Decimal
+    max_drawdown: Decimal
+    max_drawdown_pct: Decimal
+
+
+@dataclass(frozen=True)
+class DrawdownDiagnostics:
+    '''Drawdown telemetry exposed for diagnostics surfaces.'''
+
+    equity: Decimal
+    equity_hwm: Decimal
+    realized_equity_hwm: Decimal
+    total_drawdown: Decimal
+    total_drawdown_pct: Decimal
+    realized_drawdown: Decimal
+    unrealized_drawdown: Decimal
+    max_drawdown: Decimal
+    max_drawdown_pct: Decimal
 
 
 @dataclass
@@ -199,3 +224,28 @@ class RiskState:
 
         self.unrealized_pnl = unrealized_pnl
         self.recompute_drawdown_metrics()
+
+    def to_risk_check_metrics(self) -> RiskCheckMetrics:
+        '''Return drawdown values needed for validator-style checks.'''
+
+        return RiskCheckMetrics(
+            total_drawdown=self.total_drawdown,
+            total_drawdown_pct=self.total_drawdown_pct,
+            max_drawdown=self.max_drawdown,
+            max_drawdown_pct=self.max_drawdown_pct,
+        )
+
+    def to_drawdown_diagnostics(self) -> DrawdownDiagnostics:
+        '''Return full drawdown telemetry for diagnostics consumers.'''
+
+        return DrawdownDiagnostics(
+            equity=self.equity,
+            equity_hwm=self.equity_hwm,
+            realized_equity_hwm=self.realized_equity_hwm,
+            total_drawdown=self.total_drawdown,
+            total_drawdown_pct=self.total_drawdown_pct,
+            realized_drawdown=self.realized_drawdown,
+            unrealized_drawdown=self.unrealized_drawdown,
+            max_drawdown=self.max_drawdown,
+            max_drawdown_pct=self.max_drawdown_pct,
+        )

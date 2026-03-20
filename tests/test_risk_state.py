@@ -6,7 +6,12 @@ from decimal import Decimal
 
 import pytest
 
-from nexus.core.domain.risk_state import RiskState, StrategyRiskState
+from nexus.core.domain.risk_state import (
+    DrawdownDiagnostics,
+    RiskCheckMetrics,
+    RiskState,
+    StrategyRiskState,
+)
 
 
 def test_strategy_risk_state_creation() -> None:
@@ -318,3 +323,51 @@ def test_update_unrealized_pnl_triggers_recompute() -> None:
     assert rs.total_drawdown == Decimal('200')
     assert rs.total_drawdown_pct == Decimal('0.2')
     assert rs.unrealized_drawdown == Decimal('200')
+
+
+def test_to_risk_check_metrics_exposes_validator_fields() -> None:
+    '''Verify validator-facing drawdown metrics are exposed in one typed view.'''
+
+    rs = RiskState(
+        total_drawdown=Decimal('100'),
+        total_drawdown_pct=Decimal('0.1'),
+        max_drawdown=Decimal('250'),
+        max_drawdown_pct=Decimal('0.2'),
+    )
+
+    metrics = rs.to_risk_check_metrics()
+
+    assert isinstance(metrics, RiskCheckMetrics)
+    assert metrics.total_drawdown == Decimal('100')
+    assert metrics.total_drawdown_pct == Decimal('0.1')
+    assert metrics.max_drawdown == Decimal('250')
+    assert metrics.max_drawdown_pct == Decimal('0.2')
+
+
+def test_to_drawdown_diagnostics_exposes_telemetry_fields() -> None:
+    '''Verify diagnostics-facing drawdown telemetry fields are exposed together.'''
+
+    rs = RiskState(
+        equity=Decimal('900'),
+        equity_hwm=Decimal('1000'),
+        realized_equity_hwm=Decimal('980'),
+        total_drawdown=Decimal('100'),
+        total_drawdown_pct=Decimal('0.1'),
+        realized_drawdown=Decimal('80'),
+        unrealized_drawdown=Decimal('20'),
+        max_drawdown=Decimal('150'),
+        max_drawdown_pct=Decimal('0.15'),
+    )
+
+    diagnostics = rs.to_drawdown_diagnostics()
+
+    assert isinstance(diagnostics, DrawdownDiagnostics)
+    assert diagnostics.equity == Decimal('900')
+    assert diagnostics.equity_hwm == Decimal('1000')
+    assert diagnostics.realized_equity_hwm == Decimal('980')
+    assert diagnostics.total_drawdown == Decimal('100')
+    assert diagnostics.total_drawdown_pct == Decimal('0.1')
+    assert diagnostics.realized_drawdown == Decimal('80')
+    assert diagnostics.unrealized_drawdown == Decimal('20')
+    assert diagnostics.max_drawdown == Decimal('150')
+    assert diagnostics.max_drawdown_pct == Decimal('0.15')
