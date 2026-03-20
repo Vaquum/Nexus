@@ -91,12 +91,15 @@ class RiskState:
     (not a sum of per-strategy HWMs — they peak at different times).
 
     Args:
-        high_water_mark: Lifetime peak total equity.
+        high_water_mark: Legacy alias of equity_hwm retained for backward
+            compatibility with persisted state.
         starting_capital: Initial allocated capital for this instance.
         cumulative_realized_pnl: Cumulative realized P&L at instance scope.
         unrealized_pnl: Current mark-to-market unrealized P&L.
         equity: Current equity (realized equity + unrealized P&L).
-        equity_hwm: Lifetime peak of equity.
+        equity_hwm: Authoritative lifetime peak of equity used for drawdown
+            recomputation. recompute_drawdown_metrics normalizes
+            high_water_mark to this value.
         realized_equity_hwm: Lifetime peak of realized equity.
         total_drawdown: Current drawdown from equity_hwm.
         total_drawdown_pct: Current drawdown as fraction of equity_hwm.
