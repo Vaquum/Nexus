@@ -331,6 +331,39 @@ class TestMalformedPayload:
         with pytest.raises(ValueError, match='Expected dict from WAL payload'):
             deserialize_state(bad_data)
 
+    def test_invalid_decimal_in_risk_payload_raises(self) -> None:
+        '''Verify malformed Decimal risk field raises normalized ValueError.'''
+
+        import msgpack
+
+        payload = {
+            '_v': 1,
+            'capital': {
+                'capital_pool': '100000',
+                'position_notional': '0',
+                'working_order_notional': '0',
+                'in_flight_order_notional': '0',
+                'fee_reserve': '0',
+                'reservation_notional': '0',
+            },
+            'risk': {
+                'high_water_mark': 'not_a_number',
+                'per_strategy': {},
+            },
+            'positions': {},
+            'mode': {
+                'mode': 'ACTIVE',
+                'trigger': 'init',
+                'transitioned_at': '2026-03-20T00:00:00',
+            },
+            'strategy_modes': {},
+        }
+
+        data = cast(bytes, msgpack.packb(payload))
+
+        with pytest.raises(ValueError, match='Malformed WAL codec payload'):
+            deserialize_state(data)
+
 
 class TestSerializationOutput:
     '''Verify serialization produces expected binary format.'''

@@ -190,7 +190,7 @@ class RiskState:
         equity = realized_equity + self.unrealized_pnl
 
         self.equity = equity
-        self.equity_hwm = max(self.equity_hwm, equity)
+        self.equity_hwm = max(self.equity_hwm, self.high_water_mark, equity)
         self.high_water_mark = self.equity_hwm
         self.realized_equity_hwm = max(self.realized_equity_hwm, realized_equity)
 

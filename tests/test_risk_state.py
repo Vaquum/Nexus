@@ -435,3 +435,23 @@ def test_equity_hwm_and_max_drawdown_are_monotonic_over_sequence() -> None:
         prior_realized_hwm = rs.realized_equity_hwm
         prior_max_drawdown = rs.max_drawdown
         prior_max_drawdown_pct = rs.max_drawdown_pct
+
+
+def test_recompute_preserves_legacy_high_water_mark_when_equity_hwm_unset() -> None:
+    '''Verify recompute keeps existing high_water_mark as HWM floor.'''
+
+    rs = RiskState(
+        high_water_mark=Decimal('1000'),
+        starting_capital=Decimal('500'),
+        cumulative_realized_pnl=Decimal('0'),
+        unrealized_pnl=Decimal('0'),
+        equity_hwm=Decimal('0'),
+        realized_equity_hwm=Decimal('0'),
+    )
+
+    rs.recompute_drawdown_metrics()
+
+    assert rs.equity == Decimal('500')
+    assert rs.equity_hwm == Decimal('1000')
+    assert rs.high_water_mark == Decimal('1000')
+    assert rs.total_drawdown == Decimal('500')
