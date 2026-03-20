@@ -56,7 +56,9 @@ class TestTotalProperty:
 
     def test_total_zero_fees(self) -> None:
         order = _make_order(
-            notional=Decimal('500'), estimated_fees=_ZERO, remaining_notional=Decimal('500')
+            notional=Decimal('500'),
+            estimated_fees=_ZERO,
+            remaining_notional=Decimal('500'),
         )
         assert order.total == Decimal('500')
 
@@ -78,13 +80,21 @@ class TestRemainingTotalProperty:
         )
         assert order.remaining_total == Decimal('505')
 
-    def test_remaining_total_zero_notional(self) -> None:
+    def test_remaining_total_zero_notional_zero_fees(self) -> None:
         order = _make_order(
             notional=_ZERO,
             estimated_fees=_ZERO,
             remaining_notional=_ZERO,
         )
         assert order.remaining_total == _ZERO
+
+    def test_remaining_total_zero_notional_with_fees(self) -> None:
+        order = _make_order(
+            notional=_ZERO,
+            estimated_fees=Decimal('10'),
+            remaining_notional=_ZERO,
+        )
+        assert order.remaining_total == Decimal('10')
 
 
 class TestImmutability:

@@ -211,6 +211,10 @@ class CapitalController:
         with self._lock:
             self._purge_expired()
 
+            if order_id in self._orders:
+                msg = f'order_id already tracked: {order_id}'
+                raise ValueError(msg)
+
             reservation = self._reservations.pop(reservation_id, None)
 
             if reservation is None:

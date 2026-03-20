@@ -124,7 +124,7 @@ class TrackedOrder:
         '''Remaining quote capital including proportional fees.'''
 
         if self.notional == _ZERO:
-            return _ZERO
+            return self.estimated_fees
 
         fee_ratio = self.estimated_fees / self.notional
         return self.remaining_notional * (1 + fee_ratio)

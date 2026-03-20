@@ -308,6 +308,17 @@ class TestSendOrder:
         with pytest.raises(ValueError, match='order_id'):
             ctrl.send_order(result.reservation.reservation_id, '')
 
+    def test_send_order_duplicate_order_id_rejected(self) -> None:
+        ctrl = _make_controller()
+        res1 = _reserve(ctrl, notional='100', fees='1')
+        res2 = _reserve(ctrl, notional='100', fees='1')
+        assert res1.reservation is not None
+        assert res2.reservation is not None
+
+        ctrl.send_order(res1.reservation.reservation_id, 'ORD-DUP')
+        with pytest.raises(ValueError, match='already tracked'):
+            ctrl.send_order(res2.reservation.reservation_id, 'ORD-DUP')
+
 
 class TestOrderAck:
     def test_order_ack_success(self) -> None:
@@ -530,24 +541,28 @@ class TestLifecycleCancelPath:
 class TestLifecycleConcurrency:
     def test_no_double_counting_under_contention(self) -> None:
         ctrl = _make_controller()
-        results: list[bool] = []
+        successes: list[bool] = []
+        errors: list[Exception] = []
         barrier = threading.Barrier(10)
 
         def lifecycle_race(idx: int) -> None:
-            barrier.wait()
-            res = ctrl.check_and_reserve(
-                strategy_id='strat_a',
-                order_notional=Decimal('500'),
-                estimated_fees=Decimal('5'),
-                strategy_budget=_POOL,
-                strategy_deployed=_ZERO,
-            )
-            if res.granted and res.reservation:
-                sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
-                if sent:
-                    ctrl.order_ack(f'ORD-{idx}')
-                    ctrl.order_fill(f'ORD-{idx}', Decimal('500'))
-                    results.append(True)
+            try:
+                barrier.wait()
+                res = ctrl.check_and_reserve(
+                    strategy_id='strat_a',
+                    order_notional=Decimal('500'),
+                    estimated_fees=Decimal('5'),
+                    strategy_budget=_POOL,
+                    strategy_deployed=_ZERO,
+                )
+                if res.granted and res.reservation:
+                    sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
+                    if sent:
+                        ctrl.order_ack(f'ORD-{idx}')
+                        ctrl.order_fill(f'ORD-{idx}', Decimal('500'))
+                        successes.append(True)
+            except Exception as e:
+                errors.append(e)
 
         threads = [
             threading.Thread(target=lifecycle_race, args=(i,)) for i in range(10)
@@ -557,12 +572,13 @@ class TestLifecycleConcurrency:
         for t in threads:
             t.join()
 
-        total_position = ctrl._state.position_notional
-        assert total_position <= _POOL
-        total_buckets = (
+        assert not errors, f'Thread errors: {errors}'
+        assert len(successes) >= 1, 'At least one lifecycle must succeed'
+
+        total_committed = (
             ctrl._state.reservation_notional
             + ctrl._state.in_flight_order_notional
             + ctrl._state.working_order_notional
             + ctrl._state.position_notional
         )
-        assert total_buckets == total_position
+        assert ctrl._state.available + total_committed == _POOL

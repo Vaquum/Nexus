@@ -1,7 +1,7 @@
 '''Capital controller components for the Nexus Manager.
 
 Re-exports: CapitalController, Reservation, ReservationResult,
-OrderLifecycleState.
+OrderLifecycleState, TrackedOrder.
 '''
 
 from __future__ import annotations
