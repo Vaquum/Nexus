@@ -6,6 +6,7 @@ TOCTOU races when multiple strategies compete for the same pool.
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,8 @@ from nexus.core.capital_controller.tracked_order import (
 from nexus.core.domain.capital_state import CapitalState
 
 __all__ = ['CapitalController']
+
+_logger = logging.getLogger(__name__)
 
 MAX_ALLOCATION_PER_TRADE_PCT = Decimal('0.15')
 MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
@@ -171,6 +174,14 @@ class CapitalController:
         for rid in expired:
             reservation = self._reservations.pop(rid)
             self._state.reservation_notional -= reservation.total
+            held_seconds = (now - reservation.created_at).total_seconds()
+            _logger.warning(
+                'Reservation expired: id=%s strategy=%s total=%s held=%.1fs',
+                reservation.reservation_id,
+                reservation.strategy_id,
+                reservation.total,
+                held_seconds,
+            )
 
     def release_reservation(self, reservation_id: str) -> bool:
         '''Release a reservation and return its capital to the available pool.
