@@ -166,6 +166,18 @@ def test_non_string_capital_pct_key_rejected() -> None:
         )
 
 
+def test_duplicate_capital_pct_key_after_normalization_rejected() -> None:
+    '''Verify duplicate keys after normalization raise ValueError.'''
+
+    with pytest.raises(ValueError, match='duplicate keys after normalization'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'momentum': Decimal('10'), ' momentum ': Decimal('20')},
+        )
+
+
 def test_nan_capital_pct_rejected() -> None:
     '''Verify NaN capital_pct value raises ValueError.'''
 

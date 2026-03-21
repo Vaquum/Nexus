@@ -68,6 +68,12 @@ class CapitalState:
                     'CapitalState.per_strategy_deployed keys must be non-empty strings'
                 )
                 raise ValueError(msg)
+            if strategy_key != strategy_id:
+                msg = (
+                    'CapitalState.per_strategy_deployed keys must not contain leading '
+                    'or trailing whitespace'
+                )
+                raise ValueError(msg)
             if not deployed.is_finite() or deployed < _ZERO:
                 msg = (
                     'CapitalState.per_strategy_deployed values must be finite '

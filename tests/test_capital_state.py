@@ -150,6 +150,16 @@ def test_non_string_strategy_key_rejected() -> None:
         )
 
 
+def test_whitespace_strategy_key_rejected() -> None:
+    '''Verify whitespace-surrounded key in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='must not contain leading or trailing'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={' strat_a ': Decimal('1')},
+        )
+
+
 def test_negative_strategy_deployed_rejected() -> None:
     '''Verify negative deployed value in per_strategy_deployed raises ValueError.'''
 

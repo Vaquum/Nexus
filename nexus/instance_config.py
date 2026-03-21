@@ -63,6 +63,12 @@ class InstanceConfig:
             if not strategy_id:
                 msg = 'InstanceConfig.capital_pct keys must be non-empty strings'
                 raise ValueError(msg)
+            if strategy_id in normalized_capital_pct:
+                msg = (
+                    'InstanceConfig.capital_pct contains duplicate keys after '
+                    'normalization'
+                )
+                raise ValueError(msg)
             if not isinstance(pct, Decimal) or not pct.is_finite():
                 msg = 'InstanceConfig.capital_pct values must be finite Decimals'
                 raise ValueError(msg)

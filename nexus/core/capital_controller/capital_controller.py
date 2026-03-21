@@ -82,6 +82,8 @@ class CapitalController:
             msg = 'strategy_id must be a non-empty string'
             raise ValueError(msg)
 
+        strategy_id = strategy_id.strip()
+
         if order_notional < _ZERO:
             msg = f'order_notional must be non-negative: {order_notional}'
             raise ValueError(msg)
@@ -210,6 +212,8 @@ class CapitalController:
         if not strategy_id or not strategy_id.strip():
             msg = 'strategy_id must be a non-empty string'
             raise ValueError(msg)
+
+        strategy_id = strategy_id.strip()
 
         if not isinstance(capital_pct, Decimal) or not capital_pct.is_finite():
             msg = f'capital_pct must be a finite Decimal: {capital_pct}'

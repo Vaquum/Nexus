@@ -126,6 +126,36 @@ class TestStrategyBudgetCheck:
         assert result.denial_reason is not None
         assert 'budget' in result.denial_reason.lower()
 
+    def test_budget_check_uses_normalized_strategy_id(self) -> None:
+        ctrl = _make_controller(
+            per_strategy_deployed={'strat_a': Decimal('4900')},
+        )
+        result = _reserve(
+            ctrl,
+            strategy_id=' strat_a ',
+            notional='200',
+            fees='1',
+            budget='5000',
+        )
+
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'budget' in result.denial_reason.lower()
+
+    def test_successful_reservation_stores_normalized_strategy_id(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(
+            ctrl,
+            strategy_id=' strat_a ',
+            notional='100',
+            fees='1',
+            budget='5000',
+        )
+
+        assert result.granted is True
+        assert 'strat_a' in ctrl._state.per_strategy_deployed
+        assert ' strat_a ' not in ctrl._state.per_strategy_deployed
+
     def test_negative_budget_denied(self) -> None:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', budget='-50')
