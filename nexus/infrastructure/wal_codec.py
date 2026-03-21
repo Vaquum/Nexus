@@ -90,7 +90,7 @@ def deserialize_state(data: bytes) -> InstanceState:
         raise ValueError(msg) from exc
 
 
-def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
+def _encode_capital_state(cs: CapitalState) -> dict[str, Any]:
     '''Encode CapitalState to string-valued dict for msgpack.
 
     Args:
@@ -107,10 +107,14 @@ def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
         'in_flight_order_notional': str(cs.in_flight_order_notional),
         'fee_reserve': str(cs.fee_reserve),
         'reservation_notional': str(cs.reservation_notional),
+        'per_strategy_deployed': {
+            strategy_id: str(deployed)
+            for strategy_id, deployed in cs.per_strategy_deployed.items()
+        },
     }
 
 
-def _decode_capital_state(d: dict[str, str]) -> CapitalState:
+def _decode_capital_state(d: dict[str, Any]) -> CapitalState:
     '''Decode string-valued dict to CapitalState.
 
     Args:
@@ -127,6 +131,10 @@ def _decode_capital_state(d: dict[str, str]) -> CapitalState:
         in_flight_order_notional=Decimal(d['in_flight_order_notional']),
         fee_reserve=Decimal(d['fee_reserve']),
         reservation_notional=Decimal(d['reservation_notional']),
+        per_strategy_deployed={
+            strategy_id: Decimal(deployed)
+            for strategy_id, deployed in d.get('per_strategy_deployed', {}).items()
+        },
     )
 
 
