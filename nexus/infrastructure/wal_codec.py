@@ -91,13 +91,15 @@ def deserialize_state(data: bytes) -> InstanceState:
 
 
 def _encode_capital_state(cs: CapitalState) -> dict[str, Any]:
-    '''Encode CapitalState to string-valued dict for msgpack.
+    '''Encode CapitalState to nested dict for msgpack.
 
     Args:
         cs: Capital state to encode.
 
     Returns:
-        String-keyed dict with Decimal values as strings.
+        String-keyed dict with top-level Decimal values as strings and
+        ``per_strategy_deployed`` as a nested mapping of
+        ``strategy_id -> deployed Decimal`` encoded as strings.
     '''
 
     return {
@@ -115,10 +117,11 @@ def _encode_capital_state(cs: CapitalState) -> dict[str, Any]:
 
 
 def _decode_capital_state(d: dict[str, Any]) -> CapitalState:
-    '''Decode string-valued dict to CapitalState.
+    '''Decode nested capital-state dict to CapitalState.
 
     Args:
-        d: Encoded capital state dict.
+        d: Encoded capital state dict with stringified Decimal fields and
+            optional nested ``per_strategy_deployed`` mapping.
 
     Returns:
         Reconstructed capital state.
