@@ -108,14 +108,27 @@ class CapitalController:
                 + self._state.reservation_notional
             )
 
-            if not self._state.per_strategy_deployed and total_deployed > _ZERO:
-                return ReservationResult(
-                    granted=False,
-                    denial_reason=(
+            per_strategy_deployed = self._state.per_strategy_deployed
+            if total_deployed > _ZERO:
+                denial_reason: str | None = None
+                if not per_strategy_deployed:
+                    denial_reason = (
                         'Per-strategy deployed attribution is unknown for non-flat '
                         'state; reconcile strategy deployment before new reservations'
-                    ),
-                )
+                    )
+                else:
+                    attributed_deployed = sum(per_strategy_deployed.values(), _ZERO)
+                    if attributed_deployed != total_deployed:
+                        denial_reason = (
+                            'Per-strategy deployed attribution mismatch for non-flat '
+                            'state; reconcile strategy deployment before new reservations'
+                        )
+
+                if denial_reason is not None:
+                    return ReservationResult(
+                        granted=False,
+                        denial_reason=denial_reason,
+                    )
 
             allocation_pct = order_notional / self._state.capital_pool
 

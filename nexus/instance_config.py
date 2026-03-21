@@ -54,8 +54,13 @@ class InstanceConfig:
 
         normalized_capital_pct: dict[str, Decimal] = {}
         total_pct = _ZERO
-        for strategy_id, pct in self.capital_pct.items():
-            if not strategy_id or not strategy_id.strip():
+        for raw_strategy_id, pct in self.capital_pct.items():
+            if not isinstance(raw_strategy_id, str):
+                msg = 'InstanceConfig.capital_pct keys must be non-empty strings'
+                raise ValueError(msg)
+
+            strategy_id = raw_strategy_id.strip()
+            if not strategy_id:
                 msg = 'InstanceConfig.capital_pct keys must be non-empty strings'
                 raise ValueError(msg)
             if not isinstance(pct, Decimal) or not pct.is_finite():

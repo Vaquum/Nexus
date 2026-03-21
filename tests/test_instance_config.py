@@ -154,6 +154,18 @@ def test_empty_capital_pct_key_rejected() -> None:
         )
 
 
+def test_non_string_capital_pct_key_rejected() -> None:
+    '''Verify non-string capital_pct key raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct keys'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct=cast(dict[str, Decimal], {1: Decimal('10')}),
+        )
+
+
 def test_nan_capital_pct_rejected() -> None:
     '''Verify NaN capital_pct value raises ValueError.'''
 

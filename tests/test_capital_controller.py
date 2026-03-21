@@ -93,6 +93,16 @@ class TestStrategyBudgetCheck:
         assert result.denial_reason is not None
         assert 'unknown' in result.denial_reason.lower()
 
+    def test_per_strategy_deployment_mismatch_in_non_flat_state_denied(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={'strat_a': Decimal('900')},
+        )
+        result = _reserve(ctrl, notional='100', fees='1', budget='5000')
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'mismatch' in result.denial_reason.lower()
+
     def test_exceeds_strategy_budget(self) -> None:
         ctrl = _make_controller(
             per_strategy_deployed={'strat_a': Decimal('4600')},

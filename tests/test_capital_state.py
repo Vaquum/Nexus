@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -133,6 +134,19 @@ def test_empty_strategy_key_rejected() -> None:
         CapitalState(
             capital_pool=Decimal('10000'),
             per_strategy_deployed={'': Decimal('1')},
+        )
+
+
+def test_non_string_strategy_key_rejected() -> None:
+    '''Verify non-string key in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed keys'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed=cast(
+                dict[str, Decimal],
+                {Decimal('1'): Decimal('1')},
+            ),
         )
 
 

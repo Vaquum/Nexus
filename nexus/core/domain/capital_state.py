@@ -55,8 +55,15 @@ class CapitalState:
                 msg = f'CapitalState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
 
-        for strategy_id, deployed in self.per_strategy_deployed.items():
-            if not strategy_id or not strategy_id.strip():
+        for strategy_key, deployed in self.per_strategy_deployed.items():
+            if not isinstance(strategy_key, str):
+                msg = (
+                    'CapitalState.per_strategy_deployed keys must be non-empty strings'
+                )
+                raise ValueError(msg)
+
+            strategy_id = strategy_key.strip()
+            if not strategy_id:
                 msg = (
                     'CapitalState.per_strategy_deployed keys must be non-empty strings'
                 )
