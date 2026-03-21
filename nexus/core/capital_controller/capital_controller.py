@@ -222,6 +222,10 @@ class CapitalController:
         for rid in expired:
             reservation = self._reservations.pop(rid)
             self._state.reservation_notional -= reservation.total
+            self._adjust_strategy_deployed(
+                reservation.strategy_id,
+                -reservation.total,
+            )
             held_seconds = (now - reservation.created_at).total_seconds()
             _logger.warning(
                 'Reservation expired: id=%s strategy=%s total=%s held=%.1fs',
@@ -248,6 +252,10 @@ class CapitalController:
                 return False
 
             self._state.reservation_notional -= reservation.total
+            self._adjust_strategy_deployed(
+                reservation.strategy_id,
+                -reservation.total,
+            )
             return True
 
     def send_order(self, reservation_id: str, order_id: str) -> bool:
@@ -360,6 +368,7 @@ class CapitalController:
 
             self._orders.pop(order_id)
             self._state.in_flight_order_notional -= order.total
+            self._adjust_strategy_deployed(order.strategy_id, -order.total)
 
             return True
 
@@ -449,5 +458,16 @@ class CapitalController:
 
             self._orders.pop(order_id)
             self._state.working_order_notional -= order.remaining_total
+            self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
             return True
+
+    def _adjust_strategy_deployed(self, strategy_id: str, delta: Decimal) -> None:
+        current = self._state.per_strategy_deployed.get(strategy_id, _ZERO)
+        updated = current + delta
+
+        if updated <= _ZERO:
+            self._state.per_strategy_deployed.pop(strategy_id, None)
+            return
+
+        self._state.per_strategy_deployed[strategy_id] = updated

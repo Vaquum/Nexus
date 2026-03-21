@@ -193,11 +193,13 @@ class TestReleaseReservation:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='500', fees='5')
         assert ctrl._state.reservation_notional == Decimal('505')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('505')
         assert result.reservation is not None
 
         released = ctrl.release_reservation(result.reservation.reservation_id)
         assert released is True
         assert ctrl._state.reservation_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
     def test_release_unknown_id(self) -> None:
         ctrl = _make_controller()
@@ -258,9 +260,11 @@ class TestExpiredPurge:
         )
         ctrl._reservations['expired_001'] = expired_res
         ctrl._state.reservation_notional = Decimal('505')
+        ctrl._state.per_strategy_deployed['strat_a'] = Decimal('505')
 
         _reserve(ctrl, notional='100', fees='1', budget=str(_POOL))
         assert ctrl._state.reservation_notional == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
 
     def test_expired_reservation_logs_warning(
         self, caplog: pytest.LogCaptureFixture
@@ -443,12 +447,14 @@ class TestOrderReject:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         assert ctrl._state.in_flight_order_notional == Decimal('101')
 
         rejected = ctrl.order_reject('ORD-001')
         assert rejected is True
         assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
         assert 'ORD-001' not in ctrl._orders
 
     def test_order_reject_not_found(self) -> None:
@@ -537,12 +543,14 @@ class TestOrderCancel:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
         canceled = ctrl.order_cancel('ORD-001')
         assert canceled is True
         assert ctrl._state.working_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
         assert 'ORD-001' not in ctrl._orders
 
     def test_order_cancel_after_partial_fill(self) -> None:
@@ -593,6 +601,7 @@ class TestLifecycleHappyPath:
         ctrl.order_fill('ORD-001', Decimal('500'))
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('505')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('505')
         assert ctrl._state.available == initial_available - Decimal('505')
 
 
