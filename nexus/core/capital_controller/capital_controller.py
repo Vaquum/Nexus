@@ -184,7 +184,7 @@ class CapitalController:
 
             self._reservations[reservation.reservation_id] = reservation
             self._state.reservation_notional += total
-            self._state.per_strategy_deployed[strategy_id] = strategy_deployed + total
+            self._adjust_strategy_deployed(strategy_id, total)
 
             return ReservationResult(granted=True, reservation=reservation)
 

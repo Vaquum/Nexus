@@ -74,6 +74,12 @@ class CapitalState:
                     'or trailing whitespace'
                 )
                 raise ValueError(msg)
+            if not isinstance(deployed, Decimal):
+                msg = (
+                    'CapitalState.per_strategy_deployed values must be finite '
+                    'non-negative Decimal values'
+                )
+                raise ValueError(msg)
             if not deployed.is_finite() or deployed < _ZERO:
                 msg = (
                     'CapitalState.per_strategy_deployed values must be finite '

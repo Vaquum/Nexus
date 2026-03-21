@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -177,4 +177,14 @@ def test_nan_strategy_deployed_rejected() -> None:
         CapitalState(
             capital_pool=Decimal('10000'),
             per_strategy_deployed={'momentum': Decimal('NaN')},
+        )
+
+
+def test_non_decimal_strategy_deployed_rejected() -> None:
+    '''Verify non-Decimal deployed value in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed values'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed=cast(dict[str, Decimal], {'momentum': cast(Any, 1)}),
         )
