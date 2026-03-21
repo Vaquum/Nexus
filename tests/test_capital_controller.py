@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -21,24 +22,23 @@ _POOL = Decimal('10000')
 _ZERO = Decimal(0)
 
 
-def _make_controller(**overrides: Decimal) -> CapitalController:
+def _make_controller(**overrides: Any) -> CapitalController:
     cs = CapitalState(capital_pool=_POOL, **overrides)
     return CapitalController(cs)
 
 
 def _reserve(
     ctrl: CapitalController,
+    strategy_id: str = 'strat_a',
     notional: str = '100',
     fees: str = '1',
     budget: str = '5000',
-    deployed: str = '0',
 ) -> ReservationResult:
     return ctrl.check_and_reserve(
-        strategy_id='strat_a',
+        strategy_id=strategy_id,
         order_notional=Decimal(notional),
         estimated_fees=Decimal(fees),
         strategy_budget=Decimal(budget),
-        strategy_deployed=Decimal(deployed),
     )
 
 
@@ -63,6 +63,11 @@ class TestSuccessfulReservation:
         _reserve(ctrl, notional='200', fees='2')
         assert ctrl._state.reservation_notional == Decimal('303')
 
+    def test_strategy_deployed_updates_on_success(self) -> None:
+        ctrl = _make_controller()
+        _reserve(ctrl, notional='100', fees='1')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
+
 
 class TestPerTradeAllocationCheck:
     def test_exceeds_allocation_limit(self) -> None:
@@ -81,18 +86,49 @@ class TestPerTradeAllocationCheck:
 
 
 class TestStrategyBudgetCheck:
+    def test_unknown_per_strategy_deployment_in_non_flat_state_denied(self) -> None:
+        ctrl = _make_controller(position_notional=Decimal('1000'))
+        result = _reserve(ctrl, notional='100', fees='1', budget='5000')
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'unknown' in result.denial_reason.lower()
+
+    def test_per_strategy_deployment_mismatch_in_non_flat_state_denied(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={'strat_a': Decimal('900')},
+        )
+        result = _reserve(ctrl, notional='100', fees='1', budget='5000')
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'mismatch' in result.denial_reason.lower()
+
+    def test_per_strategy_deployment_mismatch_in_flat_state_denied(self) -> None:
+        ctrl = _make_controller(
+            per_strategy_deployed={'strat_a': Decimal('1')},
+        )
+        result = _reserve(ctrl, notional='100', fees='1', budget='5000')
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'mismatch' in result.denial_reason.lower()
+        assert 'flat state' in result.denial_reason.lower()
+
     def test_exceeds_strategy_budget(self) -> None:
-        ctrl = _make_controller()
-        result = _reserve(ctrl, notional='500', deployed='4600', budget='5000')
+        ctrl = _make_controller(
+            position_notional=Decimal('4600'),
+            per_strategy_deployed={'strat_a': Decimal('4600')},
+        )
+        result = _reserve(ctrl, notional='500', budget='5000')
         assert result.granted is False
         assert result.denial_reason is not None
         assert 'budget' in result.denial_reason.lower()
 
     def test_at_strategy_budget_passes(self) -> None:
-        ctrl = _make_controller()
-        result = _reserve(
-            ctrl, notional='999', fees='1', deployed='4000', budget='5000'
+        ctrl = _make_controller(
+            position_notional=Decimal('4000'),
+            per_strategy_deployed={'strat_a': Decimal('4000')},
         )
+        result = _reserve(ctrl, notional='999', fees='1', budget='5000')
         assert result.granted is True
 
     def test_exhausted_budget_denied(self) -> None:
@@ -102,6 +138,37 @@ class TestStrategyBudgetCheck:
         assert result.denial_reason is not None
         assert 'budget' in result.denial_reason.lower()
 
+    def test_budget_check_uses_normalized_strategy_id(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('4900'),
+            per_strategy_deployed={'strat_a': Decimal('4900')},
+        )
+        result = _reserve(
+            ctrl,
+            strategy_id=' strat_a ',
+            notional='200',
+            fees='1',
+            budget='5000',
+        )
+
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'budget' in result.denial_reason.lower()
+
+    def test_successful_reservation_stores_normalized_strategy_id(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(
+            ctrl,
+            strategy_id=' strat_a ',
+            notional='100',
+            fees='1',
+            budget='5000',
+        )
+
+        assert result.granted is True
+        assert 'strat_a' in ctrl._state.per_strategy_deployed
+        assert ' strat_a ' not in ctrl._state.per_strategy_deployed
+
     def test_negative_budget_denied(self) -> None:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', budget='-50')
@@ -110,16 +177,74 @@ class TestStrategyBudgetCheck:
         assert 'budget' in result.denial_reason.lower()
 
 
+class TestComputeStrategyBudget:
+    def test_base_budget_from_capital_pct(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget('strat_a', Decimal('25'))
+        assert budget == Decimal('2500')
+
+    def test_auto_compound_adds_realized_pnl(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget(
+            'strat_a',
+            Decimal('25'),
+            auto_compound=True,
+            strategy_realized_pnl=Decimal('150'),
+        )
+        assert budget == Decimal('2650')
+
+    def test_auto_compound_applies_negative_realized_pnl(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget(
+            'strat_a',
+            Decimal('25'),
+            auto_compound=True,
+            strategy_realized_pnl=Decimal('-300'),
+        )
+        assert budget == Decimal('2200')
+
+    def test_invalid_capital_pct_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='capital_pct'):
+            ctrl.compute_strategy_budget('strat_a', Decimal('0'))
+
+    def test_invalid_strategy_realized_pnl_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='strategy_realized_pnl'):
+            ctrl.compute_strategy_budget(
+                'strat_a',
+                Decimal('25'),
+                auto_compound=True,
+                strategy_realized_pnl=Decimal('NaN'),
+            )
+
+    def test_non_compound_ignores_strategy_realized_pnl_validation(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget(
+            'strat_a',
+            Decimal('25'),
+            auto_compound=False,
+            strategy_realized_pnl=Decimal('NaN'),
+        )
+        assert budget == Decimal('2500')
+
+
 class TestAvailableCapitalCheck:
     def test_insufficient_available(self) -> None:
-        ctrl = _make_controller(position_notional=Decimal('9950'))
-        result = _reserve(ctrl, notional='100', fees='1')
+        ctrl = _make_controller(
+            position_notional=Decimal('9950'),
+            per_strategy_deployed={'strat_a': Decimal('9950')},
+        )
+        result = _reserve(ctrl, notional='100', fees='1', budget='20000')
         assert result.granted is False
         assert result.denial_reason is not None
         assert 'insufficient' in result.denial_reason.lower()
 
     def test_exactly_available_passes(self) -> None:
-        ctrl = _make_controller(position_notional=Decimal('7000'))
+        ctrl = _make_controller(
+            position_notional=Decimal('7000'),
+            per_strategy_deployed={'strat_a': Decimal('7000')},
+        )
         result = _reserve(ctrl, notional='999', fees='1', budget=str(_POOL))
         assert result.granted is True
 
@@ -127,7 +252,10 @@ class TestAvailableCapitalCheck:
 class TestTotalUtilizationCheck:
     def test_exceeds_utilization_limit(self) -> None:
         deployed = _POOL * MAX_CAPITAL_UTILIZATION_PCT
-        ctrl = _make_controller(position_notional=deployed)
+        ctrl = _make_controller(
+            position_notional=deployed,
+            per_strategy_deployed={'strat_a': deployed},
+        )
         result = _reserve(ctrl, notional='1', fees='0', budget=str(_POOL))
         assert result.granted is False
         assert result.denial_reason is not None
@@ -135,7 +263,10 @@ class TestTotalUtilizationCheck:
 
     def test_at_utilization_limit_passes(self) -> None:
         deployed = _POOL * MAX_CAPITAL_UTILIZATION_PCT - Decimal('100')
-        ctrl = _make_controller(position_notional=deployed)
+        ctrl = _make_controller(
+            position_notional=deployed,
+            per_strategy_deployed={'strat_a': deployed},
+        )
         result = _reserve(ctrl, notional='100', fees='0', budget=str(_POOL))
         assert result.granted is True
 
@@ -145,11 +276,13 @@ class TestReleaseReservation:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='500', fees='5')
         assert ctrl._state.reservation_notional == Decimal('505')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('505')
         assert result.reservation is not None
 
         released = ctrl.release_reservation(result.reservation.reservation_id)
         assert released is True
         assert ctrl._state.reservation_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
     def test_release_unknown_id(self) -> None:
         ctrl = _make_controller()
@@ -178,7 +311,6 @@ class TestConcurrency:
                 order_notional=Decimal('1000'),
                 estimated_fees=Decimal('10'),
                 strategy_budget=_POOL,
-                strategy_deployed=_ZERO,
             )
             results.append(r)
 
@@ -211,9 +343,11 @@ class TestExpiredPurge:
         )
         ctrl._reservations['expired_001'] = expired_res
         ctrl._state.reservation_notional = Decimal('505')
+        ctrl._state.per_strategy_deployed['strat_a'] = Decimal('505')
 
         _reserve(ctrl, notional='100', fees='1', budget=str(_POOL))
         assert ctrl._state.reservation_notional == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
 
     def test_expired_reservation_logs_warning(
         self, caplog: pytest.LogCaptureFixture
@@ -291,13 +425,7 @@ class TestInputValidation:
                 order_notional=Decimal('100'),
                 estimated_fees=Decimal('1'),
                 strategy_budget=Decimal('5000'),
-                strategy_deployed=Decimal('0'),
             )
-
-    def test_negative_deployed_rejected(self) -> None:
-        ctrl = _make_controller()
-        with pytest.raises(ValueError, match='strategy_deployed'):
-            _reserve(ctrl, deployed='-1')
 
     def test_zero_ttl_rejected(self) -> None:
         ctrl = _make_controller()
@@ -307,7 +435,6 @@ class TestInputValidation:
                 order_notional=Decimal('100'),
                 estimated_fees=Decimal('1'),
                 strategy_budget=Decimal('5000'),
-                strategy_deployed=Decimal('0'),
                 ttl_seconds=0,
             )
 
@@ -403,12 +530,14 @@ class TestOrderReject:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         assert ctrl._state.in_flight_order_notional == Decimal('101')
 
         rejected = ctrl.order_reject('ORD-001')
         assert rejected is True
         assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
         assert 'ORD-001' not in ctrl._orders
 
     def test_order_reject_not_found(self) -> None:
@@ -497,12 +626,14 @@ class TestOrderCancel:
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
         canceled = ctrl.order_cancel('ORD-001')
         assert canceled is True
         assert ctrl._state.working_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
         assert 'ORD-001' not in ctrl._orders
 
     def test_order_cancel_after_partial_fill(self) -> None:
@@ -553,6 +684,7 @@ class TestLifecycleHappyPath:
         ctrl.order_fill('ORD-001', Decimal('500'))
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('505')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('505')
         assert ctrl._state.available == initial_available - Decimal('505')
 
 
@@ -633,7 +765,6 @@ class TestLifecycleConcurrency:
                     order_notional=Decimal('500'),
                     estimated_fees=Decimal('5'),
                     strategy_budget=_POOL,
-                    strategy_deployed=_ZERO,
                 )
                 if res.granted and res.reservation:
                     sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
@@ -670,3 +801,82 @@ class TestLifecycleConcurrency:
             + ctrl._state.position_notional
         )
         assert ctrl._state.available + total_committed == _POOL
+
+
+class TestPerStrategyIsolation:
+    def test_budget_check_isolated_per_strategy(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('4900'),
+            per_strategy_deployed={
+                'strat_a': Decimal('4900'),
+                'strat_b': Decimal('0'),
+            },
+        )
+
+        denied = _reserve(
+            ctrl,
+            strategy_id='strat_a',
+            notional='200',
+            fees='1',
+            budget='5000',
+        )
+        allowed = _reserve(
+            ctrl,
+            strategy_id='strat_b',
+            notional='200',
+            fees='1',
+            budget='5000',
+        )
+
+        assert denied.granted is False
+        assert allowed.granted is True
+
+    def test_deployed_map_updates_by_strategy_id(self) -> None:
+        ctrl = _make_controller()
+
+        _reserve(ctrl, strategy_id='strat_a', notional='100', fees='1')
+        _reserve(ctrl, strategy_id='strat_b', notional='200', fees='2')
+
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_b'] == Decimal('202')
+
+
+class TestPerStrategyDeployedInvariants:
+    def test_sum_per_strategy_deployed_equals_committed_capital(self) -> None:
+        ctrl = _make_controller()
+
+        res_a = _reserve(ctrl, strategy_id='strat_a', notional='300', fees='3')
+        res_b = _reserve(ctrl, strategy_id='strat_b', notional='200', fees='2')
+        assert res_a.reservation is not None
+        assert res_b.reservation is not None
+
+        ctrl.send_order(res_a.reservation.reservation_id, 'ORD-A')
+        ctrl.order_ack('ORD-A')
+        ctrl.order_fill('ORD-A', Decimal('150'))
+        ctrl.order_cancel('ORD-A')
+
+        ctrl.send_order(res_b.reservation.reservation_id, 'ORD-B')
+        ctrl.order_reject('ORD-B')
+
+        committed = (
+            ctrl._state.reservation_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.position_notional
+        )
+        per_strategy_total = sum(ctrl._state.per_strategy_deployed.values(), _ZERO)
+
+        assert per_strategy_total == committed
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('151.5')}
+
+    def test_underflow_logs_warning_and_removes_strategy(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(per_strategy_deployed={'strat_a': Decimal('1')})
+
+        with caplog.at_level('WARNING'):
+            ctrl._adjust_strategy_deployed('strat_a', Decimal('-2'))
+
+        assert 'Per-strategy deployed underflow' in caplog.text
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed

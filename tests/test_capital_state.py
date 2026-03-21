@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -19,6 +20,7 @@ def test_valid_creation() -> None:
     assert cs.in_flight_order_notional == Decimal(0)
     assert cs.fee_reserve == Decimal(0)
     assert cs.reservation_notional == Decimal(0)
+    assert cs.per_strategy_deployed == {}
 
 
 def test_available_all_zero() -> None:
@@ -108,3 +110,101 @@ def test_nan_notional_rejected() -> None:
             capital_pool=Decimal('10000'),
             position_notional=Decimal('NaN'),
         )
+
+
+def test_valid_per_strategy_deployed_creation() -> None:
+    '''Verify valid per_strategy_deployed map is accepted.'''
+
+    cs = CapitalState(
+        capital_pool=Decimal('10000'),
+        per_strategy_deployed={
+            'momentum': Decimal('1200'),
+            'mean_rev': Decimal('300.5'),
+        },
+    )
+
+    assert cs.per_strategy_deployed['momentum'] == Decimal('1200')
+    assert cs.per_strategy_deployed['mean_rev'] == Decimal('300.5')
+
+
+def test_empty_strategy_key_rejected() -> None:
+    '''Verify empty strategy key in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed keys'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={'': Decimal('1')},
+        )
+
+
+def test_non_string_strategy_key_rejected() -> None:
+    '''Verify non-string key in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed keys'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed=cast(
+                dict[str, Decimal],
+                {Decimal('1'): Decimal('1')},
+            ),
+        )
+
+
+def test_whitespace_strategy_key_rejected() -> None:
+    '''Verify whitespace-surrounded key in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='must not contain leading or trailing'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={' strat_a ': Decimal('1')},
+        )
+
+
+def test_negative_strategy_deployed_rejected() -> None:
+    '''Verify negative deployed value in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed values'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={'momentum': Decimal('-1')},
+        )
+
+
+def test_nan_strategy_deployed_rejected() -> None:
+    '''Verify NaN deployed value in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed values'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={'momentum': Decimal('NaN')},
+        )
+
+
+def test_non_decimal_strategy_deployed_rejected() -> None:
+    '''Verify non-Decimal deployed value in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed values'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed=cast(dict[str, Decimal], {'momentum': cast(Any, 1)}),
+        )
+
+
+def test_non_mapping_per_strategy_deployed_rejected() -> None:
+    '''Verify non-mapping per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed must be a mapping'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed=cast(dict[str, Decimal], cast(Any, None)),
+        )
+
+
+def test_per_strategy_deployed_is_copied_on_init() -> None:
+    '''Verify CapitalState owns a copied per_strategy_deployed mapping.'''
+
+    source = {'momentum': Decimal('1')}
+    cs = CapitalState(capital_pool=Decimal('10000'), per_strategy_deployed=source)
+    source['momentum'] = Decimal('2')
+
+    assert cs.per_strategy_deployed['momentum'] == Decimal('1')

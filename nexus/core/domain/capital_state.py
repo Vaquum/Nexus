@@ -6,7 +6,8 @@ instance. The ``available`` property is derived — never stored directly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 __all__ = ['CapitalState']
@@ -25,6 +26,7 @@ class CapitalState:
         in_flight_order_notional: Sum of BUY orders sent but not acked.
         fee_reserve: Reserved for transaction costs.
         reservation_notional: Sum of active TOCTOU locks (BUY-side).
+        per_strategy_deployed: Deployed capital by strategy_id.
     '''
 
     capital_pool: Decimal
@@ -33,6 +35,7 @@ class CapitalState:
     in_flight_order_notional: Decimal = _ZERO
     fee_reserve: Decimal = _ZERO
     reservation_notional: Decimal = _ZERO
+    per_strategy_deployed: dict[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -52,6 +55,47 @@ class CapitalState:
             if not val.is_finite() or val < _ZERO:
                 msg = f'CapitalState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
+
+        if not isinstance(self.per_strategy_deployed, Mapping):
+            msg = 'CapitalState.per_strategy_deployed must be a mapping of strategy_id to Decimal'
+            raise ValueError(msg)
+
+        normalized_per_strategy_deployed: dict[str, Decimal] = {}
+        for strategy_key, deployed in self.per_strategy_deployed.items():
+            if not isinstance(strategy_key, str):
+                msg = (
+                    'CapitalState.per_strategy_deployed keys must be non-empty strings'
+                )
+                raise ValueError(msg)
+
+            strategy_id = strategy_key.strip()
+            if not strategy_id:
+                msg = (
+                    'CapitalState.per_strategy_deployed keys must be non-empty strings'
+                )
+                raise ValueError(msg)
+            if strategy_key != strategy_id:
+                msg = (
+                    'CapitalState.per_strategy_deployed keys must not contain leading '
+                    'or trailing whitespace'
+                )
+                raise ValueError(msg)
+            if not isinstance(deployed, Decimal):
+                msg = (
+                    'CapitalState.per_strategy_deployed values must be finite '
+                    'non-negative Decimal values'
+                )
+                raise ValueError(msg)
+            if not deployed.is_finite() or deployed < _ZERO:
+                msg = (
+                    'CapitalState.per_strategy_deployed values must be finite '
+                    'non-negative Decimal values'
+                )
+                raise ValueError(msg)
+
+            normalized_per_strategy_deployed[strategy_id] = deployed
+
+        self.per_strategy_deployed = normalized_per_strategy_deployed
 
     @property
     def available(self) -> Decimal:

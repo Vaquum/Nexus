@@ -7,10 +7,15 @@ are added as their respective phases land.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from decimal import Decimal
+from types import MappingProxyType
 
 __all__ = ['InstanceConfig']
+
+_ZERO = Decimal('0')
+_ONE_HUNDRED = Decimal('100')
 
 
 @dataclass(frozen=True)
@@ -23,11 +28,14 @@ class InstanceConfig:
         allocated_capital: Hard ceiling on capital this instance can use,
             denominated in quote asset. The manifest's ``capital_pool``
             must not exceed this value.
+        capital_pct: Strategy capital-allocation percentages keyed by
+            strategy_id.
     '''
 
     account_id: str
     venue: str
     allocated_capital: Decimal
+    capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         '''Validate configuration invariants.'''
@@ -43,3 +51,45 @@ class InstanceConfig:
         if not self.allocated_capital.is_finite() or self.allocated_capital <= 0:
             msg = 'InstanceConfig.allocated_capital must be a finite positive value'
             raise ValueError(msg)
+
+        if not isinstance(self.capital_pct, Mapping):
+            msg = (
+                'InstanceConfig.capital_pct must be a mapping of strategy_id to Decimal'
+            )
+            raise ValueError(msg)
+
+        normalized_capital_pct: dict[str, Decimal] = {}
+        total_pct = _ZERO
+        for raw_strategy_id, pct in self.capital_pct.items():
+            if not isinstance(raw_strategy_id, str):
+                msg = 'InstanceConfig.capital_pct keys must be non-empty strings'
+                raise ValueError(msg)
+
+            strategy_id = raw_strategy_id.strip()
+            if not strategy_id:
+                msg = 'InstanceConfig.capital_pct keys must be non-empty strings'
+                raise ValueError(msg)
+            if strategy_id in normalized_capital_pct:
+                msg = (
+                    'InstanceConfig.capital_pct contains duplicate keys after '
+                    'normalization'
+                )
+                raise ValueError(msg)
+            if not isinstance(pct, Decimal) or not pct.is_finite():
+                msg = 'InstanceConfig.capital_pct values must be finite Decimals'
+                raise ValueError(msg)
+            if pct <= _ZERO or pct > _ONE_HUNDRED:
+                msg = 'InstanceConfig.capital_pct values must be in (0, 100]'
+                raise ValueError(msg)
+            total_pct += pct
+            normalized_capital_pct[strategy_id] = pct
+
+        if total_pct > _ONE_HUNDRED:
+            msg = 'InstanceConfig.capital_pct total must be <= 100'
+            raise ValueError(msg)
+
+        object.__setattr__(
+            self,
+            'capital_pct',
+            MappingProxyType(normalized_capital_pct),
+        )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -20,6 +21,36 @@ def test_valid_creation() -> None:
     assert cfg.account_id == 'acc_001'
     assert cfg.venue == 'binance_spot'
     assert cfg.allocated_capital == Decimal('10000')
+    assert cfg.capital_pct == {}
+
+
+def test_valid_creation_with_capital_pct() -> None:
+    '''Verify capital_pct map is accepted when values are valid.'''
+
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        capital_pct={'momentum': Decimal('60'), 'mean_rev': Decimal('40')},
+    )
+
+    assert cfg.capital_pct['momentum'] == Decimal('60')
+    assert cfg.capital_pct['mean_rev'] == Decimal('40')
+
+
+def test_capital_pct_mapping_is_immutable() -> None:
+    '''Verify capital_pct cannot be mutated after initialization.'''
+
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        capital_pct={'momentum': Decimal('60')},
+    )
+
+    mutable_view = cast(dict[str, Decimal], cfg.capital_pct)
+    with pytest.raises(TypeError):
+        mutable_view['mean_rev'] = Decimal('40')
 
 
 def test_frozen() -> None:
@@ -108,4 +139,100 @@ def test_infinity_capital_rejected() -> None:
             account_id='acc_001',
             venue='binance_spot',
             allocated_capital=Decimal('Infinity'),
+        )
+
+
+def test_empty_capital_pct_key_rejected() -> None:
+    '''Verify empty capital_pct strategy key raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct keys'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'': Decimal('10')},
+        )
+
+
+def test_non_string_capital_pct_key_rejected() -> None:
+    '''Verify non-string capital_pct key raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct keys'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct=cast(dict[str, Decimal], {1: Decimal('10')}),
+        )
+
+
+def test_duplicate_capital_pct_key_after_normalization_rejected() -> None:
+    '''Verify duplicate keys after normalization raise ValueError.'''
+
+    with pytest.raises(ValueError, match='duplicate keys after normalization'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'momentum': Decimal('10'), ' momentum ': Decimal('20')},
+        )
+
+
+def test_non_mapping_capital_pct_rejected() -> None:
+    '''Verify non-mapping capital_pct raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct must be a mapping'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct=cast(dict[str, Decimal], cast(object, None)),
+        )
+
+
+def test_nan_capital_pct_rejected() -> None:
+    '''Verify NaN capital_pct value raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct values'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'momentum': Decimal('NaN')},
+        )
+
+
+def test_non_positive_capital_pct_rejected() -> None:
+    '''Verify non-positive capital_pct value raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct values'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'momentum': Decimal('0')},
+        )
+
+
+def test_capital_pct_above_100_rejected() -> None:
+    '''Verify capital_pct value above 100 raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct values'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'momentum': Decimal('120')},
+        )
+
+
+def test_capital_pct_total_above_100_rejected() -> None:
+    '''Verify total capital_pct above 100 raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct total'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct={'momentum': Decimal('70'), 'mean_rev': Decimal('40')},
         )

@@ -127,6 +127,22 @@ class TestAppendMutation:
         entries = wal.read_all()
         assert entries[-1].sequence == 2
 
+    def test_per_strategy_deployed_round_trips(self, tmp_path: Path) -> None:
+        '''Verify per_strategy_deployed survives append_mutation and recover.'''
+
+        store = StateStore(tmp_path / 'state')
+        state = InstanceState(
+            capital=CapitalState(
+                capital_pool=Decimal('10000'),
+                per_strategy_deployed={'strat_a': Decimal('250.5')},
+            ),
+        )
+        store.append_mutation(state)
+
+        recovered = StateStore(tmp_path / 'state').recover()
+        assert recovered is not None
+        assert recovered.capital.per_strategy_deployed == {'strat_a': Decimal('250.5')}
+
 
 class TestRecover:
     '''Verify recover behavior across scenarios.'''

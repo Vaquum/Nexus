@@ -40,6 +40,10 @@ def _make_full_state() -> InstanceState:
             in_flight_order_notional=Decimal('1000.75'),
             fee_reserve=Decimal('200'),
             reservation_notional=Decimal('3000'),
+            per_strategy_deployed={
+                'momentum': Decimal('21000.5'),
+                'mean_rev': Decimal('8000.25'),
+            },
         ),
         risk=RiskState(
             high_water_mark=Decimal('110000'),
@@ -141,6 +145,10 @@ class TestRoundTrip:
         assert (
             restored.capital.reservation_notional
             == original.capital.reservation_notional
+        )
+        assert (
+            restored.capital.per_strategy_deployed
+            == original.capital.per_strategy_deployed
         )
 
     def test_full_state_risk(self) -> None:
@@ -316,6 +324,7 @@ class TestRiskDecodeDefaults:
         assert restored.risk.total_drawdown_pct == Decimal('0')
         assert restored.risk.max_drawdown == Decimal('0')
         assert restored.risk.max_drawdown_pct == Decimal('0')
+        assert restored.capital.per_strategy_deployed == {}
 
 
 class TestMalformedPayload:

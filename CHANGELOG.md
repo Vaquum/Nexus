@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.10.0 on 21st of March, 2026
+
+- Add `CapitalState.per_strategy_deployed` with finite non-negative validation for per-strategy deployment accounting
+- Add `InstanceConfig.capital_pct` with allocation validation (`(0,100]` per strategy, total `<= 100`)
+- Add `CapitalController.compute_strategy_budget()` to derive budget from `capital_pool` and `capital_pct`, with optional realized P&L auto-compounding
+- Refactor `check_and_reserve()` to enforce strategy budget from controller-owned deployed state instead of caller-provided `strategy_deployed`
+- Add lifecycle deployed accounting updates across reservation expiry/release and order reject/cancel paths
+- Extend WAL/state recovery to persist and restore `per_strategy_deployed` with backward-compatible defaults for older payloads
+- Add comprehensive per-strategy isolation and accounting invariant tests (326 total)
+
 ## v0.9.0 on 21st of March, 2026
 
 - Add instance-level drawdown state fields to `RiskState`: starting capital, cumulative realized/unrealized P&L, equity/HWMs, current drawdowns, and max drawdown metrics

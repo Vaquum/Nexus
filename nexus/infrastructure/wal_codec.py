@@ -90,14 +90,16 @@ def deserialize_state(data: bytes) -> InstanceState:
         raise ValueError(msg) from exc
 
 
-def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
-    '''Encode CapitalState to string-valued dict for msgpack.
+def _encode_capital_state(cs: CapitalState) -> dict[str, Any]:
+    '''Encode CapitalState to nested dict for msgpack.
 
     Args:
         cs: Capital state to encode.
 
     Returns:
-        String-keyed dict with Decimal values as strings.
+        String-keyed dict with top-level Decimal values as strings and
+        ``per_strategy_deployed`` as a nested mapping of
+        ``strategy_id -> deployed Decimal`` encoded as strings.
     '''
 
     return {
@@ -107,14 +109,19 @@ def _encode_capital_state(cs: CapitalState) -> dict[str, str]:
         'in_flight_order_notional': str(cs.in_flight_order_notional),
         'fee_reserve': str(cs.fee_reserve),
         'reservation_notional': str(cs.reservation_notional),
+        'per_strategy_deployed': {
+            strategy_id: str(deployed)
+            for strategy_id, deployed in cs.per_strategy_deployed.items()
+        },
     }
 
 
-def _decode_capital_state(d: dict[str, str]) -> CapitalState:
-    '''Decode string-valued dict to CapitalState.
+def _decode_capital_state(d: dict[str, Any]) -> CapitalState:
+    '''Decode nested capital-state dict to CapitalState.
 
     Args:
-        d: Encoded capital state dict.
+        d: Encoded capital state dict with stringified Decimal fields and
+            optional nested ``per_strategy_deployed`` mapping.
 
     Returns:
         Reconstructed capital state.
@@ -127,6 +134,10 @@ def _decode_capital_state(d: dict[str, str]) -> CapitalState:
         in_flight_order_notional=Decimal(d['in_flight_order_notional']),
         fee_reserve=Decimal(d['fee_reserve']),
         reservation_notional=Decimal(d['reservation_notional']),
+        per_strategy_deployed={
+            strategy_id: Decimal(deployed)
+            for strategy_id, deployed in d.get('per_strategy_deployed', {}).items()
+        },
     )
 
 

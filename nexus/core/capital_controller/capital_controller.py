@@ -31,6 +31,7 @@ MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
 DEFAULT_TTL_SECONDS = 30
 
 _ZERO = Decimal(0)
+_ONE_HUNDRED = Decimal('100')
 
 
 class CapitalController:
@@ -52,7 +53,6 @@ class CapitalController:
         order_notional: Decimal,
         estimated_fees: Decimal,
         strategy_budget: Decimal,
-        strategy_deployed: Decimal,
         *,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
     ) -> ReservationResult:
@@ -63,7 +63,6 @@ class CapitalController:
             order_notional: Quote capital for the order.
             estimated_fees: Estimated transaction fees.
             strategy_budget: Budget ceiling for this strategy.
-            strategy_deployed: Capital already deployed by this strategy.
             ttl_seconds: Seconds before reservation auto-expires.
 
         Returns:
@@ -74,7 +73,6 @@ class CapitalController:
             ('order_notional', order_notional),
             ('estimated_fees', estimated_fees),
             ('strategy_budget', strategy_budget),
-            ('strategy_deployed', strategy_deployed),
         ):
             if not isinstance(val, Decimal) or not val.is_finite():
                 msg = f'Invalid {name}: {val}'
@@ -84,16 +82,14 @@ class CapitalController:
             msg = 'strategy_id must be a non-empty string'
             raise ValueError(msg)
 
+        strategy_id = strategy_id.strip()
+
         if order_notional < _ZERO:
             msg = f'order_notional must be non-negative: {order_notional}'
             raise ValueError(msg)
 
         if estimated_fees < _ZERO:
             msg = f'estimated_fees must be non-negative: {estimated_fees}'
-            raise ValueError(msg)
-
-        if strategy_deployed < _ZERO:
-            msg = f'strategy_deployed must be non-negative: {strategy_deployed}'
             raise ValueError(msg)
 
         if ttl_seconds <= 0:
@@ -104,6 +100,44 @@ class CapitalController:
 
         with self._lock:
             self._purge_expired()
+            strategy_deployed = self._state.per_strategy_deployed.get(
+                strategy_id, _ZERO
+            )
+            total_deployed = (
+                self._state.position_notional
+                + self._state.working_order_notional
+                + self._state.in_flight_order_notional
+                + self._state.reservation_notional
+            )
+
+            per_strategy_deployed = self._state.per_strategy_deployed
+            denial_reason: str | None = None
+            if total_deployed > _ZERO or per_strategy_deployed:
+                if not per_strategy_deployed:
+                    if total_deployed > _ZERO:
+                        denial_reason = (
+                            'Per-strategy deployed attribution is unknown for non-flat '
+                            'state; reconcile strategy deployment before new reservations'
+                        )
+                else:
+                    attributed_deployed = sum(per_strategy_deployed.values(), _ZERO)
+                    if attributed_deployed != total_deployed:
+                        if total_deployed > _ZERO:
+                            denial_reason = (
+                                'Per-strategy deployed attribution mismatch for non-flat '
+                                'state; reconcile strategy deployment before new reservations'
+                            )
+                        else:
+                            denial_reason = (
+                                'Per-strategy deployed attribution mismatch for flat state; '
+                                'reconcile strategy deployment before new reservations'
+                            )
+
+                if denial_reason is not None:
+                    return ReservationResult(
+                        granted=False,
+                        denial_reason=denial_reason,
+                    )
 
             allocation_pct = order_notional / self._state.capital_pool
 
@@ -134,12 +168,6 @@ class CapitalController:
                     ),
                 )
 
-            total_deployed = (
-                self._state.position_notional
-                + self._state.working_order_notional
-                + self._state.in_flight_order_notional
-                + self._state.reservation_notional
-            )
             utilization = (total_deployed + total) / self._state.capital_pool
 
             if utilization > MAX_CAPITAL_UTILIZATION_PCT:
@@ -163,8 +191,61 @@ class CapitalController:
 
             self._reservations[reservation.reservation_id] = reservation
             self._state.reservation_notional += total
+            self._adjust_strategy_deployed(strategy_id, total)
 
             return ReservationResult(granted=True, reservation=reservation)
+
+    def compute_strategy_budget(
+        self,
+        strategy_id: str,
+        capital_pct: Decimal,
+        *,
+        auto_compound: bool = False,
+        strategy_realized_pnl: Decimal = _ZERO,
+    ) -> Decimal:
+        '''Compute strategy budget from capital pool and allocation percentage.
+
+        Args:
+            strategy_id: Strategy identifier for validation and diagnostics.
+            capital_pct: Strategy allocation percentage in (0, 100].
+            auto_compound: Whether to include realized PnL adjustment.
+            strategy_realized_pnl: Realized PnL adjustment applied when
+                auto_compound is enabled.
+
+        Returns:
+            Computed strategy budget in quote capital units.
+        '''
+
+        if not strategy_id or not strategy_id.strip():
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        strategy_id = strategy_id.strip()
+
+        if not isinstance(capital_pct, Decimal) or not capital_pct.is_finite():
+            msg = f'capital_pct must be a finite Decimal: {capital_pct}'
+            raise ValueError(msg)
+
+        if capital_pct <= _ZERO or capital_pct > _ONE_HUNDRED:
+            msg = f'capital_pct must be in (0, 100]: {capital_pct}'
+            raise ValueError(msg)
+
+        base_budget = self._state.capital_pool * (capital_pct / _ONE_HUNDRED)
+
+        if not auto_compound:
+            return base_budget
+
+        if (
+            not isinstance(strategy_realized_pnl, Decimal)
+            or not strategy_realized_pnl.is_finite()
+        ):
+            msg = (
+                'strategy_realized_pnl must be a finite Decimal: '
+                f'{strategy_realized_pnl}'
+            )
+            raise ValueError(msg)
+
+        return base_budget + strategy_realized_pnl
 
     def _purge_expired(self, now: datetime | None = None) -> None:
         if now is None:
@@ -174,6 +255,10 @@ class CapitalController:
         for rid in expired:
             reservation = self._reservations.pop(rid)
             self._state.reservation_notional -= reservation.total
+            self._adjust_strategy_deployed(
+                reservation.strategy_id,
+                -reservation.total,
+            )
             held_seconds = (now - reservation.created_at).total_seconds()
             _logger.warning(
                 'Reservation expired: id=%s strategy=%s total=%s held=%.1fs',
@@ -200,6 +285,10 @@ class CapitalController:
                 return False
 
             self._state.reservation_notional -= reservation.total
+            self._adjust_strategy_deployed(
+                reservation.strategy_id,
+                -reservation.total,
+            )
             return True
 
     def send_order(self, reservation_id: str, order_id: str) -> bool:
@@ -312,6 +401,7 @@ class CapitalController:
 
             self._orders.pop(order_id)
             self._state.in_flight_order_notional -= order.total
+            self._adjust_strategy_deployed(order.strategy_id, -order.total)
 
             return True
 
@@ -401,5 +491,27 @@ class CapitalController:
 
             self._orders.pop(order_id)
             self._state.working_order_notional -= order.remaining_total
+            self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
             return True
+
+    def _adjust_strategy_deployed(self, strategy_id: str, delta: Decimal) -> None:
+        current = self._state.per_strategy_deployed.get(strategy_id, _ZERO)
+        updated = current + delta
+
+        if updated < _ZERO:
+            _logger.warning(
+                'Per-strategy deployed underflow: strategy=%s current=%s delta=%s updated=%s',
+                strategy_id,
+                current,
+                delta,
+                updated,
+            )
+            self._state.per_strategy_deployed.pop(strategy_id, None)
+            return
+
+        if updated == _ZERO:
+            self._state.per_strategy_deployed.pop(strategy_id, None)
+            return
+
+        self._state.per_strategy_deployed[strategy_id] = updated
