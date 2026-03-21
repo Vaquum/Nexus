@@ -86,6 +86,13 @@ class TestPerTradeAllocationCheck:
 
 
 class TestStrategyBudgetCheck:
+    def test_unknown_per_strategy_deployment_in_non_flat_state_denied(self) -> None:
+        ctrl = _make_controller(position_notional=Decimal('1000'))
+        result = _reserve(ctrl, notional='100', fees='1', budget='5000')
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'unknown' in result.denial_reason.lower()
+
     def test_exceeds_strategy_budget(self) -> None:
         ctrl = _make_controller(
             per_strategy_deployed={'strat_a': Decimal('4600')},
@@ -171,14 +178,20 @@ class TestComputeStrategyBudget:
 
 class TestAvailableCapitalCheck:
     def test_insufficient_available(self) -> None:
-        ctrl = _make_controller(position_notional=Decimal('9950'))
-        result = _reserve(ctrl, notional='100', fees='1')
+        ctrl = _make_controller(
+            position_notional=Decimal('9950'),
+            per_strategy_deployed={'strat_a': Decimal('9950')},
+        )
+        result = _reserve(ctrl, notional='100', fees='1', budget='20000')
         assert result.granted is False
         assert result.denial_reason is not None
         assert 'insufficient' in result.denial_reason.lower()
 
     def test_exactly_available_passes(self) -> None:
-        ctrl = _make_controller(position_notional=Decimal('7000'))
+        ctrl = _make_controller(
+            position_notional=Decimal('7000'),
+            per_strategy_deployed={'strat_a': Decimal('7000')},
+        )
         result = _reserve(ctrl, notional='999', fees='1', budget=str(_POOL))
         assert result.granted is True
 
@@ -186,7 +199,10 @@ class TestAvailableCapitalCheck:
 class TestTotalUtilizationCheck:
     def test_exceeds_utilization_limit(self) -> None:
         deployed = _POOL * MAX_CAPITAL_UTILIZATION_PCT
-        ctrl = _make_controller(position_notional=deployed)
+        ctrl = _make_controller(
+            position_notional=deployed,
+            per_strategy_deployed={'strat_a': deployed},
+        )
         result = _reserve(ctrl, notional='1', fees='0', budget=str(_POOL))
         assert result.granted is False
         assert result.denial_reason is not None
@@ -194,7 +210,10 @@ class TestTotalUtilizationCheck:
 
     def test_at_utilization_limit_passes(self) -> None:
         deployed = _POOL * MAX_CAPITAL_UTILIZATION_PCT - Decimal('100')
-        ctrl = _make_controller(position_notional=deployed)
+        ctrl = _make_controller(
+            position_notional=deployed,
+            per_strategy_deployed={'strat_a': deployed},
+        )
         result = _reserve(ctrl, notional='100', fees='0', budget=str(_POOL))
         assert result.granted is True
 

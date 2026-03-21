@@ -101,6 +101,21 @@ class CapitalController:
             strategy_deployed = self._state.per_strategy_deployed.get(
                 strategy_id, _ZERO
             )
+            total_deployed = (
+                self._state.position_notional
+                + self._state.working_order_notional
+                + self._state.in_flight_order_notional
+                + self._state.reservation_notional
+            )
+
+            if not self._state.per_strategy_deployed and total_deployed > _ZERO:
+                return ReservationResult(
+                    granted=False,
+                    denial_reason=(
+                        'Per-strategy deployed attribution is unknown for non-flat '
+                        'state; reconcile strategy deployment before new reservations'
+                    ),
+                )
 
             allocation_pct = order_notional / self._state.capital_pool
 
@@ -131,12 +146,6 @@ class CapitalController:
                     ),
                 )
 
-            total_deployed = (
-                self._state.position_notional
-                + self._state.working_order_notional
-                + self._state.in_flight_order_notional
-                + self._state.reservation_notional
-            )
             utilization = (total_deployed + total) / self._state.capital_pool
 
             if utilization > MAX_CAPITAL_UTILIZATION_PCT:
