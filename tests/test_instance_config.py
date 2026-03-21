@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import cast
 
 import pytest
 
@@ -35,6 +36,21 @@ def test_valid_creation_with_capital_pct() -> None:
 
     assert cfg.capital_pct['momentum'] == Decimal('60')
     assert cfg.capital_pct['mean_rev'] == Decimal('40')
+
+
+def test_capital_pct_mapping_is_immutable() -> None:
+    '''Verify capital_pct cannot be mutated after initialization.'''
+
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        capital_pct={'momentum': Decimal('60')},
+    )
+
+    mutable_view = cast(dict[str, Decimal], cfg.capital_pct)
+    with pytest.raises(TypeError):
+        mutable_view['mean_rev'] = Decimal('40')
 
 
 def test_frozen() -> None:

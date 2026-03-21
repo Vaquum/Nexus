@@ -197,6 +197,11 @@ class CapitalController:
             msg = f'capital_pct must be in (0, 100]: {capital_pct}'
             raise ValueError(msg)
 
+        base_budget = self._state.capital_pool * (capital_pct / _ONE_HUNDRED)
+
+        if not auto_compound:
+            return base_budget
+
         if (
             not isinstance(strategy_realized_pnl, Decimal)
             or not strategy_realized_pnl.is_finite()
@@ -206,11 +211,6 @@ class CapitalController:
                 f'{strategy_realized_pnl}'
             )
             raise ValueError(msg)
-
-        base_budget = self._state.capital_pool * (capital_pct / _ONE_HUNDRED)
-
-        if not auto_compound:
-            return base_budget
 
         return base_budget + strategy_realized_pnl
 
@@ -466,7 +466,18 @@ class CapitalController:
         current = self._state.per_strategy_deployed.get(strategy_id, _ZERO)
         updated = current + delta
 
-        if updated <= _ZERO:
+        if updated < _ZERO:
+            _logger.warning(
+                'Per-strategy deployed underflow: strategy=%s current=%s delta=%s updated=%s',
+                strategy_id,
+                current,
+                delta,
+                updated,
+            )
+            self._state.per_strategy_deployed.pop(strategy_id, None)
+            return
+
+        if updated == _ZERO:
             self._state.per_strategy_deployed.pop(strategy_id, None)
             return
 

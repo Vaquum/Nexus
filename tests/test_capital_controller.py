@@ -158,6 +158,16 @@ class TestComputeStrategyBudget:
                 strategy_realized_pnl=Decimal('NaN'),
             )
 
+    def test_non_compound_ignores_strategy_realized_pnl_validation(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget(
+            'strat_a',
+            Decimal('25'),
+            auto_compound=False,
+            strategy_realized_pnl=Decimal('NaN'),
+        )
+        assert budget == Decimal('2500')
+
 
 class TestAvailableCapitalCheck:
     def test_insufficient_available(self) -> None:
@@ -785,3 +795,15 @@ class TestPerStrategyDeployedInvariants:
 
         assert per_strategy_total == committed
         assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('151.5')}
+
+    def test_underflow_logs_warning_and_removes_strategy(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(per_strategy_deployed={'strat_a': Decimal('1')})
+
+        with caplog.at_level('WARNING'):
+            ctrl._adjust_strategy_deployed('strat_a', Decimal('-2'))
+
+        assert 'Per-strategy deployed underflow' in caplog.text
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed

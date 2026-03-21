@@ -7,8 +7,10 @@ are added as their respective phases land.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from types import MappingProxyType
 
 __all__ = ['InstanceConfig']
 
@@ -33,7 +35,7 @@ class InstanceConfig:
     account_id: str
     venue: str
     allocated_capital: Decimal
-    capital_pct: dict[str, Decimal] = field(default_factory=dict)
+    capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         '''Validate configuration invariants.'''
@@ -50,6 +52,7 @@ class InstanceConfig:
             msg = 'InstanceConfig.allocated_capital must be a finite positive value'
             raise ValueError(msg)
 
+        normalized_capital_pct: dict[str, Decimal] = {}
         total_pct = _ZERO
         for strategy_id, pct in self.capital_pct.items():
             if not strategy_id or not strategy_id.strip():
@@ -62,7 +65,14 @@ class InstanceConfig:
                 msg = 'InstanceConfig.capital_pct values must be in (0, 100]'
                 raise ValueError(msg)
             total_pct += pct
+            normalized_capital_pct[strategy_id] = pct
 
         if total_pct > _ONE_HUNDRED:
             msg = 'InstanceConfig.capital_pct total must be <= 100'
             raise ValueError(msg)
+
+        object.__setattr__(
+            self,
+            'capital_pct',
+            MappingProxyType(normalized_capital_pct),
+        )
