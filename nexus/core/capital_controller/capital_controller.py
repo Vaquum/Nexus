@@ -31,6 +31,7 @@ MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
 DEFAULT_TTL_SECONDS = 30
 
 _ZERO = Decimal(0)
+_ONE_HUNDRED = Decimal('100')
 
 
 class CapitalController:
@@ -165,6 +166,56 @@ class CapitalController:
             self._state.reservation_notional += total
 
             return ReservationResult(granted=True, reservation=reservation)
+
+    def compute_strategy_budget(
+        self,
+        strategy_id: str,
+        capital_pct: Decimal,
+        *,
+        auto_compound: bool = False,
+        strategy_realized_pnl: Decimal = _ZERO,
+    ) -> Decimal:
+        '''Compute strategy budget from capital pool and allocation percentage.
+
+        Args:
+            strategy_id: Strategy identifier for validation and diagnostics.
+            capital_pct: Strategy allocation percentage in (0, 100].
+            auto_compound: Whether to include realized PnL adjustment.
+            strategy_realized_pnl: Realized PnL adjustment applied when
+                auto_compound is enabled.
+
+        Returns:
+            Computed strategy budget in quote capital units.
+        '''
+
+        if not strategy_id or not strategy_id.strip():
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        if not isinstance(capital_pct, Decimal) or not capital_pct.is_finite():
+            msg = f'capital_pct must be a finite Decimal: {capital_pct}'
+            raise ValueError(msg)
+
+        if capital_pct <= _ZERO or capital_pct > _ONE_HUNDRED:
+            msg = f'capital_pct must be in (0, 100]: {capital_pct}'
+            raise ValueError(msg)
+
+        if (
+            not isinstance(strategy_realized_pnl, Decimal)
+            or not strategy_realized_pnl.is_finite()
+        ):
+            msg = (
+                'strategy_realized_pnl must be a finite Decimal: '
+                f'{strategy_realized_pnl}'
+            )
+            raise ValueError(msg)
+
+        base_budget = self._state.capital_pool * (capital_pct / _ONE_HUNDRED)
+
+        if not auto_compound:
+            return base_budget
+
+        return base_budget + strategy_realized_pnl
 
     def _purge_expired(self, now: datetime | None = None) -> None:
         if now is None:

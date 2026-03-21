@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -21,7 +22,7 @@ _POOL = Decimal('10000')
 _ZERO = Decimal(0)
 
 
-def _make_controller(**overrides: Decimal) -> CapitalController:
+def _make_controller(**overrides: Any) -> CapitalController:
     cs = CapitalState(capital_pool=_POOL, **overrides)
     return CapitalController(cs)
 
@@ -108,6 +109,48 @@ class TestStrategyBudgetCheck:
         assert result.granted is False
         assert result.denial_reason is not None
         assert 'budget' in result.denial_reason.lower()
+
+
+class TestComputeStrategyBudget:
+    def test_base_budget_from_capital_pct(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget('strat_a', Decimal('25'))
+        assert budget == Decimal('2500')
+
+    def test_auto_compound_adds_realized_pnl(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget(
+            'strat_a',
+            Decimal('25'),
+            auto_compound=True,
+            strategy_realized_pnl=Decimal('150'),
+        )
+        assert budget == Decimal('2650')
+
+    def test_auto_compound_applies_negative_realized_pnl(self) -> None:
+        ctrl = _make_controller()
+        budget = ctrl.compute_strategy_budget(
+            'strat_a',
+            Decimal('25'),
+            auto_compound=True,
+            strategy_realized_pnl=Decimal('-300'),
+        )
+        assert budget == Decimal('2200')
+
+    def test_invalid_capital_pct_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='capital_pct'):
+            ctrl.compute_strategy_budget('strat_a', Decimal('0'))
+
+    def test_invalid_strategy_realized_pnl_rejected(self) -> None:
+        ctrl = _make_controller()
+        with pytest.raises(ValueError, match='strategy_realized_pnl'):
+            ctrl.compute_strategy_budget(
+                'strat_a',
+                Decimal('25'),
+                auto_compound=True,
+                strategy_realized_pnl=Decimal('NaN'),
+            )
 
 
 class TestAvailableCapitalCheck:
