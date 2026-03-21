@@ -111,20 +111,27 @@ class CapitalController:
             )
 
             per_strategy_deployed = self._state.per_strategy_deployed
-            if total_deployed > _ZERO:
-                denial_reason: str | None = None
+            denial_reason: str | None = None
+            if total_deployed > _ZERO or per_strategy_deployed:
                 if not per_strategy_deployed:
-                    denial_reason = (
-                        'Per-strategy deployed attribution is unknown for non-flat '
-                        'state; reconcile strategy deployment before new reservations'
-                    )
+                    if total_deployed > _ZERO:
+                        denial_reason = (
+                            'Per-strategy deployed attribution is unknown for non-flat '
+                            'state; reconcile strategy deployment before new reservations'
+                        )
                 else:
                     attributed_deployed = sum(per_strategy_deployed.values(), _ZERO)
                     if attributed_deployed != total_deployed:
-                        denial_reason = (
-                            'Per-strategy deployed attribution mismatch for non-flat '
-                            'state; reconcile strategy deployment before new reservations'
-                        )
+                        if total_deployed > _ZERO:
+                            denial_reason = (
+                                'Per-strategy deployed attribution mismatch for non-flat '
+                                'state; reconcile strategy deployment before new reservations'
+                            )
+                        else:
+                            denial_reason = (
+                                'Per-strategy deployed attribution mismatch for flat state; '
+                                'reconcile strategy deployment before new reservations'
+                            )
 
                 if denial_reason is not None:
                     return ReservationResult(

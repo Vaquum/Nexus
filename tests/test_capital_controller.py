@@ -103,8 +103,19 @@ class TestStrategyBudgetCheck:
         assert result.denial_reason is not None
         assert 'mismatch' in result.denial_reason.lower()
 
+    def test_per_strategy_deployment_mismatch_in_flat_state_denied(self) -> None:
+        ctrl = _make_controller(
+            per_strategy_deployed={'strat_a': Decimal('1')},
+        )
+        result = _reserve(ctrl, notional='100', fees='1', budget='5000')
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert 'mismatch' in result.denial_reason.lower()
+        assert 'flat state' in result.denial_reason.lower()
+
     def test_exceeds_strategy_budget(self) -> None:
         ctrl = _make_controller(
+            position_notional=Decimal('4600'),
             per_strategy_deployed={'strat_a': Decimal('4600')},
         )
         result = _reserve(ctrl, notional='500', budget='5000')
@@ -114,6 +125,7 @@ class TestStrategyBudgetCheck:
 
     def test_at_strategy_budget_passes(self) -> None:
         ctrl = _make_controller(
+            position_notional=Decimal('4000'),
             per_strategy_deployed={'strat_a': Decimal('4000')},
         )
         result = _reserve(ctrl, notional='999', fees='1', budget='5000')
@@ -128,6 +140,7 @@ class TestStrategyBudgetCheck:
 
     def test_budget_check_uses_normalized_strategy_id(self) -> None:
         ctrl = _make_controller(
+            position_notional=Decimal('4900'),
             per_strategy_deployed={'strat_a': Decimal('4900')},
         )
         result = _reserve(
@@ -793,6 +806,7 @@ class TestLifecycleConcurrency:
 class TestPerStrategyIsolation:
     def test_budget_check_isolated_per_strategy(self) -> None:
         ctrl = _make_controller(
+            position_notional=Decimal('4900'),
             per_strategy_deployed={
                 'strat_a': Decimal('4900'),
                 'strat_b': Decimal('0'),
