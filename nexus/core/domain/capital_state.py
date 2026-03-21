@@ -6,7 +6,7 @@ instance. The ``available`` property is derived — never stored directly.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 __all__ = ['CapitalState']
@@ -25,6 +25,7 @@ class CapitalState:
         in_flight_order_notional: Sum of BUY orders sent but not acked.
         fee_reserve: Reserved for transaction costs.
         reservation_notional: Sum of active TOCTOU locks (BUY-side).
+        per_strategy_deployed: Deployed capital by strategy_id.
     '''
 
     capital_pool: Decimal
@@ -33,6 +34,7 @@ class CapitalState:
     in_flight_order_notional: Decimal = _ZERO
     fee_reserve: Decimal = _ZERO
     reservation_notional: Decimal = _ZERO
+    per_strategy_deployed: dict[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -51,6 +53,19 @@ class CapitalState:
             val = getattr(self, field_name)
             if not val.is_finite() or val < _ZERO:
                 msg = f'CapitalState.{field_name} must be a finite non-negative value'
+                raise ValueError(msg)
+
+        for strategy_id, deployed in self.per_strategy_deployed.items():
+            if not strategy_id or not strategy_id.strip():
+                msg = (
+                    'CapitalState.per_strategy_deployed keys must be non-empty strings'
+                )
+                raise ValueError(msg)
+            if not deployed.is_finite() or deployed < _ZERO:
+                msg = (
+                    'CapitalState.per_strategy_deployed values must be finite '
+                    'non-negative Decimal values'
+                )
                 raise ValueError(msg)
 
     @property

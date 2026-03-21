@@ -19,6 +19,7 @@ def test_valid_creation() -> None:
     assert cs.in_flight_order_notional == Decimal(0)
     assert cs.fee_reserve == Decimal(0)
     assert cs.reservation_notional == Decimal(0)
+    assert cs.per_strategy_deployed == {}
 
 
 def test_available_all_zero() -> None:
@@ -107,4 +108,49 @@ def test_nan_notional_rejected() -> None:
         CapitalState(
             capital_pool=Decimal('10000'),
             position_notional=Decimal('NaN'),
+        )
+
+
+def test_valid_per_strategy_deployed_creation() -> None:
+    '''Verify valid per_strategy_deployed map is accepted.'''
+
+    cs = CapitalState(
+        capital_pool=Decimal('10000'),
+        per_strategy_deployed={
+            'momentum': Decimal('1200'),
+            'mean_rev': Decimal('300.5'),
+        },
+    )
+
+    assert cs.per_strategy_deployed['momentum'] == Decimal('1200')
+    assert cs.per_strategy_deployed['mean_rev'] == Decimal('300.5')
+
+
+def test_empty_strategy_key_rejected() -> None:
+    '''Verify empty strategy key in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed keys'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={'': Decimal('1')},
+        )
+
+
+def test_negative_strategy_deployed_rejected() -> None:
+    '''Verify negative deployed value in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed values'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={'momentum': Decimal('-1')},
+        )
+
+
+def test_nan_strategy_deployed_rejected() -> None:
+    '''Verify NaN deployed value in per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed values'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed={'momentum': Decimal('NaN')},
         )
