@@ -32,14 +32,12 @@ def _reserve(
     notional: str = '100',
     fees: str = '1',
     budget: str = '5000',
-    deployed: str = '0',
 ) -> ReservationResult:
     return ctrl.check_and_reserve(
         strategy_id='strat_a',
         order_notional=Decimal(notional),
         estimated_fees=Decimal(fees),
         strategy_budget=Decimal(budget),
-        strategy_deployed=Decimal(deployed),
     )
 
 
@@ -64,6 +62,11 @@ class TestSuccessfulReservation:
         _reserve(ctrl, notional='200', fees='2')
         assert ctrl._state.reservation_notional == Decimal('303')
 
+    def test_strategy_deployed_updates_on_success(self) -> None:
+        ctrl = _make_controller()
+        _reserve(ctrl, notional='100', fees='1')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
+
 
 class TestPerTradeAllocationCheck:
     def test_exceeds_allocation_limit(self) -> None:
@@ -83,17 +86,19 @@ class TestPerTradeAllocationCheck:
 
 class TestStrategyBudgetCheck:
     def test_exceeds_strategy_budget(self) -> None:
-        ctrl = _make_controller()
-        result = _reserve(ctrl, notional='500', deployed='4600', budget='5000')
+        ctrl = _make_controller(
+            per_strategy_deployed={'strat_a': Decimal('4600')},
+        )
+        result = _reserve(ctrl, notional='500', budget='5000')
         assert result.granted is False
         assert result.denial_reason is not None
         assert 'budget' in result.denial_reason.lower()
 
     def test_at_strategy_budget_passes(self) -> None:
-        ctrl = _make_controller()
-        result = _reserve(
-            ctrl, notional='999', fees='1', deployed='4000', budget='5000'
+        ctrl = _make_controller(
+            per_strategy_deployed={'strat_a': Decimal('4000')},
         )
+        result = _reserve(ctrl, notional='999', fees='1', budget='5000')
         assert result.granted is True
 
     def test_exhausted_budget_denied(self) -> None:
@@ -221,7 +226,6 @@ class TestConcurrency:
                 order_notional=Decimal('1000'),
                 estimated_fees=Decimal('10'),
                 strategy_budget=_POOL,
-                strategy_deployed=_ZERO,
             )
             results.append(r)
 
@@ -334,13 +338,7 @@ class TestInputValidation:
                 order_notional=Decimal('100'),
                 estimated_fees=Decimal('1'),
                 strategy_budget=Decimal('5000'),
-                strategy_deployed=Decimal('0'),
             )
-
-    def test_negative_deployed_rejected(self) -> None:
-        ctrl = _make_controller()
-        with pytest.raises(ValueError, match='strategy_deployed'):
-            _reserve(ctrl, deployed='-1')
 
     def test_zero_ttl_rejected(self) -> None:
         ctrl = _make_controller()
@@ -350,7 +348,6 @@ class TestInputValidation:
                 order_notional=Decimal('100'),
                 estimated_fees=Decimal('1'),
                 strategy_budget=Decimal('5000'),
-                strategy_deployed=Decimal('0'),
                 ttl_seconds=0,
             )
 
@@ -676,7 +673,6 @@ class TestLifecycleConcurrency:
                     order_notional=Decimal('500'),
                     estimated_fees=Decimal('5'),
                     strategy_budget=_POOL,
-                    strategy_deployed=_ZERO,
                 )
                 if res.granted and res.reservation:
                     sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
