@@ -52,6 +52,12 @@ class InstanceConfig:
             msg = 'InstanceConfig.allocated_capital must be a finite positive value'
             raise ValueError(msg)
 
+        if not isinstance(self.capital_pct, Mapping):
+            msg = (
+                'InstanceConfig.capital_pct must be a mapping of strategy_id to Decimal'
+            )
+            raise ValueError(msg)
+
         normalized_capital_pct: dict[str, Decimal] = {}
         total_pct = _ZERO
         for raw_strategy_id, pct in self.capital_pct.items():

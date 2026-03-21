@@ -6,6 +6,7 @@ instance. The ``available`` property is derived — never stored directly.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -55,6 +56,11 @@ class CapitalState:
                 msg = f'CapitalState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
 
+        if not isinstance(self.per_strategy_deployed, Mapping):
+            msg = 'CapitalState.per_strategy_deployed must be a mapping of strategy_id to Decimal'
+            raise ValueError(msg)
+
+        normalized_per_strategy_deployed: dict[str, Decimal] = {}
         for strategy_key, deployed in self.per_strategy_deployed.items():
             if not isinstance(strategy_key, str):
                 msg = (
@@ -86,6 +92,10 @@ class CapitalState:
                     'non-negative Decimal values'
                 )
                 raise ValueError(msg)
+
+            normalized_per_strategy_deployed[strategy_id] = deployed
+
+        self.per_strategy_deployed = normalized_per_strategy_deployed
 
     @property
     def available(self) -> Decimal:

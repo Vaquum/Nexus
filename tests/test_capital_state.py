@@ -188,3 +188,23 @@ def test_non_decimal_strategy_deployed_rejected() -> None:
             capital_pool=Decimal('10000'),
             per_strategy_deployed=cast(dict[str, Decimal], {'momentum': cast(Any, 1)}),
         )
+
+
+def test_non_mapping_per_strategy_deployed_rejected() -> None:
+    '''Verify non-mapping per_strategy_deployed raises ValueError.'''
+
+    with pytest.raises(ValueError, match='per_strategy_deployed must be a mapping'):
+        CapitalState(
+            capital_pool=Decimal('10000'),
+            per_strategy_deployed=cast(dict[str, Decimal], cast(Any, None)),
+        )
+
+
+def test_per_strategy_deployed_is_copied_on_init() -> None:
+    '''Verify CapitalState owns a copied per_strategy_deployed mapping.'''
+
+    source = {'momentum': Decimal('1')}
+    cs = CapitalState(capital_pool=Decimal('10000'), per_strategy_deployed=source)
+    source['momentum'] = Decimal('2')
+
+    assert cs.per_strategy_deployed['momentum'] == Decimal('1')

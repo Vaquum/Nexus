@@ -178,6 +178,18 @@ def test_duplicate_capital_pct_key_after_normalization_rejected() -> None:
         )
 
 
+def test_non_mapping_capital_pct_rejected() -> None:
+    '''Verify non-mapping capital_pct raises ValueError.'''
+
+    with pytest.raises(ValueError, match='capital_pct must be a mapping'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            capital_pct=cast(dict[str, Decimal], cast(object, None)),
+        )
+
+
 def test_nan_capital_pct_rejected() -> None:
     '''Verify NaN capital_pct value raises ValueError.'''
 
