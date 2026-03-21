@@ -29,12 +29,13 @@ def _make_controller(**overrides: Any) -> CapitalController:
 
 def _reserve(
     ctrl: CapitalController,
+    strategy_id: str = 'strat_a',
     notional: str = '100',
     fees: str = '1',
     budget: str = '5000',
 ) -> ReservationResult:
     return ctrl.check_and_reserve(
-        strategy_id='strat_a',
+        strategy_id=strategy_id,
         order_notional=Decimal(notional),
         estimated_fees=Decimal(fees),
         strategy_budget=Decimal(budget),
@@ -718,3 +719,69 @@ class TestLifecycleConcurrency:
             + ctrl._state.position_notional
         )
         assert ctrl._state.available + total_committed == _POOL
+
+
+class TestPerStrategyIsolation:
+    def test_budget_check_isolated_per_strategy(self) -> None:
+        ctrl = _make_controller(
+            per_strategy_deployed={
+                'strat_a': Decimal('4900'),
+                'strat_b': Decimal('0'),
+            },
+        )
+
+        denied = _reserve(
+            ctrl,
+            strategy_id='strat_a',
+            notional='200',
+            fees='1',
+            budget='5000',
+        )
+        allowed = _reserve(
+            ctrl,
+            strategy_id='strat_b',
+            notional='200',
+            fees='1',
+            budget='5000',
+        )
+
+        assert denied.granted is False
+        assert allowed.granted is True
+
+    def test_deployed_map_updates_by_strategy_id(self) -> None:
+        ctrl = _make_controller()
+
+        _reserve(ctrl, strategy_id='strat_a', notional='100', fees='1')
+        _reserve(ctrl, strategy_id='strat_b', notional='200', fees='2')
+
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_b'] == Decimal('202')
+
+
+class TestPerStrategyDeployedInvariants:
+    def test_sum_per_strategy_deployed_equals_committed_capital(self) -> None:
+        ctrl = _make_controller()
+
+        res_a = _reserve(ctrl, strategy_id='strat_a', notional='300', fees='3')
+        res_b = _reserve(ctrl, strategy_id='strat_b', notional='200', fees='2')
+        assert res_a.reservation is not None
+        assert res_b.reservation is not None
+
+        ctrl.send_order(res_a.reservation.reservation_id, 'ORD-A')
+        ctrl.order_ack('ORD-A')
+        ctrl.order_fill('ORD-A', Decimal('150'))
+        ctrl.order_cancel('ORD-A')
+
+        ctrl.send_order(res_b.reservation.reservation_id, 'ORD-B')
+        ctrl.order_reject('ORD-B')
+
+        committed = (
+            ctrl._state.reservation_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.position_notional
+        )
+        per_strategy_total = sum(ctrl._state.per_strategy_deployed.values(), _ZERO)
+
+        assert per_strategy_total == committed
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('151.5')}
