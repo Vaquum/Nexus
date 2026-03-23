@@ -27,6 +27,7 @@ def _make_context() -> ValidationRequestContext:
     )
     return ValidationRequestContext(
         strategy_id='strat_a',
+        command_id='cmd_exec_1',
         order_notional=Decimal('100'),
         estimated_fees=Decimal('1'),
         strategy_budget=Decimal('5000'),

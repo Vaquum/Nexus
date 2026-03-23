@@ -11,11 +11,13 @@ from decimal import Decimal
 from enum import Enum
 
 from nexus.core.capital_controller.reservation import Reservation
+from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.instance_config import InstanceConfig
 
 __all__ = [
     'DEFAULT_VALIDATION_STAGE_ORDER',
+    'ValidationAction',
     'ValidationDecision',
     'ValidationRequestContext',
     'ValidationStage',
@@ -35,6 +37,16 @@ class ValidationStage(Enum):
     GATEWAY = 'GATEWAY'
 
 
+class ValidationAction(Enum):
+    '''Strategy action types entering the validator pipeline.'''
+
+    ENTER = 'ENTER'
+    EXIT = 'EXIT'
+    MODIFY = 'MODIFY'
+    ABORT = 'ABORT'
+    CANCEL = 'CANCEL'
+
+
 DEFAULT_VALIDATION_STAGE_ORDER: tuple[ValidationStage, ...] = (
     ValidationStage.INTAKE,
     ValidationStage.RISK,
@@ -51,6 +63,12 @@ class ValidationRequestContext:
 
     Args:
         strategy_id: Strategy requesting action validation.
+        action: Strategy action type entering validation.
+        symbol: Trading symbol for this action.
+        order_side: Direction for actions that carry side semantics.
+        order_size: Base-asset size for actions that carry size semantics.
+        trade_id: Trade reference for actions targeting existing positions.
+        command_id: Command reference for actions targeting existing commands.
         order_notional: Requested order notional (quote units).
         estimated_fees: Estimated fees for the action (quote units).
         strategy_budget: Current strategy budget ceiling (quote units).
@@ -64,12 +82,62 @@ class ValidationRequestContext:
     strategy_budget: Decimal
     state: InstanceState
     config: InstanceConfig
+    action: ValidationAction = ValidationAction.ENTER
+    symbol: str = 'BTCUSDT'
+    order_side: OrderSide | None = OrderSide.BUY
+    order_size: Decimal | None = None
+    trade_id: str | None = None
+    command_id: str | None = None
 
     def __post_init__(self) -> None:
         '''Validate context invariants at construction time.'''
 
         if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
             msg = 'ValidationRequestContext.strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        if not isinstance(self.action, ValidationAction):
+            msg = 'ValidationRequestContext.action must be a ValidationAction member'
+            raise ValueError(msg)
+
+        if not isinstance(self.symbol, str) or not self.symbol.strip():
+            msg = 'ValidationRequestContext.symbol must be a non-empty string'
+            raise ValueError(msg)
+
+        if self.order_side is not None and not isinstance(self.order_side, OrderSide):
+            msg = 'ValidationRequestContext.order_side must be an OrderSide member or None'
+            raise ValueError(msg)
+
+        if self.order_size is not None and (
+            not isinstance(self.order_size, Decimal)
+            or not self.order_size.is_finite()
+            or self.order_size < _ZERO
+        ):
+            msg = (
+                'ValidationRequestContext.order_size must be a finite '
+                'non-negative Decimal or None'
+            )
+            raise ValueError(msg)
+
+        if self.trade_id is not None and (
+            not isinstance(self.trade_id, str) or not self.trade_id.strip()
+        ):
+            msg = 'ValidationRequestContext.trade_id must be a non-empty string or None'
+            raise ValueError(msg)
+
+        if self.command_id is not None and (
+            not isinstance(self.command_id, str) or not self.command_id.strip()
+        ):
+            msg = (
+                'ValidationRequestContext.command_id must be a non-empty string or None'
+            )
+            raise ValueError(msg)
+
+        if self.action == ValidationAction.ENTER and self.command_id is None:
+            msg = (
+                'ValidationRequestContext.command_id is required for '
+                'ValidationAction.ENTER'
+            )
             raise ValueError(msg)
 
         for field_name in ('order_notional', 'estimated_fees', 'strategy_budget'):
