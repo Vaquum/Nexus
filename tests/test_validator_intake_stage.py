@@ -70,6 +70,28 @@ class TestIntakeBuiltins:
         assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_STRATEGY_BUDGET_ZERO'
 
+    @pytest.mark.parametrize(
+        ('action', 'side'),
+        [
+            (ValidationAction.EXIT, OrderSide.SELL),
+            (ValidationAction.ABORT, OrderSide.BUY),
+            (ValidationAction.CANCEL, OrderSide.BUY),
+        ],
+    )
+    def test_zero_strategy_budget_allowed_for_safety_actions(
+        self,
+        action: ValidationAction,
+        side: OrderSide,
+    ) -> None:
+        decision = validate_intake_stage(
+            _make_context(
+                action=action,
+                order_side=side,
+                strategy_budget=Decimal('0'),
+            )
+        )
+        assert decision.allowed is True
+
     def test_rejects_missing_command_id_for_enter(self) -> None:
         with pytest.raises(
             ValueError,

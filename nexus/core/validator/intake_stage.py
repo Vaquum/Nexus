@@ -285,7 +285,15 @@ def validate_intake_stage(
             message='order_notional must be greater than zero',
         )
 
-    if context.strategy_budget == 0:
+    if (
+        context.action
+        not in (
+            ValidationAction.EXIT,
+            ValidationAction.ABORT,
+            ValidationAction.CANCEL,
+        )
+        and context.strategy_budget == 0
+    ):
         return ValidationDecision(
             allowed=False,
             failed_stage=ValidationStage.INTAKE,
