@@ -50,7 +50,7 @@ class TestValidationStageOrder:
             ValidationStage.PRICE,
             ValidationStage.CAPITAL,
             ValidationStage.HEALTH,
-            ValidationStage.GATEWAY,
+            ValidationStage.PLATFORM_LIMITS,
         )
 
     def test_stage_order_contains_each_stage_once(self) -> None:
@@ -178,7 +178,7 @@ class TestValidationDecision:
         with pytest.raises(ValueError, match='non-empty message'):
             ValidationDecision(
                 allowed=False,
-                failed_stage=ValidationStage.GATEWAY,
-                reason_code='GATEWAY_UNAVAILABLE',
+                failed_stage=ValidationStage.PLATFORM_LIMITS,
+                reason_code='PLATFORM_LIMITS_UNAVAILABLE',
                 message=' ',
             )

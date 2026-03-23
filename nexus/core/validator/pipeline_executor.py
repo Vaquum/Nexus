@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 
 from nexus.core.validator.pipeline_models import (
+    ValidationAction,
     DEFAULT_VALIDATION_STAGE_ORDER,
     ValidationDecision,
     ValidationRequestContext,
@@ -44,6 +45,9 @@ class ValidationPipeline:
         reservation = None
 
         for stage in self._stage_order:
+            if _should_bypass_stage(context.action, stage):
+                continue
+
             decision = self._validators[stage](context)
             if not isinstance(decision, ValidationDecision):
                 msg = (
@@ -110,3 +114,14 @@ def _validate_validators(
         normalized[stage] = validator
 
     return normalized
+
+
+def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bool:
+    if action not in (
+        ValidationAction.EXIT,
+        ValidationAction.ABORT,
+        ValidationAction.CANCEL,
+    ):
+        return False
+
+    return stage in (ValidationStage.HEALTH, ValidationStage.PLATFORM_LIMITS)

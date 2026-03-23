@@ -34,7 +34,7 @@ class ValidationStage(Enum):
     PRICE = 'PRICE'
     CAPITAL = 'CAPITAL'
     HEALTH = 'HEALTH'
-    GATEWAY = 'GATEWAY'
+    PLATFORM_LIMITS = 'PLATFORM_LIMITS'
 
 
 class ValidationAction(Enum):
@@ -53,7 +53,7 @@ DEFAULT_VALIDATION_STAGE_ORDER: tuple[ValidationStage, ...] = (
     ValidationStage.PRICE,
     ValidationStage.CAPITAL,
     ValidationStage.HEALTH,
-    ValidationStage.GATEWAY,
+    ValidationStage.PLATFORM_LIMITS,
 )
 
 

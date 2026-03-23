@@ -10,6 +10,7 @@ import pytest
 
 from nexus.core.validator import (
     DEFAULT_VALIDATION_STAGE_ORDER,
+    ValidationAction,
     ValidationDecision,
     ValidationPipeline,
     ValidationRequestContext,
@@ -19,7 +20,9 @@ from nexus.instance_config import InstanceConfig
 from nexus.core.domain.instance_state import InstanceState
 
 
-def _make_context() -> ValidationRequestContext:
+def _make_context(
+    *, action: ValidationAction = ValidationAction.ENTER
+) -> ValidationRequestContext:
     config = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
@@ -27,6 +30,7 @@ def _make_context() -> ValidationRequestContext:
     )
     return ValidationRequestContext(
         strategy_id='strat_a',
+        action=action,
         command_id='cmd_exec_1',
         order_notional=Decimal('100'),
         estimated_fees=Decimal('1'),
@@ -45,7 +49,7 @@ class TestValidationPipelineConfig:
         validators = {
             stage: _allow
             for stage in DEFAULT_VALIDATION_STAGE_ORDER
-            if stage != ValidationStage.GATEWAY
+            if stage != ValidationStage.PLATFORM_LIMITS
         }
         with pytest.raises(ValueError, match='missing validators'):
             ValidationPipeline(validators=validators)
@@ -140,3 +144,66 @@ class TestValidationPipelineRun:
         pipeline = ValidationPipeline(validators=validators)
         with pytest.raises(ValueError, match='does not match current stage'):
             pipeline.validate(_make_context())
+
+    def test_safety_actions_bypass_health_and_platform_limits(self) -> None:
+        order_seen: list[ValidationStage] = []
+
+        def make_stage(
+            stage: ValidationStage,
+        ) -> Callable[[ValidationRequestContext], ValidationDecision]:
+            def stage_fn(_: ValidationRequestContext) -> ValidationDecision:
+                order_seen.append(stage)
+                if stage in (
+                    ValidationStage.HEALTH,
+                    ValidationStage.PLATFORM_LIMITS,
+                ):
+                    return ValidationDecision(
+                        allowed=False,
+                        failed_stage=stage,
+                        reason_code='SHOULD_NOT_RUN',
+                        message='safety action bypass failed',
+                    )
+                return ValidationDecision(allowed=True)
+
+            return stage_fn
+
+        validators = {
+            stage: make_stage(stage) for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.EXIT))
+
+        assert decision.allowed is True
+        assert ValidationStage.HEALTH not in order_seen
+        assert ValidationStage.PLATFORM_LIMITS not in order_seen
+
+    def test_enter_does_not_bypass_health_and_platform_limits(self) -> None:
+        order_seen: list[ValidationStage] = []
+
+        def make_stage(
+            stage: ValidationStage,
+        ) -> Callable[[ValidationRequestContext], ValidationDecision]:
+            def stage_fn(_: ValidationRequestContext) -> ValidationDecision:
+                order_seen.append(stage)
+                if stage == ValidationStage.HEALTH:
+                    return ValidationDecision(
+                        allowed=False,
+                        failed_stage=ValidationStage.HEALTH,
+                        reason_code='HEALTH_DENY',
+                        message='health denied enter',
+                    )
+                return ValidationDecision(allowed=True)
+
+            return stage_fn
+
+        validators = {
+            stage: make_stage(stage) for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.ENTER))
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.HEALTH
+        assert ValidationStage.HEALTH in order_seen
