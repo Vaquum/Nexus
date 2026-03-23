@@ -304,3 +304,18 @@ class TestPlatformLimitsStage:
         assert (
             decision.reason_code == PLATFORM_LIMITS_MAX_CAPITAL_UTILIZATION_LIMIT_CODE
         )
+
+    def test_identical_snapshot_produces_deterministic_denial_reason(self) -> None:
+        limits = PlatformLimitsStageLimits(max_order_rate=Decimal('2'))
+        snapshot = PlatformLimitsStageSnapshot(current_order_rate=Decimal('3'))
+
+        decision_a = validate_platform_limits_stage(_make_context(), limits, snapshot)
+        decision_b = validate_platform_limits_stage(_make_context(), limits, snapshot)
+
+        assert decision_a.allowed is False
+        assert decision_b.allowed is False
+        assert decision_a.failed_stage == ValidationStage.PLATFORM_LIMITS
+        assert decision_b.failed_stage == ValidationStage.PLATFORM_LIMITS
+        assert decision_a.reason_code == PLATFORM_LIMITS_MAX_ORDER_RATE_LIMIT_CODE
+        assert decision_b.reason_code == PLATFORM_LIMITS_MAX_ORDER_RATE_LIMIT_CODE
+        assert decision_a.message == decision_b.message

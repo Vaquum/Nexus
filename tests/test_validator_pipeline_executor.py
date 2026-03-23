@@ -207,3 +207,37 @@ class TestValidationPipelineRun:
         assert decision.allowed is False
         assert decision.failed_stage == ValidationStage.HEALTH
         assert ValidationStage.HEALTH in order_seen
+
+    def test_identical_input_produces_deterministic_denial_reason(self) -> None:
+        def make_stage(
+            stage: ValidationStage,
+        ) -> Callable[[ValidationRequestContext], ValidationDecision]:
+            def stage_fn(_: ValidationRequestContext) -> ValidationDecision:
+                if stage == ValidationStage.PRICE:
+                    return ValidationDecision(
+                        allowed=False,
+                        failed_stage=ValidationStage.PRICE,
+                        reason_code='PRICE_STALE',
+                        message='Book staleness exceeded threshold',
+                    )
+                return ValidationDecision(allowed=True)
+
+            return stage_fn
+
+        validators = {
+            stage: make_stage(stage) for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        pipeline = ValidationPipeline(validators=validators)
+        context = _make_context(action=ValidationAction.ENTER)
+
+        decision_a = pipeline.validate(context)
+        decision_b = pipeline.validate(context)
+
+        assert decision_a.allowed is False
+        assert decision_b.allowed is False
+        assert decision_a.failed_stage == ValidationStage.PRICE
+        assert decision_b.failed_stage == ValidationStage.PRICE
+        assert decision_a.reason_code == 'PRICE_STALE'
+        assert decision_b.reason_code == 'PRICE_STALE'
+        assert decision_a.message == 'Book staleness exceeded threshold'
+        assert decision_b.message == 'Book staleness exceeded threshold'
