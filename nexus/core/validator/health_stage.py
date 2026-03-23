@@ -61,22 +61,6 @@ class HealthMetricThresholds:
                 )
                 raise ValueError(msg)
 
-        if (
-            self.warn is not None
-            and self.breach is not None
-            and self.warn > self.breach
-        ):
-            msg = 'HealthMetricThresholds.warn must be <= breach when both are set'
-            raise ValueError(msg)
-
-        if (
-            self.breach is not None
-            and self.halt is not None
-            and self.breach > self.halt
-        ):
-            msg = 'HealthMetricThresholds.breach must be <= halt when both are set'
-            raise ValueError(msg)
-
 
 @dataclass(frozen=True)
 class HealthStagePolicy:
@@ -111,6 +95,32 @@ class HealthStagePolicy:
                         'between 0 and 1'
                     )
                     raise ValueError(msg)
+
+        _validate_threshold_order(
+            metric_name='latency_ms',
+            thresholds=self.latency_ms,
+            higher_is_worse=True,
+        )
+        _validate_threshold_order(
+            metric_name='consecutive_failures',
+            thresholds=self.consecutive_failures,
+            higher_is_worse=True,
+        )
+        _validate_threshold_order(
+            metric_name='failure_rate',
+            thresholds=self.failure_rate,
+            higher_is_worse=True,
+        )
+        _validate_threshold_order(
+            metric_name='rate_limit_headroom',
+            thresholds=self.rate_limit_headroom,
+            higher_is_worse=False,
+        )
+        _validate_threshold_order(
+            metric_name='clock_drift_ms',
+            thresholds=self.clock_drift_ms,
+            higher_is_worse=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -207,71 +217,123 @@ def evaluate_health_status(
         ),
     )
 
-    breach_level = BreachLevel.NONE
-    reason_code: str | None = None
-    message: str | None = None
-
+    halt_code: str | None = None
+    halt_message: str | None = None
     for (
         metric_name,
         observed,
         thresholds,
         higher_is_worse,
-        breach_code,
-        halt_code,
+        _,
+        current_halt_code,
     ) in evaluated:
         if thresholds.halt is not None:
             if higher_is_worse and observed >= thresholds.halt:
-                breach_level = BreachLevel.HALT
-                reason_code = halt_code
-                message = (
+                halt_code = current_halt_code
+                halt_message = (
                     f'{metric_name} {observed} reached halt threshold {thresholds.halt}'
                 )
                 break
             if not higher_is_worse and observed <= thresholds.halt:
-                breach_level = BreachLevel.HALT
-                reason_code = halt_code
-                message = (
+                halt_code = current_halt_code
+                halt_message = (
                     f'{metric_name} {observed} reached halt threshold {thresholds.halt}'
                 )
                 break
 
-        if thresholds.breach is not None:
-            if higher_is_worse and observed >= thresholds.breach:
-                breach_level = BreachLevel.BREACH
-                reason_code = breach_code
-                message = f'{metric_name} {observed} reached breach threshold {thresholds.breach}'
-                break
-            if not higher_is_worse and observed <= thresholds.breach:
-                breach_level = BreachLevel.BREACH
-                reason_code = breach_code
-                message = f'{metric_name} {observed} reached breach threshold {thresholds.breach}'
-                break
+    if halt_code is not None:
+        return (BreachLevel.HALT, halt_code, halt_message)
 
-    if breach_level is not BreachLevel.NONE:
-        return (breach_level, reason_code, message)
+    breach_code: str | None = None
+    breach_message: str | None = None
+    for (
+        metric_name,
+        observed,
+        thresholds,
+        higher_is_worse,
+        current_breach_code,
+        _,
+    ) in evaluated:
+        if thresholds.breach is None:
+            continue
 
+        if higher_is_worse and observed >= thresholds.breach:
+            breach_code = current_breach_code
+            breach_message = (
+                f'{metric_name} {observed} reached breach threshold {thresholds.breach}'
+            )
+            break
+
+        if not higher_is_worse and observed <= thresholds.breach:
+            breach_code = current_breach_code
+            breach_message = (
+                f'{metric_name} {observed} reached breach threshold {thresholds.breach}'
+            )
+            break
+
+    if breach_code is not None:
+        return (BreachLevel.BREACH, breach_code, breach_message)
+
+    warn_message: str | None = None
     for metric_name, observed, thresholds, higher_is_worse, _, _ in evaluated:
         if thresholds.warn is None:
             continue
 
         if higher_is_worse and observed >= thresholds.warn:
-            breach_level = BreachLevel.WARN
-            message = (
+            warn_message = (
                 f'{metric_name} {observed} reached warn threshold {thresholds.warn}'
             )
             break
 
         if not higher_is_worse and observed <= thresholds.warn:
-            breach_level = BreachLevel.WARN
-            message = (
+            warn_message = (
                 f'{metric_name} {observed} reached warn threshold {thresholds.warn}'
             )
             break
 
-    if breach_level is BreachLevel.WARN:
-        return (breach_level, None, message)
+    if warn_message is not None:
+        return (BreachLevel.WARN, None, warn_message)
 
     return (BreachLevel.NONE, None, None)
+
+
+def _validate_threshold_order(
+    *,
+    metric_name: str,
+    thresholds: HealthMetricThresholds,
+    higher_is_worse: bool,
+) -> None:
+    warn = thresholds.warn
+    breach = thresholds.breach
+    halt = thresholds.halt
+
+    if warn is not None and breach is not None:
+        if higher_is_worse and warn > breach:
+            msg = (
+                f'HealthStagePolicy.{metric_name} requires warn <= breach '
+                'for higher-is-worse metrics'
+            )
+            raise ValueError(msg)
+        if not higher_is_worse and warn < breach:
+            msg = (
+                f'HealthStagePolicy.{metric_name} requires warn >= breach '
+                'for lower-is-worse metrics'
+            )
+            raise ValueError(msg)
+
+    if breach is not None and halt is not None:
+        if higher_is_worse and breach > halt:
+            msg = (
+                f'HealthStagePolicy.{metric_name} requires breach <= halt '
+                'for higher-is-worse metrics'
+            )
+            raise ValueError(msg)
+        if not higher_is_worse and breach < halt:
+            msg = (
+                f'HealthStagePolicy.{metric_name} requires breach >= halt '
+                'for lower-is-worse metrics'
+            )
+            raise ValueError(msg)
 
 
 def validate_health_stage(

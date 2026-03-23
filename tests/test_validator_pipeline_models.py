@@ -182,3 +182,10 @@ class TestValidationDecision:
                 reason_code='PLATFORM_LIMITS_UNAVAILABLE',
                 message=' ',
             )
+
+    def test_invalid_reservation_type_rejected(self) -> None:
+        with pytest.raises(ValueError, match='reservation'):
+            ValidationDecision(
+                allowed=True,
+                reservation=cast(Any, object()),
+            )

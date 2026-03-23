@@ -100,7 +100,7 @@ def make_duplicate_order_hook(
     duplicate_window_ms: int,
     now_fn: Callable[[], datetime] | None = None,
 ) -> IntakeValidationHook:
-    '''Create intake hook rejecting duplicate enter shapes within a window.'''
+    '''Create intake hook rejecting duplicate ENTER command IDs within a window.'''
 
     if duplicate_window_ms <= 0:
         msg = f'duplicate_window_ms must be positive: {duplicate_window_ms}'
@@ -150,7 +150,7 @@ def make_duplicate_order_hook(
                 failed_stage=ValidationStage.INTAKE,
                 reason_code='INTAKE_DUPLICATE_ORDER_WINDOW',
                 message=(
-                    'duplicate order shape detected within '
+                    'duplicate command_id detected within '
                     f'{duplicate_window_ms}ms window'
                 ),
             )

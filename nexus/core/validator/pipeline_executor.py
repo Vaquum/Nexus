@@ -62,6 +62,14 @@ class ValidationPipeline:
                         f'{decision.failed_stage} does not match current stage {stage}'
                     )
                     raise ValueError(msg)
+                if reservation is not None and decision.reservation is None:
+                    return ValidationDecision(
+                        allowed=False,
+                        failed_stage=decision.failed_stage,
+                        reason_code=decision.reason_code,
+                        message=decision.message,
+                        reservation=reservation,
+                    )
                 return decision
 
             if decision.reservation is not None:

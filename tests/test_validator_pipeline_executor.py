@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from collections.abc import Callable
 from typing import Any
 
 import pytest
 
+from nexus.core.capital_controller.reservation import Reservation
 from nexus.core.validator import (
     DEFAULT_VALIDATION_STAGE_ORDER,
     ValidationAction,
@@ -145,7 +147,14 @@ class TestValidationPipelineRun:
         with pytest.raises(ValueError, match='does not match current stage'):
             pipeline.validate(_make_context())
 
-    def test_safety_actions_bypass_health_and_platform_limits(self) -> None:
+    @pytest.mark.parametrize(
+        'action',
+        [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
+    )
+    def test_safety_actions_bypass_health_and_platform_limits(
+        self,
+        action: ValidationAction,
+    ) -> None:
         order_seen: list[ValidationStage] = []
 
         def make_stage(
@@ -172,7 +181,7 @@ class TestValidationPipelineRun:
         }
         pipeline = ValidationPipeline(validators=validators)
 
-        decision = pipeline.validate(_make_context(action=ValidationAction.EXIT))
+        decision = pipeline.validate(_make_context(action=action))
 
         assert decision.allowed is True
         assert ValidationStage.HEALTH not in order_seen
@@ -241,3 +250,73 @@ class TestValidationPipelineRun:
         assert decision_b.reason_code == 'PRICE_STALE'
         assert decision_a.message == 'Book staleness exceeded threshold'
         assert decision_b.message == 'Book staleness exceeded threshold'
+
+    def test_late_denial_returns_reservation_for_cleanup(self) -> None:
+        created_at = datetime.now(tz=timezone.utc)
+        reservation = Reservation(
+            reservation_id='res_1',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=created_at,
+            expires_at=created_at + timedelta(seconds=30),
+        )
+
+        def make_stage(
+            stage: ValidationStage,
+        ) -> Callable[[ValidationRequestContext], ValidationDecision]:
+            def stage_fn(_: ValidationRequestContext) -> ValidationDecision:
+                if stage == ValidationStage.CAPITAL:
+                    return ValidationDecision(allowed=True, reservation=reservation)
+                if stage == ValidationStage.HEALTH:
+                    return ValidationDecision(
+                        allowed=False,
+                        failed_stage=ValidationStage.HEALTH,
+                        reason_code='HEALTH_DENY',
+                        message='health denied enter',
+                    )
+                return ValidationDecision(allowed=True)
+
+            return stage_fn
+
+        validators = {
+            stage: make_stage(stage) for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.ENTER))
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.HEALTH
+        assert decision.reservation == reservation
+
+    def test_carries_capital_reservation_on_allowed_pipeline(self) -> None:
+        created_at = datetime.now(tz=timezone.utc)
+        reservation = Reservation(
+            reservation_id='res_2',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=created_at,
+            expires_at=created_at + timedelta(seconds=30),
+        )
+
+        def make_stage(
+            stage: ValidationStage,
+        ) -> Callable[[ValidationRequestContext], ValidationDecision]:
+            def stage_fn(_: ValidationRequestContext) -> ValidationDecision:
+                if stage == ValidationStage.CAPITAL:
+                    return ValidationDecision(allowed=True, reservation=reservation)
+                return ValidationDecision(allowed=True)
+
+            return stage_fn
+
+        validators = {
+            stage: make_stage(stage) for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.ENTER))
+
+        assert decision.allowed is True
+        assert decision.reservation == reservation

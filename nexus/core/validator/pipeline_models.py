@@ -87,7 +87,7 @@ class ValidationRequestContext:
     order_side: OrderSide | None = OrderSide.BUY
     order_size: Decimal | None = None
     trade_id: str | None = None
-    command_id: str | None = None
+    command_id: str | None = 'cmd_default'
 
     def __post_init__(self) -> None:
         '''Validate context invariants at construction time.'''
@@ -178,6 +178,12 @@ class ValidationDecision:
 
     def __post_init__(self) -> None:
         '''Validate allow/deny field consistency.'''
+
+        if self.reservation is not None and not isinstance(
+            self.reservation, Reservation
+        ):
+            msg = 'ValidationDecision.reservation must be Reservation or None'
+            raise ValueError(msg)
 
         if self.allowed:
             if self.failed_stage is not None:

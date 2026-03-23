@@ -10,6 +10,7 @@ from nexus.core.validator import (
     HEALTH_CONSECUTIVE_FAILURES_HALT_CODE,
     HEALTH_LATENCY_BREACH_CODE,
     HEALTH_LATENCY_HALT_CODE,
+    HEALTH_RATE_LIMIT_HEADROOM_BREACH_CODE,
     HealthMetricThresholds,
     HealthStagePolicy,
     HealthStageSnapshot,
@@ -48,11 +49,33 @@ def _make_context() -> ValidationRequestContext:
 
 
 class TestHealthThresholds:
-    def test_rejects_non_monotonic_thresholds(self) -> None:
-        with pytest.raises(ValueError, match='warn must be <= breach'):
-            HealthMetricThresholds(
-                warn=Decimal('12'),
-                breach=Decimal('10'),
+    def test_rejects_non_monotonic_higher_is_worse_policy(self) -> None:
+        with pytest.raises(ValueError, match='warn <= breach'):
+            HealthStagePolicy(
+                latency_ms=HealthMetricThresholds(
+                    warn=Decimal('12'),
+                    breach=Decimal('10'),
+                )
+            )
+
+    def test_accepts_descending_headroom_thresholds(self) -> None:
+        policy = HealthStagePolicy(
+            rate_limit_headroom=HealthMetricThresholds(
+                warn=Decimal('0.20'),
+                breach=Decimal('0.10'),
+                halt=Decimal('0.05'),
+            )
+        )
+
+        assert policy.rate_limit_headroom.warn == Decimal('0.20')
+
+    def test_rejects_non_monotonic_lower_is_worse_policy(self) -> None:
+        with pytest.raises(ValueError, match='warn >= breach'):
+            HealthStagePolicy(
+                rate_limit_headroom=HealthMetricThresholds(
+                    warn=Decimal('0.05'),
+                    breach=Decimal('0.10'),
+                )
             )
 
     def test_rejects_failure_rate_over_one(self) -> None:
@@ -105,6 +128,53 @@ class TestEvaluateHealthStatus:
 
         assert level.value == 'WARN'
         assert code is None
+        assert message is not None
+
+    def test_returns_halt_when_later_metric_is_halt(self) -> None:
+        level, code, message = evaluate_health_status(
+            HealthStageSnapshot(
+                latency_ms=Decimal('700'),
+                consecutive_failures=Decimal('10'),
+                failure_rate=Decimal('0.01'),
+                rate_limit_headroom=Decimal('0.60'),
+                clock_drift_ms=Decimal('50'),
+            ),
+            HealthStagePolicy(
+                latency_ms=HealthMetricThresholds(
+                    breach=Decimal('600'),
+                    halt=Decimal('1000'),
+                ),
+                consecutive_failures=HealthMetricThresholds(
+                    breach=Decimal('5'),
+                    halt=Decimal('10'),
+                ),
+            ),
+        )
+
+        assert level.value == 'HALT'
+        assert code == HEALTH_CONSECUTIVE_FAILURES_HALT_CODE
+        assert message is not None
+
+    def test_returns_breach_for_low_headroom(self) -> None:
+        level, code, message = evaluate_health_status(
+            HealthStageSnapshot(
+                latency_ms=Decimal('100'),
+                consecutive_failures=Decimal('0'),
+                failure_rate=Decimal('0.01'),
+                rate_limit_headroom=Decimal('0.07'),
+                clock_drift_ms=Decimal('50'),
+            ),
+            HealthStagePolicy(
+                rate_limit_headroom=HealthMetricThresholds(
+                    warn=Decimal('0.20'),
+                    breach=Decimal('0.10'),
+                    halt=Decimal('0.05'),
+                ),
+            ),
+        )
+
+        assert level.value == 'BREACH'
+        assert code == HEALTH_RATE_LIMIT_HEADROOM_BREACH_CODE
         assert message is not None
 
 
