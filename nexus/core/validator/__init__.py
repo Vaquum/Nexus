@@ -6,10 +6,13 @@ from nexus.core.validator.pipeline_models import (
     ValidationRequestContext,
     ValidationStage,
 )
+from nexus.core.validator.pipeline_executor import StageValidator, ValidationPipeline
 
 __all__ = [
     'DEFAULT_VALIDATION_STAGE_ORDER',
+    'StageValidator',
     'ValidationDecision',
+    'ValidationPipeline',
     'ValidationRequestContext',
     'ValidationStage',
 ]
