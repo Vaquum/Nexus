@@ -49,6 +49,10 @@ def _make_context() -> ValidationRequestContext:
 
 
 class TestHealthThresholds:
+    def test_rejects_negative_threshold_values(self) -> None:
+        with pytest.raises(ValueError, match='non-negative'):
+            HealthMetricThresholds(warn=Decimal('-0.1'))
+
     def test_rejects_non_monotonic_higher_is_worse_policy(self) -> None:
         with pytest.raises(ValueError, match='warn <= breach'):
             HealthStagePolicy(

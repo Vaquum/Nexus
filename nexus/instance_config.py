@@ -55,7 +55,10 @@ class InstanceConfig:
             msg = 'InstanceConfig.allocated_capital must be a finite positive value'
             raise ValueError(msg)
 
-        if not isinstance(self.duplicate_window_ms, int):
+        if isinstance(self.duplicate_window_ms, bool) or not isinstance(
+            self.duplicate_window_ms,
+            int,
+        ):
             msg = 'InstanceConfig.duplicate_window_ms must be an integer'
             raise ValueError(msg)
 

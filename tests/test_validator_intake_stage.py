@@ -347,3 +347,27 @@ class TestRfcStageOneHooks:
         assert d1.allowed is True
         assert d2.allowed is False
         assert d2.reason_code == 'INTAKE_DUPLICATE_ORDER_WINDOW'
+
+    def test_default_hooks_preserve_provided_empty_active_command_ids_set(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+        )
+        active_command_ids: set[str] = set()
+        hooks = build_default_intake_hooks(
+            config,
+            active_command_ids=active_command_ids,
+        )
+
+        active_command_ids.add('cmd_shared')
+        decision = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_shared',
+                order_side=None,
+            ),
+            hooks=hooks,
+        )
+
+        assert decision.allowed is True

@@ -156,6 +156,16 @@ def test_non_int_duplicate_window_rejected() -> None:
         )
 
 
+def test_bool_duplicate_window_rejected() -> None:
+    with pytest.raises(ValueError, match='duplicate_window_ms'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            duplicate_window_ms=cast(int, cast(object, True)),
+        )
+
+
 def test_non_positive_duplicate_window_rejected() -> None:
     '''Verify non-positive duplicate_window_ms raises ValueError.'''
 

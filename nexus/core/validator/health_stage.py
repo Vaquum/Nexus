@@ -60,6 +60,12 @@ class HealthMetricThresholds:
                     f'or None: {field_name}'
                 )
                 raise ValueError(msg)
+            if value < _ZERO_DECIMAL:
+                msg = (
+                    'HealthMetricThresholds values must be non-negative '
+                    f'Decimals or None: {field_name}'
+                )
+                raise ValueError(msg)
 
 
 @dataclass(frozen=True)

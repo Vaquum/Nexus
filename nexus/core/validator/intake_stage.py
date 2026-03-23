@@ -51,7 +51,11 @@ def build_default_intake_hooks(
 
     hooks: list[IntakeValidationHook] = [
         make_duplicate_order_hook(config.duplicate_window_ms, now_fn=now_fn),
-        make_reference_integrity_hook(active_command_ids=active_command_ids or set()),
+        make_reference_integrity_hook(
+            active_command_ids=(
+                active_command_ids if active_command_ids is not None else set()
+            )
+        ),
     ]
 
     if max_order_rate is not None:
