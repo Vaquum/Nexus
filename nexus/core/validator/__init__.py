@@ -21,10 +21,20 @@ from nexus.core.validator.risk_stage import (
     evaluate_risk_breach,
     validate_risk_stage,
 )
+from nexus.core.validator.price_stage import (
+    PriceCheckSnapshot,
+    PriceFailureConsequence,
+    PriceStageLimits,
+    derive_price_failure_consequence,
+    validate_price_stage,
+)
 
 __all__ = [
     'DEFAULT_VALIDATION_STAGE_ORDER',
     'IntakeValidationHook',
+    'PriceCheckSnapshot',
+    'PriceFailureConsequence',
+    'PriceStageLimits',
     'RiskStageLimits',
     'StageValidator',
     'ValidationAction',
@@ -33,10 +43,12 @@ __all__ = [
     'ValidationRequestContext',
     'ValidationStage',
     'build_default_intake_hooks',
+    'derive_price_failure_consequence',
     'evaluate_risk_breach',
     'make_duplicate_order_hook',
     'make_order_rate_hook',
     'make_reference_integrity_hook',
     'validate_intake_stage',
+    'validate_price_stage',
     'validate_risk_stage',
 ]
