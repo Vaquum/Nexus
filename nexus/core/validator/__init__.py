@@ -28,8 +28,13 @@ from nexus.core.validator.price_stage import (
     derive_price_failure_consequence,
     validate_price_stage,
 )
+from nexus.core.validator.capital_stage import (
+    CAPITAL_RESERVATION_DENIED_CODE,
+    validate_capital_stage,
+)
 
 __all__ = [
+    'CAPITAL_RESERVATION_DENIED_CODE',
     'DEFAULT_VALIDATION_STAGE_ORDER',
     'IntakeValidationHook',
     'PriceCheckSnapshot',
@@ -48,6 +53,7 @@ __all__ = [
     'make_duplicate_order_hook',
     'make_order_rate_hook',
     'make_reference_integrity_hook',
+    'validate_capital_stage',
     'validate_intake_stage',
     'validate_price_stage',
     'validate_risk_stage',
