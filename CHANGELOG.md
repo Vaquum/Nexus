@@ -95,3 +95,16 @@
 - Add [`docs/TechnicalDebt.md`](docs/TechnicalDebt.md) with TD-001 (codec version-dispatched deserialization)
 - Add mypy override for msgpack missing stubs
 - Add 64 tests covering WAL entries, codec round-trip, Decimal precision, codec versioning, WAL append/read/truncate, magic header validation, CRC32 corruption detection, snapshot save/load, state store checkpoint/recover cycles
+
+## v0.11.0 on 24th of March, 2026
+
+- Add validator pipeline contracts for 3.1 with canonical six-stage ordering (`INTAKE -> RISK -> PRICE -> CAPITAL -> HEALTH -> PLATFORM_LIMITS`)
+- Add ordered pipeline executor with strict short-circuit denial semantics and stage/result consistency validation
+- Add RFC stage-1 intake hooks and checks (`MAX_ORDER_RATE`, `DUPLICATE_ORDER_WINDOW_MS`, reference-integrity, spot direction, action/size guards)
+- Add risk-stage adapter mapping `RiskState.to_risk_check_metrics()` outputs to validator deny decisions
+- Add price-stage checks with stable reason codes and consequence routing metadata for strategy owner vs platform ops audiences
+- Add capital-stage adapter integrating `CapitalController.check_and_reserve(...)` into validator decision contracts with reservation passthrough
+- Add health-stage telemetry policy evaluation contracts (warn/breach/halt over latency, consecutive failures, failure rate, rate-limit headroom, clock drift)
+- Add stage-6 platform-limits contracts for absolute operator limits (`max_order_notional`, `max_order_rate`, `max_position`, `max_daily_loss`, `max_capital_utilization`)
+- Add safety-action bypass for `EXIT`/`ABORT`/`CANCEL` across `HEALTH` and `PLATFORM_LIMITS`
+- Add deterministic denial coverage tests proving identical inputs/snapshots produce stable `failed_stage`, `reason_code`, and message outputs
