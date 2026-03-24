@@ -23,6 +23,10 @@ def test_valid_creation() -> None:
     assert cfg.allocated_capital == Decimal('10000')
     assert cfg.duplicate_window_ms == 1000
     assert cfg.max_order_rate is None
+    assert cfg.book_staleness_max_seconds is None
+    assert cfg.max_spread_bps is None
+    assert cfg.price_deviation_max_bps is None
+    assert cfg.reference_price_source is None
     assert cfg.capital_pct == {}
 
 
@@ -46,6 +50,35 @@ def test_valid_creation_with_max_order_rate() -> None:
         max_order_rate=7,
     )
     assert cfg.max_order_rate == 7
+
+
+def test_valid_creation_with_price_validation_fields() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        book_staleness_max_seconds=3,
+        max_spread_bps=Decimal('7.5'),
+        price_deviation_max_bps=Decimal('12.0'),
+        reference_price_source='origo_mid',
+    )
+
+    assert cfg.book_staleness_max_seconds == 3
+    assert cfg.max_spread_bps == Decimal('7.5')
+    assert cfg.price_deviation_max_bps == Decimal('12.0')
+    assert cfg.reference_price_source == 'origo_mid'
+
+
+def test_reference_price_source_is_normalized() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        price_deviation_max_bps=Decimal('5'),
+        reference_price_source='  ORIGO_MID ',
+    )
+
+    assert cfg.reference_price_source == 'origo_mid'
 
 
 def test_valid_creation_with_capital_pct() -> None:
@@ -216,6 +249,110 @@ def test_non_positive_max_order_rate_rejected() -> None:
             venue='binance_spot',
             allocated_capital=Decimal('10000'),
             max_order_rate=0,
+        )
+
+
+def test_non_int_book_staleness_max_seconds_rejected() -> None:
+    with pytest.raises(ValueError, match='book_staleness_max_seconds'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            book_staleness_max_seconds=cast(int, cast(object, '3')),
+        )
+
+
+def test_bool_book_staleness_max_seconds_rejected() -> None:
+    with pytest.raises(ValueError, match='book_staleness_max_seconds'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            book_staleness_max_seconds=cast(int, cast(object, True)),
+        )
+
+
+def test_non_positive_book_staleness_max_seconds_rejected() -> None:
+    with pytest.raises(ValueError, match='book_staleness_max_seconds'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            book_staleness_max_seconds=0,
+        )
+
+
+def test_non_decimal_max_spread_bps_rejected() -> None:
+    with pytest.raises(ValueError, match='max_spread_bps'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_spread_bps=cast(Decimal, cast(object, 5)),
+        )
+
+
+def test_negative_max_spread_bps_rejected() -> None:
+    with pytest.raises(ValueError, match='max_spread_bps'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_spread_bps=Decimal('-0.1'),
+        )
+
+
+def test_non_decimal_price_deviation_max_bps_rejected() -> None:
+    with pytest.raises(ValueError, match='price_deviation_max_bps'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            price_deviation_max_bps=cast(Decimal, cast(object, 5)),
+            reference_price_source='origo_mid',
+        )
+
+
+def test_negative_price_deviation_max_bps_rejected() -> None:
+    with pytest.raises(ValueError, match='price_deviation_max_bps'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            price_deviation_max_bps=Decimal('-0.1'),
+            reference_price_source='origo_mid',
+        )
+
+
+def test_price_deviation_without_reference_source_rejected() -> None:
+    with pytest.raises(ValueError, match='reference_price_source'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            price_deviation_max_bps=Decimal('5'),
+        )
+
+
+def test_empty_reference_price_source_rejected() -> None:
+    with pytest.raises(ValueError, match='reference_price_source'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            price_deviation_max_bps=Decimal('5'),
+            reference_price_source='   ',
+        )
+
+
+def test_invalid_reference_price_source_rejected() -> None:
+    with pytest.raises(ValueError, match='reference_price_source'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            price_deviation_max_bps=Decimal('5'),
+            reference_price_source='origo_last',
         )
 
 
