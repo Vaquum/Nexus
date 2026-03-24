@@ -163,6 +163,7 @@ class TestValidationPipelineRun:
             def stage_fn(_: ValidationRequestContext) -> ValidationDecision:
                 order_seen.append(stage)
                 if stage in (
+                    ValidationStage.CAPITAL,
                     ValidationStage.HEALTH,
                     ValidationStage.PLATFORM_LIMITS,
                 ):
@@ -184,6 +185,7 @@ class TestValidationPipelineRun:
         decision = pipeline.validate(_make_context(action=action))
 
         assert decision.allowed is True
+        assert ValidationStage.CAPITAL not in order_seen
         assert ValidationStage.HEALTH not in order_seen
         assert ValidationStage.PLATFORM_LIMITS not in order_seen
 

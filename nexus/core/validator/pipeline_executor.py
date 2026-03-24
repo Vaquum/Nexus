@@ -132,4 +132,8 @@ def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bo
     ):
         return False
 
-    return stage in (ValidationStage.HEALTH, ValidationStage.PLATFORM_LIMITS)
+    return stage in (
+        ValidationStage.CAPITAL,
+        ValidationStage.HEALTH,
+        ValidationStage.PLATFORM_LIMITS,
+    )
