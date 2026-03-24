@@ -43,7 +43,8 @@ def build_default_intake_hooks(
     Args:
         config: Instance config carrying duplicate window settings.
         active_command_ids: Active command id set for MODIFY/ABORT checks.
-        max_order_rate: Optional max ENTER actions per second.
+        max_order_rate: Optional max ENTER actions/sec override.
+            Defaults to ``config.max_order_rate`` when not provided.
         now_fn: Optional clock override for deterministic tests.
 
     Returns:
@@ -59,8 +60,11 @@ def build_default_intake_hooks(
         ),
     ]
 
-    if max_order_rate is not None:
-        hooks.insert(0, make_order_rate_hook(max_order_rate, now_fn=now_fn))
+    resolved_max_order_rate = (
+        config.max_order_rate if max_order_rate is None else max_order_rate
+    )
+    if resolved_max_order_rate is not None:
+        hooks.insert(0, make_order_rate_hook(resolved_max_order_rate, now_fn=now_fn))
 
     return tuple(hooks)
 

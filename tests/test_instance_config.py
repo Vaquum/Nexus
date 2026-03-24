@@ -22,6 +22,7 @@ def test_valid_creation() -> None:
     assert cfg.venue == 'binance_spot'
     assert cfg.allocated_capital == Decimal('10000')
     assert cfg.duplicate_window_ms == 1000
+    assert cfg.max_order_rate is None
     assert cfg.capital_pct == {}
 
 
@@ -35,6 +36,16 @@ def test_valid_creation_with_duplicate_window_ms() -> None:
         duplicate_window_ms=250,
     )
     assert cfg.duplicate_window_ms == 250
+
+
+def test_valid_creation_with_max_order_rate() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        max_order_rate=7,
+    )
+    assert cfg.max_order_rate == 7
 
 
 def test_valid_creation_with_capital_pct() -> None:
@@ -175,6 +186,36 @@ def test_non_positive_duplicate_window_rejected() -> None:
             venue='binance_spot',
             allocated_capital=Decimal('10000'),
             duplicate_window_ms=0,
+        )
+
+
+def test_non_int_max_order_rate_rejected() -> None:
+    with pytest.raises(ValueError, match='max_order_rate'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_order_rate=cast(int, cast(object, '5')),
+        )
+
+
+def test_bool_max_order_rate_rejected() -> None:
+    with pytest.raises(ValueError, match='max_order_rate'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_order_rate=cast(int, cast(object, True)),
+        )
+
+
+def test_non_positive_max_order_rate_rejected() -> None:
+    with pytest.raises(ValueError, match='max_order_rate'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_order_rate=0,
         )
 
 

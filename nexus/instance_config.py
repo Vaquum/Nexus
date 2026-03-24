@@ -38,6 +38,7 @@ class InstanceConfig:
     venue: str
     allocated_capital: Decimal
     duplicate_window_ms: int = 1000
+    max_order_rate: int | None = None
     capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -65,6 +66,18 @@ class InstanceConfig:
         if self.duplicate_window_ms <= 0:
             msg = 'InstanceConfig.duplicate_window_ms must be a positive integer'
             raise ValueError(msg)
+
+        if self.max_order_rate is not None:
+            if isinstance(self.max_order_rate, bool) or not isinstance(
+                self.max_order_rate,
+                int,
+            ):
+                msg = 'InstanceConfig.max_order_rate must be an integer'
+                raise ValueError(msg)
+
+            if self.max_order_rate <= 0:
+                msg = 'InstanceConfig.max_order_rate must be a positive integer'
+                raise ValueError(msg)
 
         if not isinstance(self.capital_pct, Mapping):
             msg = (

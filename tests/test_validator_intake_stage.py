@@ -402,3 +402,61 @@ class TestRfcStageOneHooks:
         )
 
         assert decision.allowed is True
+
+    def test_default_hooks_apply_config_max_order_rate(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_order_rate=1,
+        )
+
+        times = [
+            datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 50000, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 100000, tzinfo=timezone.utc),
+        ]
+        idx = {'n': 0}
+
+        def now_fn() -> datetime:
+            t = times[idx['n']]
+            idx['n'] += 1
+            return t
+
+        hooks = build_default_intake_hooks(config, now_fn=now_fn)
+
+        d1 = validate_intake_stage(_make_context(config=config), hooks=hooks)
+        d2 = validate_intake_stage(_make_context(config=config), hooks=hooks)
+
+        assert d1.allowed is True
+        assert d2.allowed is False
+        assert d2.reason_code == 'INTAKE_MAX_ORDER_RATE_EXCEEDED'
+
+    def test_default_hooks_max_order_rate_override_takes_precedence(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_order_rate=2,
+        )
+
+        times = [
+            datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 50000, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 100000, tzinfo=timezone.utc),
+        ]
+        idx = {'n': 0}
+
+        def now_fn() -> datetime:
+            t = times[idx['n']]
+            idx['n'] += 1
+            return t
+
+        hooks = build_default_intake_hooks(config, max_order_rate=1, now_fn=now_fn)
+
+        d1 = validate_intake_stage(_make_context(config=config), hooks=hooks)
+        d2 = validate_intake_stage(_make_context(config=config), hooks=hooks)
+
+        assert d1.allowed is True
+        assert d2.allowed is False
+        assert d2.reason_code == 'INTAKE_MAX_ORDER_RATE_EXCEEDED'
