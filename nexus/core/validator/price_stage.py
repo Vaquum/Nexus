@@ -35,13 +35,17 @@ class PriceCheckSnapshot:
         '''Validate snapshot field invariants.'''
 
         if self.now_ms is not None and (
-            not isinstance(self.now_ms, int) or self.now_ms < 0
+            isinstance(self.now_ms, bool)
+            or not isinstance(self.now_ms, int)
+            or self.now_ms < 0
         ):
             msg = 'PriceCheckSnapshot.now_ms must be a non-negative int or None'
             raise ValueError(msg)
 
         if self.book_timestamp_ms is not None and (
-            not isinstance(self.book_timestamp_ms, int) or self.book_timestamp_ms < 0
+            isinstance(self.book_timestamp_ms, bool)
+            or not isinstance(self.book_timestamp_ms, int)
+            or self.book_timestamp_ms < 0
         ):
             msg = 'PriceCheckSnapshot.book_timestamp_ms must be a non-negative int or None'
             raise ValueError(msg)
@@ -74,7 +78,9 @@ class PriceStageLimits:
         '''Validate configured price-stage thresholds.'''
 
         if self.max_staleness_ms is not None and (
-            not isinstance(self.max_staleness_ms, int) or self.max_staleness_ms < 0
+            isinstance(self.max_staleness_ms, bool)
+            or not isinstance(self.max_staleness_ms, int)
+            or self.max_staleness_ms < 0
         ):
             msg = 'PriceStageLimits.max_staleness_ms must be a non-negative int or None'
             raise ValueError(msg)

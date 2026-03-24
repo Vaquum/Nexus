@@ -44,6 +44,10 @@ class TestPriceContracts:
         with pytest.raises(ValueError, match='max_staleness_ms'):
             PriceStageLimits(max_staleness_ms=-1)
 
+    def test_rejects_bool_staleness_limit(self) -> None:
+        with pytest.raises(ValueError, match='max_staleness_ms'):
+            PriceStageLimits(max_staleness_ms=True)
+
     def test_rejects_negative_spread_limit(self) -> None:
         with pytest.raises(ValueError, match='max_spread_bps'):
             PriceStageLimits(max_spread_bps=Decimal('-1'))
@@ -51,6 +55,13 @@ class TestPriceContracts:
     def test_rejects_negative_snapshot_spread(self) -> None:
         with pytest.raises(ValueError, match='spread_bps'):
             PriceCheckSnapshot(spread_bps=Decimal('-1'))
+
+    def test_rejects_bool_snapshot_times(self) -> None:
+        with pytest.raises(ValueError, match='now_ms'):
+            PriceCheckSnapshot(now_ms=True)
+
+        with pytest.raises(ValueError, match='book_timestamp_ms'):
+            PriceCheckSnapshot(book_timestamp_ms=False)
 
 
 class TestPriceStage:
