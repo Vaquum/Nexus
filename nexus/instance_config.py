@@ -30,8 +30,10 @@ class InstanceConfig:
             must not exceed this value.
         duplicate_window_ms: Duplicate-order detection window for intake
             checks, in milliseconds.
-        max_order_rate: Optional cap on ENTER actions per second for intake
-            rate-limiting. ``None`` disables the rate check.
+        max_order_rate: Optional per-process cap on ENTER actions per second
+            for intake rate-limiting within this Manager process. This is not
+            a distributed/global limit across multiple processes or hosts.
+            ``None`` disables the rate check.
         capital_pct: Strategy capital-allocation percentages keyed by
             strategy_id.
     '''
