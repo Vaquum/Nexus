@@ -71,6 +71,16 @@ class TestIntakeBuiltins:
         assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_STRATEGY_BUDGET_ZERO'
 
+    def test_zero_strategy_budget_allowed_for_modify_builtin_gate(self) -> None:
+        decision = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                strategy_budget=Decimal('0'),
+                order_side=None,
+            )
+        )
+        assert decision.allowed is True
+
     @pytest.mark.parametrize(
         ('action', 'side'),
         [

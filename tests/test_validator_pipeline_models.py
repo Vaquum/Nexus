@@ -69,19 +69,16 @@ class TestValidationRequestContext:
         assert ctx.current_order_notional is None
         assert ctx.estimated_fees == Decimal('1')
         assert ctx.strategy_budget == Decimal('5000')
-        assert ctx.current_order_size is None
 
     def test_modify_context_accepts_edit_baseline_fields(self) -> None:
         ctx = _make_context(
             action=ValidationAction.MODIFY,
             command_id='cmd_1',
             current_order_notional=Decimal('75'),
-            current_order_size=Decimal('0.005'),
             order_notional=Decimal('100'),
             order_size=Decimal('0.01'),
         )
         assert ctx.current_order_notional == Decimal('75')
-        assert ctx.current_order_size == Decimal('0.005')
 
     def test_empty_strategy_id_rejected(self) -> None:
         with pytest.raises(ValueError, match='strategy_id'):
@@ -122,14 +119,6 @@ class TestValidationRequestContext:
     def test_negative_order_size_rejected(self) -> None:
         with pytest.raises(ValueError, match='order_size'):
             _make_context(order_size=Decimal('-1'))
-
-    def test_negative_current_order_size_rejected(self) -> None:
-        with pytest.raises(ValueError, match='current_order_size'):
-            _make_context(current_order_size=Decimal('-1'))
-
-    def test_non_decimal_current_order_size_rejected(self) -> None:
-        with pytest.raises(ValueError, match='current_order_size'):
-            _make_context(current_order_size=cast(Decimal, cast(Any, 1)))
 
     def test_empty_trade_id_rejected(self) -> None:
         with pytest.raises(ValueError, match='trade_id'):

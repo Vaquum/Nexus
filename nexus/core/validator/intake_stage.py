@@ -43,9 +43,9 @@ def build_default_intake_hooks(
 
     Args:
         config: Instance config carrying duplicate-window and order-rate settings.
-        active_command_ids: Active command id set for MODIFY/ABORT checks.
-        modifiable_command_ids: Optional lifecycle-valid command ids for MODIFY.
-            When provided, MODIFY must target this set.
+        active_command_ids: Active command id set used for ABORT checks.
+        modifiable_command_ids: Lifecycle-valid command ids for MODIFY.
+            MODIFY is validated against this set; when ``None``, MODIFY is denied.
         max_order_rate: Optional max ENTER actions/sec override.
             Defaults to ``config.max_order_rate`` when not provided.
         now_fn: Optional clock override for deterministic tests.
@@ -329,6 +329,7 @@ def validate_intake_stage(
             ValidationAction.EXIT,
             ValidationAction.ABORT,
             ValidationAction.CANCEL,
+            ValidationAction.MODIFY,
         )
         and context.strategy_budget == 0
     ):

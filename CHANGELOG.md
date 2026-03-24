@@ -120,7 +120,7 @@
 
 ## v0.13.0 on 24th of March, 2026
 
-- Add `MODIFY` edit-baseline fields to `ValidationRequestContext` (`current_order_notional`, `current_order_size`) with strict finite/non-negative validation
+- Add `MODIFY` edit-baseline field `current_order_notional` to `ValidationRequestContext` with strict finite/non-negative validation
 - Add capital-stage delta semantics for `MODIFY`: reserve only positive notional deltas, skip reservation for no-op/decrease edits
 - Add strict lifecycle gate for `MODIFY` in intake hooks: require `modifiable_command_ids`, deny when unavailable, and validate command membership against modifiable set
 - Add capital-stage tests for `MODIFY` increase/decrease/no-op reservation behavior

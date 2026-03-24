@@ -67,7 +67,6 @@ class ValidationRequestContext:
         symbol: Trading symbol for this action.
         order_side: Direction for actions that carry side semantics.
         order_size: Base-asset size for actions that carry size semantics.
-        current_order_size: Current base-asset size for edit (`MODIFY`) context.
         trade_id: Trade reference for actions targeting existing positions.
         command_id: Command reference for actions targeting existing commands.
         order_notional: Requested order notional (quote units).
@@ -89,7 +88,6 @@ class ValidationRequestContext:
     symbol: str = 'BTCUSDT'
     order_side: OrderSide | None = OrderSide.BUY
     order_size: Decimal | None = None
-    current_order_size: Decimal | None = None
     trade_id: str | None = None
     command_id: str | None = 'cmd_default'
     current_order_notional: Decimal | None = None
@@ -120,17 +118,6 @@ class ValidationRequestContext:
         ):
             msg = (
                 'ValidationRequestContext.order_size must be a finite '
-                'non-negative Decimal or None'
-            )
-            raise ValueError(msg)
-
-        if self.current_order_size is not None and (
-            not isinstance(self.current_order_size, Decimal)
-            or not self.current_order_size.is_finite()
-            or self.current_order_size < _ZERO
-        ):
-            msg = (
-                'ValidationRequestContext.current_order_size must be a finite '
                 'non-negative Decimal or None'
             )
             raise ValueError(msg)
