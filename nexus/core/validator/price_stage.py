@@ -136,6 +136,7 @@ class PriceFailureConsequence:
 
 
 def build_price_stage_limits_from_config(config: InstanceConfig) -> PriceStageLimits:
+    """Build Stage-3 price limits from runtime config."""
     if not isinstance(config, InstanceConfig):
         msg = 'config must be an InstanceConfig instance'
         raise ValueError(msg)

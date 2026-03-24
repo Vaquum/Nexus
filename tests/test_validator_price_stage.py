@@ -334,6 +334,26 @@ class TestPriceFailureConsequence:
             severity='warning',
         )
 
+    def test_snapshot_invalid_routes_to_platform(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('10'),
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('5'),
+                reference_price_source='origo_last',
+            ),
+        )
+        consequence = derive_price_failure_consequence(decision)
+
+        assert consequence == PriceFailureConsequence(
+            notify_strategy_owner=True,
+            notify_platform_ops=True,
+            severity='critical',
+        )
+
     def test_allowed_decision_has_no_consequence(self) -> None:
         allow = validate_price_stage(_make_context(), PriceStageLimits(), snapshot=None)
         assert allow.allowed is True
