@@ -203,6 +203,7 @@ class TestRfcStageOneHooks:
         assert d2.allowed is True
         assert d3.allowed is False
         assert d3.reason_code == 'INTAKE_MAX_ORDER_RATE_EXCEEDED'
+        assert d3.message == 'max_order_rate exceeded: limit=2/s'
 
     def test_max_order_rate_ignores_non_enter(self) -> None:
         rate_hook = make_order_rate_hook(1)
@@ -232,6 +233,7 @@ class TestRfcStageOneHooks:
         assert d1.allowed is True
         assert d2.allowed is False
         assert d2.reason_code == 'INTAKE_DUPLICATE_ORDER_WINDOW'
+        assert d2.message == 'duplicate command_id detected within 1000ms window'
 
     def test_duplicate_window_keyed_by_strategy_id(self) -> None:
         dupe_hook = make_duplicate_order_hook(1000)
@@ -254,6 +256,117 @@ class TestRfcStageOneHooks:
         )
         d2 = validate_intake_stage(
             _make_context(command_id='cmd_2'),
+            hooks=(dupe_hook,),
+        )
+
+        assert d1.allowed is True
+        assert d2.allowed is True
+
+    def test_duplicate_window_keys_on_command_id_not_order_shape(self) -> None:
+        times = [
+            datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 300000, tzinfo=timezone.utc),
+        ]
+        idx = {'n': 0}
+
+        def now_fn() -> datetime:
+            t = times[idx['n']]
+            idx['n'] += 1
+            return t
+
+        dupe_hook = make_duplicate_order_hook(1000, now_fn=now_fn)
+
+        d1 = validate_intake_stage(
+            _make_context(command_id='cmd_same', order_size=Decimal('1.0')),
+            hooks=(dupe_hook,),
+        )
+        d2 = validate_intake_stage(
+            _make_context(command_id='cmd_same', order_size=Decimal('2.0')),
+            hooks=(dupe_hook,),
+        )
+
+        assert d1.allowed is True
+        assert d2.allowed is False
+        assert d2.reason_code == 'INTAKE_DUPLICATE_ORDER_WINDOW'
+
+    def test_max_order_rate_recovers_after_window_cutoff(self) -> None:
+        times = [
+            datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 100000, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 1, 200000, tzinfo=timezone.utc),
+        ]
+        idx = {'n': 0}
+
+        def now_fn() -> datetime:
+            t = times[idx['n']]
+            idx['n'] += 1
+            return t
+
+        rate_hook = make_order_rate_hook(1, now_fn=now_fn)
+
+        d1 = validate_intake_stage(_make_context(), hooks=(rate_hook,))
+        d2 = validate_intake_stage(_make_context(), hooks=(rate_hook,))
+        d3 = validate_intake_stage(_make_context(), hooks=(rate_hook,))
+
+        assert d1.allowed is True
+        assert d2.allowed is False
+        assert d2.reason_code == 'INTAKE_MAX_ORDER_RATE_EXCEEDED'
+        assert d3.allowed is True
+
+    def test_duplicate_window_replay_block_expires_after_window(self) -> None:
+        times = [
+            datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 0, 300000, tzinfo=timezone.utc),
+            datetime(2026, 3, 23, 10, 0, 1, 300000, tzinfo=timezone.utc),
+        ]
+        idx = {'n': 0}
+
+        def now_fn() -> datetime:
+            t = times[idx['n']]
+            idx['n'] += 1
+            return t
+
+        dupe_hook = make_duplicate_order_hook(1000, now_fn=now_fn)
+
+        d1 = validate_intake_stage(
+            _make_context(command_id='cmd_replay'),
+            hooks=(dupe_hook,),
+        )
+        d2 = validate_intake_stage(
+            _make_context(command_id='cmd_replay'),
+            hooks=(dupe_hook,),
+        )
+        d3 = validate_intake_stage(
+            _make_context(command_id='cmd_replay'),
+            hooks=(dupe_hook,),
+        )
+
+        assert d1.allowed is True
+        assert d2.allowed is False
+        assert d2.reason_code == 'INTAKE_DUPLICATE_ORDER_WINDOW'
+        assert d3.allowed is True
+
+    def test_duplicate_window_ignores_non_enter_without_clock_reads(self) -> None:
+        def now_fn() -> datetime:
+            msg = 'duplicate hook clock should not be used for non-ENTER actions'
+            raise AssertionError(msg)
+
+        dupe_hook = make_duplicate_order_hook(1000, now_fn=now_fn)
+
+        d1 = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.EXIT,
+                order_side=OrderSide.SELL,
+                command_id='cmd_same',
+            ),
+            hooks=(dupe_hook,),
+        )
+        d2 = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.EXIT,
+                order_side=OrderSide.SELL,
+                command_id='cmd_same',
+            ),
             hooks=(dupe_hook,),
         )
 
