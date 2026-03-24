@@ -149,6 +149,20 @@ class TestIntakeHooks:
 
 
 class TestRfcStageOneHooks:
+    def test_order_rate_hook_rejects_bool_and_non_int(self) -> None:
+        with pytest.raises(ValueError, match='must be an integer'):
+            make_order_rate_hook(True)
+
+        with pytest.raises(ValueError, match='must be an integer'):
+            make_order_rate_hook(cast(int, cast(object, 1.5)))
+
+    def test_duplicate_order_hook_rejects_bool_and_non_int(self) -> None:
+        with pytest.raises(ValueError, match='must be an integer'):
+            make_duplicate_order_hook(True)
+
+        with pytest.raises(ValueError, match='must be an integer'):
+            make_duplicate_order_hook(cast(int, cast(object, 1000.0)))
+
     def test_max_order_rate_enforced_for_enter(self) -> None:
         times = [
             datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),

@@ -70,6 +70,10 @@ def make_order_rate_hook(
 ) -> IntakeValidationHook:
     '''Create a per-process intake hook enforcing max enters per second.'''
 
+    if isinstance(max_order_rate, bool) or not isinstance(max_order_rate, int):
+        msg = f'max_order_rate must be an integer: {max_order_rate}'
+        raise ValueError(msg)
+
     if max_order_rate <= 0:
         msg = f'max_order_rate must be positive: {max_order_rate}'
         raise ValueError(msg)
@@ -105,6 +109,13 @@ def make_duplicate_order_hook(
     now_fn: Callable[[], datetime] | None = None,
 ) -> IntakeValidationHook:
     '''Create intake hook rejecting duplicate ENTER command IDs within a window.'''
+
+    if isinstance(duplicate_window_ms, bool) or not isinstance(
+        duplicate_window_ms,
+        int,
+    ):
+        msg = f'duplicate_window_ms must be an integer: {duplicate_window_ms}'
+        raise ValueError(msg)
 
     if duplicate_window_ms <= 0:
         msg = f'duplicate_window_ms must be positive: {duplicate_window_ms}'

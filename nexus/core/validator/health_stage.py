@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from nexus.core.domain.enums import BreachLevel
@@ -70,11 +70,17 @@ class HealthMetricThresholds:
 
 @dataclass(frozen=True)
 class HealthStagePolicy:
-    latency_ms: HealthMetricThresholds = HealthMetricThresholds()
-    consecutive_failures: HealthMetricThresholds = HealthMetricThresholds()
-    failure_rate: HealthMetricThresholds = HealthMetricThresholds()
-    rate_limit_headroom: HealthMetricThresholds = HealthMetricThresholds()
-    clock_drift_ms: HealthMetricThresholds = HealthMetricThresholds()
+    latency_ms: HealthMetricThresholds = field(default_factory=HealthMetricThresholds)
+    consecutive_failures: HealthMetricThresholds = field(
+        default_factory=HealthMetricThresholds
+    )
+    failure_rate: HealthMetricThresholds = field(default_factory=HealthMetricThresholds)
+    rate_limit_headroom: HealthMetricThresholds = field(
+        default_factory=HealthMetricThresholds
+    )
+    clock_drift_ms: HealthMetricThresholds = field(
+        default_factory=HealthMetricThresholds
+    )
 
     def __post_init__(self) -> None:
         for field_name in (
