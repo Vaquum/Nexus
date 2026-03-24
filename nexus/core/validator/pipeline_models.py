@@ -70,6 +70,8 @@ class ValidationRequestContext:
         trade_id: Trade reference for actions targeting existing positions.
         command_id: Command reference for actions targeting existing commands.
         order_notional: Requested order notional (quote units).
+        current_order_notional: Current command/order notional for edit
+            (`MODIFY`) context (quote units).
         estimated_fees: Estimated fees for the action (quote units).
         strategy_budget: Current strategy budget ceiling (quote units).
         state: Current runtime instance state snapshot.
@@ -88,6 +90,7 @@ class ValidationRequestContext:
     order_size: Decimal | None = None
     trade_id: str | None = None
     command_id: str | None = 'cmd_default'
+    current_order_notional: Decimal | None = None
 
     def __post_init__(self) -> None:
         '''Validate context invariants at construction time.'''
@@ -148,6 +151,17 @@ class ValidationRequestContext:
                     'non-negative Decimal'
                 )
                 raise ValueError(msg)
+
+        if self.current_order_notional is not None and (
+            not isinstance(self.current_order_notional, Decimal)
+            or not self.current_order_notional.is_finite()
+            or self.current_order_notional < _ZERO
+        ):
+            msg = (
+                'ValidationRequestContext.current_order_notional must be a finite '
+                'non-negative Decimal or None'
+            )
+            raise ValueError(msg)
 
         if not isinstance(self.state, InstanceState):
             msg = 'ValidationRequestContext.state must be an InstanceState instance'

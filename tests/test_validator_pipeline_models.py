@@ -66,8 +66,19 @@ class TestValidationRequestContext:
         assert ctx.symbol == 'BTCUSDT'
         assert ctx.order_side == OrderSide.BUY
         assert ctx.order_notional == Decimal('100')
+        assert ctx.current_order_notional is None
         assert ctx.estimated_fees == Decimal('1')
         assert ctx.strategy_budget == Decimal('5000')
+
+    def test_modify_context_accepts_edit_baseline_fields(self) -> None:
+        ctx = _make_context(
+            action=ValidationAction.MODIFY,
+            command_id='cmd_1',
+            current_order_notional=Decimal('75'),
+            order_notional=Decimal('100'),
+            order_size=Decimal('0.01'),
+        )
+        assert ctx.current_order_notional == Decimal('75')
 
     def test_empty_strategy_id_rejected(self) -> None:
         with pytest.raises(ValueError, match='strategy_id'):
@@ -84,6 +95,14 @@ class TestValidationRequestContext:
     def test_nan_strategy_budget_rejected(self) -> None:
         with pytest.raises(ValueError, match='strategy_budget'):
             _make_context(strategy_budget=Decimal('NaN'))
+
+    def test_nan_current_order_notional_rejected(self) -> None:
+        with pytest.raises(ValueError, match='current_order_notional'):
+            _make_context(current_order_notional=Decimal('NaN'))
+
+    def test_negative_current_order_notional_rejected(self) -> None:
+        with pytest.raises(ValueError, match='current_order_notional'):
+            _make_context(current_order_notional=Decimal('-1'))
 
     def test_non_validation_action_rejected(self) -> None:
         with pytest.raises(ValueError, match='action'):
