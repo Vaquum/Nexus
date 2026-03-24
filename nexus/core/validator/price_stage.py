@@ -254,12 +254,39 @@ def validate_price_stage(
             )
 
     if limits.max_deviation_bps is not None and decision is None:
-        if snapshot is None or snapshot.deviation_bps is None:
+        if limits.reference_price_source is None:
             decision = ValidationDecision(
                 allowed=False,
                 failed_stage=ValidationStage.PRICE,
                 reason_code='PRICE_SYSTEM_DATA_UNAVAILABLE',
-                message='Price system data unavailable: deviation_bps missing',
+                message=(
+                    'Price system data unavailable: reference_price_source '
+                    'missing for deviation validation'
+                ),
+            )
+        elif (
+            snapshot is None
+            or snapshot.deviation_bps is None
+            or snapshot.reference_price_source is None
+        ):
+            decision = ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_SYSTEM_DATA_UNAVAILABLE',
+                message=(
+                    'Price system data unavailable: deviation_bps/'
+                    'reference_price_source missing'
+                ),
+            )
+        elif (
+            snapshot.reference_price_source.strip().lower()
+            != limits.reference_price_source.strip().lower()
+        ):
+            decision = ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_SNAPSHOT_INVALID',
+                message='Price snapshot reference source is inconsistent',
             )
         elif snapshot.deviation_bps > limits.max_deviation_bps:
             decision = ValidationDecision(

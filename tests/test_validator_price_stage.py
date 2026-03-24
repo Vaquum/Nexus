@@ -139,8 +139,14 @@ class TestPriceStage:
     def test_denies_when_deviation_exceeds_limit(self) -> None:
         decision = validate_price_stage(
             _make_context(),
-            PriceStageLimits(max_deviation_bps=Decimal('10')),
-            snapshot=PriceCheckSnapshot(deviation_bps=Decimal('11')),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('10'),
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('11'),
+                reference_price_source='origo_mid',
+            ),
         )
         assert decision.allowed is False
         assert decision.reason_code == 'PRICE_DEVIATION_LIMIT'
@@ -170,15 +176,68 @@ class TestPriceStage:
                 max_staleness_ms=500,
                 max_spread_bps=Decimal('10'),
                 max_deviation_bps=Decimal('15'),
+                reference_price_source='origo_mid',
             ),
             snapshot=PriceCheckSnapshot(
                 now_ms=1500,
                 book_timestamp_ms=1200,
                 spread_bps=Decimal('6'),
                 deviation_bps=Decimal('8'),
+                reference_price_source='origo_mid',
             ),
         )
         assert decision.allowed is True
+
+    def test_denies_when_deviation_limit_has_no_reference_source(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(max_deviation_bps=Decimal('10')),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('5'),
+                reference_price_source='origo_mid',
+            ),
+        )
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.PRICE
+        assert decision.reason_code == 'PRICE_SYSTEM_DATA_UNAVAILABLE'
+        assert decision.message == (
+            'Price system data unavailable: reference_price_source missing '
+            'for deviation validation'
+        )
+
+    def test_denies_when_deviation_snapshot_source_missing(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('10'),
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(deviation_bps=Decimal('5')),
+        )
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.PRICE
+        assert decision.reason_code == 'PRICE_SYSTEM_DATA_UNAVAILABLE'
+        assert decision.message == (
+            'Price system data unavailable: deviation_bps/reference_price_source '
+            'missing'
+        )
+
+    def test_denies_when_deviation_snapshot_source_mismatches(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('10'),
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('5'),
+                reference_price_source='origo_last',
+            ),
+        )
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.PRICE
+        assert decision.reason_code == 'PRICE_SNAPSHOT_INVALID'
+        assert decision.message == 'Price snapshot reference source is inconsistent'
 
 
 class TestPriceFailureConsequence:
