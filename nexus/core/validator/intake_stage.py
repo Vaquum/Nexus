@@ -41,7 +41,7 @@ def build_default_intake_hooks(
     '''Build default intake hooks from operator configuration.
 
     Args:
-        config: Instance config carrying duplicate window settings.
+        config: Instance config carrying duplicate-window and order-rate settings.
         active_command_ids: Active command id set for MODIFY/ABORT checks.
         max_order_rate: Optional max ENTER actions/sec override.
             Defaults to ``config.max_order_rate`` when not provided.
