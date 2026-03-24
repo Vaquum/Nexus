@@ -108,3 +108,12 @@
 - Add stage-6 platform-limits contracts for absolute operator limits (`max_order_notional`, `max_order_rate`, `max_position`, `max_daily_loss`, `max_capital_utilization`)
 - Add safety-action bypass for `EXIT`/`ABORT`/`CANCEL` across `CAPITAL`, `HEALTH`, and `PLATFORM_LIMITS`
 - Add deterministic denial coverage tests proving identical inputs/snapshots produce stable `failed_stage`, `reason_code`, and message outputs
+
+## v0.12.0 on 24th of March, 2026
+
+- Add `InstanceConfig.max_order_rate` as optional operator config with strict validation (reject bool/non-int/non-positive values)
+- Update default intake hook wiring to source `MAX_ORDER_RATE` from `InstanceConfig`, while preserving explicit hook override precedence
+- Add duplicate-window key regression coverage to lock idempotency semantics on (`strategy_id`, `command_id`) rather than order-shape ambiguity
+- Add temporal intake checks coverage for rate-window recovery and duplicate-window replay expiry behavior
+- Add explicit duplicate-hook non-ENTER bypass coverage and message-stability assertions for core intake deny paths
+- Expand validator intake test coverage and raise full-suite baseline to 470 passing tests
