@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -14,6 +14,7 @@ from nexus.core.validator import (
     PriceStageLimits,
     ValidationRequestContext,
     ValidationStage,
+    build_price_stage_limits_from_config,
     derive_price_failure_consequence,
     validate_price_stage,
 )
@@ -62,6 +63,49 @@ class TestPriceContracts:
 
         with pytest.raises(ValueError, match='book_timestamp_ms'):
             PriceCheckSnapshot(book_timestamp_ms=False)
+
+    def test_rejects_empty_snapshot_reference_source(self) -> None:
+        with pytest.raises(ValueError, match='reference_price_source'):
+            PriceCheckSnapshot(reference_price_source='   ')
+
+    def test_rejects_empty_limits_reference_source(self) -> None:
+        with pytest.raises(ValueError, match='reference_price_source'):
+            PriceStageLimits(reference_price_source='')
+
+    def test_build_limits_maps_seconds_to_milliseconds(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            book_staleness_max_seconds=3,
+            max_spread_bps=Decimal('7'),
+            price_deviation_max_bps=Decimal('9'),
+            reference_price_source='origo_mid',
+        )
+
+        limits = build_price_stage_limits_from_config(config)
+
+        assert limits.max_staleness_ms == 3000
+        assert limits.max_spread_bps == Decimal('7')
+        assert limits.max_deviation_bps == Decimal('9')
+        assert limits.reference_price_source == 'origo_mid'
+
+    def test_build_limits_keeps_none_when_staleness_seconds_missing(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+        )
+
+        limits = build_price_stage_limits_from_config(config)
+
+        assert limits.max_staleness_ms is None
+
+    def test_build_limits_requires_instance_config(self) -> None:
+        with pytest.raises(ValueError, match='InstanceConfig'):
+            build_price_stage_limits_from_config(
+                cast(InstanceConfig, cast(object, None)),
+            )
 
 
 class TestPriceStage:

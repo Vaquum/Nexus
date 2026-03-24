@@ -25,6 +25,7 @@ from nexus.core.validator.price_stage import (
     PriceCheckSnapshot,
     PriceFailureConsequence,
     PriceStageLimits,
+    build_price_stage_limits_from_config,
     derive_price_failure_consequence,
     validate_price_stage,
 )
@@ -97,6 +98,7 @@ __all__ = [
     'ValidationRequestContext',
     'ValidationStage',
     'build_default_intake_hooks',
+    'build_price_stage_limits_from_config',
     'derive_price_failure_consequence',
     'evaluate_health_status',
     'evaluate_risk_breach',
