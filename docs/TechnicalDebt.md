@@ -27,3 +27,26 @@ Known technical debt in shipped code. Each item includes origin, severity, and m
 
 **When to fix**: Before periodic checkpoint scheduling (Phase 9).
 **Migration**: Either (a) retain STRATEGY_EVENT entries for the longest window (30d) across checkpoints by truncating by age instead of full truncation, or (b) bake accurate rolling loss values into the snapshot at checkpoint time so they serve as baseline, with post-checkpoint events adjusting rather than overwriting.
+
+---
+
+## TD-003: Lifecycle APIs use soft-failure returns that can hide root causes
+
+**Origin**: 2.x lifecycle hardening work (capital reservation/order transitions)
+**Severity**: Medium (debuggability/observability risk)
+**Modules**:
+- `nexus/core/capital_controller/capital_controller.py`
+
+Several lifecycle methods return `False` for failure paths (for example, missing reservation/order ids) instead of emitting typed failure categories. This is ergonomic for caller control flow, but it compresses different failure causes into a single boolean outcome and can hide invariant violations unless logs/metrics are consistently inspected.
+
+**When to evaluate**: End of MVP (explicit post-MVP quality gate).
+**Evaluation criteria (MVP close-out)**:
+- Enumerate all soft-failure return sites in lifecycle APIs.
+- Classify each as expected business miss vs invariant breach.
+- Confirm each soft-failure path has structured observability (reason code and context).
+- For invariant breaches, decide whether to migrate to hard-failure (`typed exception`) or typed result objects.
+
+**Migration options**:
+- Keep soft-failure behavior for expected misses and add strict reason taxonomy.
+- Convert invariant-breach paths to hard-failure exceptions.
+- Standardize on explicit result types (`ok`, `reason_code`, `message`, `context`) instead of bare booleans.

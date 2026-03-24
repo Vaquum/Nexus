@@ -21,7 +21,20 @@ def test_valid_creation() -> None:
     assert cfg.account_id == 'acc_001'
     assert cfg.venue == 'binance_spot'
     assert cfg.allocated_capital == Decimal('10000')
+    assert cfg.duplicate_window_ms == 1000
     assert cfg.capital_pct == {}
+
+
+def test_valid_creation_with_duplicate_window_ms() -> None:
+    '''Verify duplicate_window_ms override is accepted when positive int.'''
+
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        duplicate_window_ms=250,
+    )
+    assert cfg.duplicate_window_ms == 250
 
 
 def test_valid_creation_with_capital_pct() -> None:
@@ -128,6 +141,40 @@ def test_nan_capital_rejected() -> None:
             account_id='acc_001',
             venue='binance_spot',
             allocated_capital=Decimal('NaN'),
+        )
+
+
+def test_non_int_duplicate_window_rejected() -> None:
+    '''Verify non-int duplicate_window_ms raises ValueError.'''
+
+    with pytest.raises(ValueError, match='duplicate_window_ms'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            duplicate_window_ms=cast(int, cast(object, '1000')),
+        )
+
+
+def test_bool_duplicate_window_rejected() -> None:
+    with pytest.raises(ValueError, match='duplicate_window_ms'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            duplicate_window_ms=cast(int, cast(object, True)),
+        )
+
+
+def test_non_positive_duplicate_window_rejected() -> None:
+    '''Verify non-positive duplicate_window_ms raises ValueError.'''
+
+    with pytest.raises(ValueError, match='duplicate_window_ms'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            duplicate_window_ms=0,
         )
 
 

@@ -28,6 +28,8 @@ class InstanceConfig:
         allocated_capital: Hard ceiling on capital this instance can use,
             denominated in quote asset. The manifest's ``capital_pool``
             must not exceed this value.
+        duplicate_window_ms: Duplicate-order detection window for intake
+            checks, in milliseconds.
         capital_pct: Strategy capital-allocation percentages keyed by
             strategy_id.
     '''
@@ -35,6 +37,7 @@ class InstanceConfig:
     account_id: str
     venue: str
     allocated_capital: Decimal
+    duplicate_window_ms: int = 1000
     capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -50,6 +53,17 @@ class InstanceConfig:
 
         if not self.allocated_capital.is_finite() or self.allocated_capital <= 0:
             msg = 'InstanceConfig.allocated_capital must be a finite positive value'
+            raise ValueError(msg)
+
+        if isinstance(self.duplicate_window_ms, bool) or not isinstance(
+            self.duplicate_window_ms,
+            int,
+        ):
+            msg = 'InstanceConfig.duplicate_window_ms must be an integer'
+            raise ValueError(msg)
+
+        if self.duplicate_window_ms <= 0:
+            msg = 'InstanceConfig.duplicate_window_ms must be a positive integer'
             raise ValueError(msg)
 
         if not isinstance(self.capital_pct, Mapping):
