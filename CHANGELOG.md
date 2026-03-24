@@ -106,5 +106,5 @@
 - Add capital-stage adapter integrating `CapitalController.check_and_reserve(...)` into validator decision contracts with reservation passthrough
 - Add health-stage telemetry policy evaluation contracts (warn/breach/halt over latency, consecutive failures, failure rate, rate-limit headroom, clock drift)
 - Add stage-6 platform-limits contracts for absolute operator limits (`max_order_notional`, `max_order_rate`, `max_position`, `max_daily_loss`, `max_capital_utilization`)
-- Add safety-action bypass for `EXIT`/`ABORT`/`CANCEL` across `HEALTH` and `PLATFORM_LIMITS`
+- Add safety-action bypass for `EXIT`/`ABORT`/`CANCEL` across `CAPITAL`, `HEALTH`, and `PLATFORM_LIMITS`
 - Add deterministic denial coverage tests proving identical inputs/snapshots produce stable `failed_stage`, `reason_code`, and message outputs

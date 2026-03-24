@@ -151,7 +151,7 @@ class TestValidationPipelineRun:
         'action',
         [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
     )
-    def test_safety_actions_bypass_health_and_platform_limits(
+    def test_safety_actions_bypass_capital_health_and_platform_limits(
         self,
         action: ValidationAction,
     ) -> None:
