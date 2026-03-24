@@ -117,3 +117,12 @@
 - Add temporal intake checks coverage for rate-window recovery and duplicate-window replay expiry behavior
 - Add explicit duplicate-hook non-ENTER bypass coverage and message-stability assertions for core intake deny paths
 - Expand validator intake test coverage and raise full-suite baseline to 470 passing tests
+
+## v0.13.0 on 24th of March, 2026
+
+- Add `MODIFY` edit-baseline fields to `ValidationRequestContext` (`current_order_notional`, `current_order_size`) with strict finite/non-negative validation
+- Add capital-stage delta semantics for `MODIFY`: reserve only positive notional deltas, skip reservation for no-op/decrease edits
+- Add strict lifecycle gate for `MODIFY` in intake hooks: require `modifiable_command_ids`, deny when unavailable, and validate command membership against modifiable set
+- Add capital-stage tests for `MODIFY` increase/decrease/no-op reservation behavior
+- Add pipeline-executor tests for `MODIFY` increase/decrease/no-op flows and deterministic deny stage/reason/message behavior
+- Expand validator test baseline to 486 passing tests
