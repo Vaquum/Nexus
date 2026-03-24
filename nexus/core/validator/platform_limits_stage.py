@@ -22,6 +22,7 @@ __all__ = [
 ]
 
 _ZERO_DECIMAL = Decimal(0)
+_ONE_DECIMAL = Decimal(1)
 
 PLATFORM_LIMITS_MAX_ORDER_NOTIONAL_LIMIT_CODE = (
     'PLATFORM_LIMITS_MAX_ORDER_NOTIONAL_LIMIT'
@@ -67,7 +68,7 @@ class PlatformLimitsStageLimits:
 
         if (
             self.max_capital_utilization is not None
-            and self.max_capital_utilization > Decimal(1)
+            and self.max_capital_utilization > _ONE_DECIMAL
         ):
             msg = 'PlatformLimitsStageLimits.max_capital_utilization must be <= 1'
             raise ValueError(msg)
@@ -103,7 +104,7 @@ class PlatformLimitsStageSnapshot:
 
         if (
             self.projected_capital_utilization is not None
-            and self.projected_capital_utilization > Decimal(1)
+            and self.projected_capital_utilization > _ONE_DECIMAL
         ):
             msg = (
                 'PlatformLimitsStageSnapshot.projected_capital_utilization must be <= 1'
