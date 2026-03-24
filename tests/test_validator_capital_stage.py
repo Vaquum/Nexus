@@ -8,6 +8,7 @@ from unittest.mock import Mock
 import pytest
 
 from nexus.core.capital_controller.capital_controller import CapitalController
+from nexus.core.capital_controller.reservation import ReservationResult
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.validator import (
     ValidationAction,
@@ -134,6 +135,29 @@ class TestValidateCapitalStage:
         assert decision.allowed is True
         assert decision.reservation is None
         capital_controller.check_and_reserve.assert_not_called()
+
+    def test_modify_uses_delta_estimated_fees_for_capital_check(self) -> None:
+        context = _make_context(
+            action=ValidationAction.MODIFY,
+            order_notional=Decimal('120'),
+            current_order_notional=Decimal('100'),
+            estimated_fees=Decimal('6'),
+            strategy_budget=Decimal('5000'),
+        )
+        capital_controller = Mock()
+        capital_controller.check_and_reserve.return_value = ReservationResult(
+            granted=False,
+            denial_reason='denied',
+        )
+
+        _ = validate_capital_stage(context, cast(CapitalController, capital_controller))
+
+        capital_controller.check_and_reserve.assert_called_once_with(
+            strategy_id='strat_a',
+            order_notional=Decimal('20'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
 
     @pytest.mark.parametrize('invalid_ttl', [True, 0, -1, 1.5])
     def test_rejects_invalid_ttl_seconds(self, invalid_ttl: object) -> None:

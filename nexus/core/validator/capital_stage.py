@@ -37,6 +37,7 @@ def validate_capital_stage(
         kwargs['ttl_seconds'] = ttl_seconds
 
     order_notional = context.order_notional
+    estimated_fees = context.estimated_fees
     if (
         context.action == ValidationAction.MODIFY
         and context.current_order_notional is not None
@@ -44,11 +45,14 @@ def validate_capital_stage(
         order_notional = context.order_notional - context.current_order_notional
         if order_notional <= _ZERO:
             return ValidationDecision(allowed=True)
+        estimated_fees = (
+            context.estimated_fees * order_notional
+        ) / context.order_notional
 
     result = capital_controller.check_and_reserve(
         strategy_id=context.strategy_id,
         order_notional=order_notional,
-        estimated_fees=context.estimated_fees,
+        estimated_fees=estimated_fees,
         strategy_budget=context.strategy_budget,
         **kwargs,
     )
