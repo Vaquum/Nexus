@@ -239,8 +239,53 @@ class TestPriceStage:
         assert decision.reason_code == 'PRICE_SNAPSHOT_INVALID'
         assert decision.message == 'Price snapshot reference source is inconsistent'
 
+    def test_denies_when_deviation_snapshot_is_missing(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('10'),
+                reference_price_source='origo_mid',
+            ),
+            snapshot=None,
+        )
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.PRICE
+        assert decision.reason_code == 'PRICE_SYSTEM_DATA_UNAVAILABLE'
+        assert decision.message == (
+            'Price system data unavailable: deviation_bps/reference_price_source '
+            'missing'
+        )
+
+    def test_allows_deviation_when_source_matches_case_insensitively(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('10'),
+                reference_price_source='ORIGO_MID',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('9'),
+                reference_price_source=' origo_mid ',
+            ),
+        )
+        assert decision.allowed is True
+
 
 class TestPriceFailureConsequence:
+    def test_book_stale_routes_to_platform(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(max_staleness_ms=100),
+            snapshot=PriceCheckSnapshot(now_ms=1300, book_timestamp_ms=1000),
+        )
+        consequence = derive_price_failure_consequence(decision)
+
+        assert consequence == PriceFailureConsequence(
+            notify_strategy_owner=True,
+            notify_platform_ops=True,
+            severity='critical',
+        )
+
     def test_system_data_unavailable_routes_to_platform(self) -> None:
         decision = validate_price_stage(
             _make_context(),
@@ -260,6 +305,26 @@ class TestPriceFailureConsequence:
             _make_context(),
             PriceStageLimits(max_spread_bps=Decimal('5')),
             snapshot=PriceCheckSnapshot(spread_bps=Decimal('7')),
+        )
+        consequence = derive_price_failure_consequence(decision)
+
+        assert consequence == PriceFailureConsequence(
+            notify_strategy_owner=True,
+            notify_platform_ops=False,
+            severity='warning',
+        )
+
+    def test_deviation_limit_stays_strategy_scoped(self) -> None:
+        decision = validate_price_stage(
+            _make_context(),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('5'),
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('7'),
+                reference_price_source='origo_mid',
+            ),
         )
         consequence = derive_price_failure_consequence(decision)
 

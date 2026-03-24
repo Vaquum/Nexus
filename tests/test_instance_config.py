@@ -302,6 +302,16 @@ def test_negative_max_spread_bps_rejected() -> None:
         )
 
 
+def test_nan_max_spread_bps_rejected() -> None:
+    with pytest.raises(ValueError, match='max_spread_bps'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            max_spread_bps=Decimal('NaN'),
+        )
+
+
 def test_non_decimal_price_deviation_max_bps_rejected() -> None:
     with pytest.raises(ValueError, match='price_deviation_max_bps'):
         InstanceConfig(
@@ -320,6 +330,17 @@ def test_negative_price_deviation_max_bps_rejected() -> None:
             venue='binance_spot',
             allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('-0.1'),
+            reference_price_source='origo_mid',
+        )
+
+
+def test_nan_price_deviation_max_bps_rejected() -> None:
+    with pytest.raises(ValueError, match='price_deviation_max_bps'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            price_deviation_max_bps=Decimal('NaN'),
             reference_price_source='origo_mid',
         )
 
