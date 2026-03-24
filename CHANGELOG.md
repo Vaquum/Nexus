@@ -126,3 +126,12 @@
 - Add capital-stage tests for `MODIFY` increase/decrease/no-op reservation behavior
 - Add pipeline-executor tests for `MODIFY` increase/decrease/no-op flows and deterministic deny stage/reason/message behavior
 - Expand validator test baseline to 486 passing tests
+
+## v0.14.0 on 24th of March, 2026
+
+- Add RFC 3.4 price-validation config fields to `InstanceConfig`: `book_staleness_max_seconds`, `max_spread_bps`, `price_deviation_max_bps`, `reference_price_source`
+- Add strict validation for 3.4 config fields: positive staleness seconds, finite non-negative bps thresholds, allowed `reference_price_source`, and deviation-source requirement
+- Add `build_price_stage_limits_from_config(...)` to map `book_staleness_max_seconds` to `max_staleness_ms` and wire spread/deviation/source limits into Stage 3
+- Add reference-source identity to price contracts via `PriceCheckSnapshot.reference_price_source` and `PriceStageLimits.reference_price_source` with non-empty validation
+- Fix deviation-stage behavior to deny deterministically when reference source is missing or mismatched (`PRICE_SYSTEM_DATA_UNAVAILABLE`/`PRICE_SNAPSHOT_INVALID`)
+- Add and expand tests for 3.4 config validation, source-aware deviation paths, consequence routing (stale => platform-critical, spread/deviation => strategy-warning), and full-suite stability (512 passing tests)

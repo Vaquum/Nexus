@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
+from nexus.instance_config import InstanceConfig
 from nexus.core.validator.pipeline_models import (
     ValidationDecision,
     ValidationRequestContext,
@@ -15,11 +16,13 @@ __all__ = [
     'PriceCheckSnapshot',
     'PriceFailureConsequence',
     'PriceStageLimits',
+    'build_price_stage_limits_from_config',
     'derive_price_failure_consequence',
     'validate_price_stage',
 ]
 
 _ZERO_DECIMAL = Decimal(0)
+_MILLISECONDS_PER_SECOND = 1000
 
 
 @dataclass(frozen=True)
@@ -30,6 +33,7 @@ class PriceCheckSnapshot:
     book_timestamp_ms: int | None = None
     spread_bps: Decimal | None = None
     deviation_bps: Decimal | None = None
+    reference_price_source: str | None = None
 
     def __post_init__(self) -> None:
         '''Validate snapshot field invariants.'''
@@ -65,6 +69,16 @@ class PriceCheckSnapshot:
                 )
                 raise ValueError(msg)
 
+        if self.reference_price_source is not None and (
+            not isinstance(self.reference_price_source, str)
+            or not self.reference_price_source.strip()
+        ):
+            msg = (
+                'PriceCheckSnapshot.reference_price_source must be a non-empty '
+                'string or None'
+            )
+            raise ValueError(msg)
+
 
 @dataclass(frozen=True)
 class PriceStageLimits:
@@ -73,6 +87,7 @@ class PriceStageLimits:
     max_staleness_ms: int | None = None
     max_spread_bps: Decimal | None = None
     max_deviation_bps: Decimal | None = None
+    reference_price_source: str | None = None
 
     def __post_init__(self) -> None:
         '''Validate configured price-stage thresholds.'''
@@ -100,6 +115,16 @@ class PriceStageLimits:
                 )
                 raise ValueError(msg)
 
+        if self.reference_price_source is not None and (
+            not isinstance(self.reference_price_source, str)
+            or not self.reference_price_source.strip()
+        ):
+            msg = (
+                'PriceStageLimits.reference_price_source must be a non-empty '
+                'string or None'
+            )
+            raise ValueError(msg)
+
 
 @dataclass(frozen=True)
 class PriceFailureConsequence:
@@ -108,6 +133,24 @@ class PriceFailureConsequence:
     notify_strategy_owner: bool
     notify_platform_ops: bool
     severity: str
+
+
+def build_price_stage_limits_from_config(config: InstanceConfig) -> PriceStageLimits:
+    """Build Stage-3 price limits from runtime config."""
+    if not isinstance(config, InstanceConfig):
+        msg = 'config must be an InstanceConfig instance'
+        raise ValueError(msg)
+
+    max_staleness_ms: int | None = None
+    if config.book_staleness_max_seconds is not None:
+        max_staleness_ms = config.book_staleness_max_seconds * _MILLISECONDS_PER_SECOND
+
+    return PriceStageLimits(
+        max_staleness_ms=max_staleness_ms,
+        max_spread_bps=config.max_spread_bps,
+        max_deviation_bps=config.price_deviation_max_bps,
+        reference_price_source=config.reference_price_source,
+    )
 
 
 def derive_price_failure_consequence(
@@ -212,12 +255,39 @@ def validate_price_stage(
             )
 
     if limits.max_deviation_bps is not None and decision is None:
-        if snapshot is None or snapshot.deviation_bps is None:
+        if limits.reference_price_source is None:
             decision = ValidationDecision(
                 allowed=False,
                 failed_stage=ValidationStage.PRICE,
                 reason_code='PRICE_SYSTEM_DATA_UNAVAILABLE',
-                message='Price system data unavailable: deviation_bps missing',
+                message=(
+                    'Price system data unavailable: reference_price_source '
+                    'missing for deviation validation'
+                ),
+            )
+        elif (
+            snapshot is None
+            or snapshot.deviation_bps is None
+            or snapshot.reference_price_source is None
+        ):
+            decision = ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_SYSTEM_DATA_UNAVAILABLE',
+                message=(
+                    'Price system data unavailable: deviation_bps/'
+                    'reference_price_source missing'
+                ),
+            )
+        elif (
+            snapshot.reference_price_source.strip().lower()
+            != limits.reference_price_source.strip().lower()
+        ):
+            decision = ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_SNAPSHOT_INVALID',
+                message='Price snapshot reference source is inconsistent',
             )
         elif snapshot.deviation_bps > limits.max_deviation_bps:
             decision = ValidationDecision(

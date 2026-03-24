@@ -16,6 +16,7 @@ __all__ = ['InstanceConfig']
 
 _ZERO = Decimal('0')
 _ONE_HUNDRED = Decimal('100')
+_ALLOWED_REFERENCE_PRICE_SOURCES = frozenset({'origo_mid'})
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,13 @@ class InstanceConfig:
             for intake rate-limiting within this Manager process. This is not
             a distributed/global limit across multiple processes or hosts.
             ``None`` disables the rate check.
+        book_staleness_max_seconds: Optional Stage-3 price staleness threshold
+            in seconds.
+        max_spread_bps: Optional Stage-3 max spread threshold in bps.
+        price_deviation_max_bps: Optional Stage-3 max deviation threshold in
+            bps.
+        reference_price_source: Optional Stage-3 reference price source
+            identifier used for deviation checks.
         capital_pct: Strategy capital-allocation percentages keyed by
             strategy_id.
     '''
@@ -43,6 +51,10 @@ class InstanceConfig:
     allocated_capital: Decimal
     duplicate_window_ms: int = 1000
     max_order_rate: int | None = None
+    book_staleness_max_seconds: int | None = None
+    max_spread_bps: Decimal | None = None
+    price_deviation_max_bps: Decimal | None = None
+    reference_price_source: str | None = None
     capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -82,6 +94,70 @@ class InstanceConfig:
             if self.max_order_rate <= 0:
                 msg = 'InstanceConfig.max_order_rate must be a positive integer'
                 raise ValueError(msg)
+
+        if self.book_staleness_max_seconds is not None:
+            if isinstance(self.book_staleness_max_seconds, bool) or not isinstance(
+                self.book_staleness_max_seconds,
+                int,
+            ):
+                msg = 'InstanceConfig.book_staleness_max_seconds must be an integer'
+                raise ValueError(msg)
+
+            if self.book_staleness_max_seconds <= 0:
+                msg = (
+                    'InstanceConfig.book_staleness_max_seconds must be a positive '
+                    'integer'
+                )
+                raise ValueError(msg)
+
+        for field_name in ('max_spread_bps', 'price_deviation_max_bps'):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if not isinstance(value, Decimal) or not value.is_finite() or value < _ZERO:
+                msg = (
+                    f'InstanceConfig.{field_name} must be a finite non-negative Decimal'
+                )
+                raise ValueError(msg)
+
+        if self.reference_price_source is not None:
+            if not isinstance(self.reference_price_source, str):
+                msg = 'InstanceConfig.reference_price_source must be a string'
+                raise ValueError(msg)
+
+            normalized_reference_price_source = (
+                self.reference_price_source.strip().lower()
+            )
+            if not normalized_reference_price_source:
+                msg = 'InstanceConfig.reference_price_source must be a non-empty string'
+                raise ValueError(msg)
+
+            if (
+                normalized_reference_price_source
+                not in _ALLOWED_REFERENCE_PRICE_SOURCES
+            ):
+                allowed_values = ', '.join(sorted(_ALLOWED_REFERENCE_PRICE_SOURCES))
+                msg = (
+                    'InstanceConfig.reference_price_source must be one of '
+                    f'{allowed_values}'
+                )
+                raise ValueError(msg)
+
+            object.__setattr__(
+                self,
+                'reference_price_source',
+                normalized_reference_price_source,
+            )
+
+        if (
+            self.price_deviation_max_bps is not None
+            and self.reference_price_source is None
+        ):
+            msg = (
+                'InstanceConfig.reference_price_source is required when '
+                'price_deviation_max_bps is set'
+            )
+            raise ValueError(msg)
 
         if not isinstance(self.capital_pct, Mapping):
             msg = (
