@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.validator.pipeline_models import (
+    ValidationAction,
     ValidationDecision,
     ValidationRequestContext,
     ValidationStage,
@@ -12,6 +15,7 @@ from nexus.core.validator.pipeline_models import (
 __all__ = ['CAPITAL_RESERVATION_DENIED_CODE', 'validate_capital_stage']
 
 CAPITAL_RESERVATION_DENIED_CODE = 'CAPITAL_RESERVATION_DENIED'
+_ZERO = Decimal('0')
 
 
 def validate_capital_stage(
@@ -32,9 +36,18 @@ def validate_capital_stage(
             raise ValueError(msg)
         kwargs['ttl_seconds'] = ttl_seconds
 
+    order_notional = context.order_notional
+    if (
+        context.action == ValidationAction.MODIFY
+        and context.current_order_notional is not None
+    ):
+        order_notional = context.order_notional - context.current_order_notional
+        if order_notional <= _ZERO:
+            return ValidationDecision(allowed=True)
+
     result = capital_controller.check_and_reserve(
         strategy_id=context.strategy_id,
-        order_notional=context.order_notional,
+        order_notional=order_notional,
         estimated_fees=context.estimated_fees,
         strategy_budget=context.strategy_budget,
         **kwargs,

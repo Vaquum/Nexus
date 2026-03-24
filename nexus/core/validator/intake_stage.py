@@ -35,6 +35,7 @@ def build_default_intake_hooks(
     config: InstanceConfig,
     *,
     active_command_ids: set[str] | None = None,
+    modifiable_command_ids: set[str] | None = None,
     max_order_rate: int | None = None,
     now_fn: Callable[[], datetime] | None = None,
 ) -> tuple[IntakeValidationHook, ...]:
@@ -43,6 +44,8 @@ def build_default_intake_hooks(
     Args:
         config: Instance config carrying duplicate-window and order-rate settings.
         active_command_ids: Active command id set for MODIFY/ABORT checks.
+        modifiable_command_ids: Optional lifecycle-valid command ids for MODIFY.
+            When provided, MODIFY must target this set.
         max_order_rate: Optional max ENTER actions/sec override.
             Defaults to ``config.max_order_rate`` when not provided.
         now_fn: Optional clock override for deterministic tests.
@@ -56,7 +59,8 @@ def build_default_intake_hooks(
         make_reference_integrity_hook(
             active_command_ids=(
                 active_command_ids if active_command_ids is not None else set()
-            )
+            ),
+            modifiable_command_ids=modifiable_command_ids,
         ),
     ]
 
@@ -188,6 +192,8 @@ def make_duplicate_order_hook(
 
 def make_reference_integrity_hook(
     active_command_ids: set[str],
+    *,
+    modifiable_command_ids: set[str] | None = None,
 ) -> IntakeValidationHook:
     '''Create intake hook for trade/command references and spot-direction rules.'''
 
@@ -247,15 +253,22 @@ def make_reference_integrity_hook(
                     )
 
         elif context.action == ValidationAction.MODIFY:
-            if (
+            if modifiable_command_ids is None:
+                decision = ValidationDecision(
+                    allowed=False,
+                    failed_stage=ValidationStage.INTAKE,
+                    reason_code='INTAKE_MODIFIABLE_COMMANDS_UNAVAILABLE',
+                    message='MODIFY requires modifiable_command_ids to be provided',
+                )
+            elif (
                 context.command_id is None
-                or context.command_id not in active_command_ids
+                or context.command_id not in modifiable_command_ids
             ):
                 decision = ValidationDecision(
                     allowed=False,
                     failed_stage=ValidationStage.INTAKE,
                     reason_code='INTAKE_COMMAND_REFERENCE_INVALID',
-                    message='MODIFY requires valid active command_id',
+                    message='MODIFY requires valid modifiable command_id',
                 )
             elif context.order_size is None or context.order_size <= _ZERO:
                 decision = ValidationDecision(

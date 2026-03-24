@@ -413,7 +413,7 @@ class TestRfcStageOneHooks:
         assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_EXIT_SIZE_EXCEEDS_REMAINING'
 
-    def test_reference_integrity_modify_requires_active_command(self) -> None:
+    def test_reference_integrity_modify_requires_modifiable_set(self) -> None:
         ref_hook = make_reference_integrity_hook(active_command_ids={'cmd_ok'})
 
         decision = validate_intake_stage(
@@ -425,10 +425,52 @@ class TestRfcStageOneHooks:
             hooks=(ref_hook,),
         )
         assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_MODIFIABLE_COMMANDS_UNAVAILABLE'
+
+    def test_reference_integrity_modify_requires_modifiable_command_when_provided(
+        self,
+    ) -> None:
+        ref_hook = make_reference_integrity_hook(
+            active_command_ids={'cmd_ok', 'cmd_finalized'},
+            modifiable_command_ids={'cmd_ok'},
+        )
+
+        decision = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_finalized',
+                order_side=None,
+            ),
+            hooks=(ref_hook,),
+        )
+
+        assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_COMMAND_REFERENCE_INVALID'
 
+    def test_reference_integrity_modify_accepts_modifiable_command_when_provided(
+        self,
+    ) -> None:
+        ref_hook = make_reference_integrity_hook(
+            active_command_ids={'cmd_ok', 'cmd_finalized'},
+            modifiable_command_ids={'cmd_ok'},
+        )
+
+        decision = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_ok',
+                order_side=None,
+            ),
+            hooks=(ref_hook,),
+        )
+
+        assert decision.allowed is True
+
     def test_reference_integrity_modify_requires_positive_size(self) -> None:
-        ref_hook = make_reference_integrity_hook(active_command_ids={'cmd_ok'})
+        ref_hook = make_reference_integrity_hook(
+            active_command_ids={'cmd_ok'},
+            modifiable_command_ids={'cmd_ok'},
+        )
 
         decision = validate_intake_stage(
             _make_context(
@@ -492,7 +534,7 @@ class TestRfcStageOneHooks:
         assert d2.allowed is False
         assert d2.reason_code == 'INTAKE_DUPLICATE_ORDER_WINDOW'
 
-    def test_default_hooks_preserve_provided_empty_active_command_ids_set(self) -> None:
+    def test_default_hooks_modify_requires_modifiable_command_ids(self) -> None:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
@@ -514,7 +556,45 @@ class TestRfcStageOneHooks:
             hooks=hooks,
         )
 
-        assert decision.allowed is True
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_MODIFIABLE_COMMANDS_UNAVAILABLE'
+
+    def test_default_hooks_use_provided_modifiable_command_ids(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+        )
+        active_command_ids = {'cmd_mod', 'cmd_done'}
+        modifiable_command_ids: set[str] = set()
+        hooks = build_default_intake_hooks(
+            config,
+            active_command_ids=active_command_ids,
+            modifiable_command_ids=modifiable_command_ids,
+        )
+
+        modifiable_command_ids.add('cmd_mod')
+
+        denied = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_done',
+                order_side=None,
+            ),
+            hooks=hooks,
+        )
+        allowed = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_mod',
+                order_side=None,
+            ),
+            hooks=hooks,
+        )
+
+        assert denied.allowed is False
+        assert denied.reason_code == 'INTAKE_COMMAND_REFERENCE_INVALID'
+        assert allowed.allowed is True
 
     def test_default_hooks_apply_config_max_order_rate(self) -> None:
         config = InstanceConfig(
