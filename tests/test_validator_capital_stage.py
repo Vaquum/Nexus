@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal
+from typing import cast
+
+import pytest
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.instance_state import InstanceState
@@ -75,3 +78,15 @@ class TestValidateCapitalStage:
             decision.reservation.expires_at - decision.reservation.created_at
             == timedelta(seconds=7)
         )
+
+    @pytest.mark.parametrize('invalid_ttl', [True, 0, -1, 1.5])
+    def test_rejects_invalid_ttl_seconds(self, invalid_ttl: object) -> None:
+        context = _make_context()
+        capital_controller = CapitalController(context.state.capital)
+
+        with pytest.raises(ValueError, match='ttl_seconds'):
+            validate_capital_stage(
+                context,
+                capital_controller,
+                ttl_seconds=cast(int, invalid_ttl),
+            )

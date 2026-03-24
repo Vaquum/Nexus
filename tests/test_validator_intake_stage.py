@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from typing import Any, cast
 from datetime import datetime, timezone
@@ -162,6 +163,22 @@ class TestRfcStageOneHooks:
 
         with pytest.raises(ValueError, match='must be an integer'):
             make_duplicate_order_hook(cast(int, cast(object, 1000.0)))
+
+    def test_duplicate_hook_is_thread_safe_for_same_command_id(self) -> None:
+        dupe_hook = make_duplicate_order_hook(1000)
+
+        def run_once() -> bool:
+            decision = validate_intake_stage(
+                _make_context(command_id='cmd_shared'),
+                hooks=(dupe_hook,),
+            )
+            return decision.allowed
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            outcomes = list(pool.map(lambda _: run_once(), range(8)))
+
+        assert outcomes.count(True) == 1
+        assert outcomes.count(False) == 7
 
     def test_max_order_rate_enforced_for_enter(self) -> None:
         times = [

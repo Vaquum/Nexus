@@ -6,6 +6,7 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
+from threading import Lock
 
 from nexus.core.domain.enums import OrderSide
 from nexus.instance_config import InstanceConfig
@@ -80,6 +81,7 @@ def make_order_rate_hook(
 
     clock = now_fn or (lambda: datetime.now(tz=timezone.utc))
     event_times: deque[float] = deque()
+    lock = Lock()
 
     def hook(context: ValidationRequestContext) -> ValidationDecision | None:
         if context.action != ValidationAction.ENTER:
@@ -87,18 +89,20 @@ def make_order_rate_hook(
 
         now = clock().timestamp()
         cutoff = now - 1.0
-        while event_times and event_times[0] <= cutoff:
-            event_times.popleft()
 
-        if len(event_times) >= max_order_rate:
-            return ValidationDecision(
-                allowed=False,
-                failed_stage=ValidationStage.INTAKE,
-                reason_code='INTAKE_MAX_ORDER_RATE_EXCEEDED',
-                message=f'max_order_rate exceeded: limit={max_order_rate}/s',
-            )
+        with lock:
+            while event_times and event_times[0] <= cutoff:
+                event_times.popleft()
 
-        event_times.append(now)
+            if len(event_times) >= max_order_rate:
+                return ValidationDecision(
+                    allowed=False,
+                    failed_stage=ValidationStage.INTAKE,
+                    reason_code='INTAKE_MAX_ORDER_RATE_EXCEEDED',
+                    message=f'max_order_rate exceeded: limit={max_order_rate}/s',
+                )
+
+            event_times.append(now)
         return None
 
     return hook
@@ -124,6 +128,7 @@ def make_duplicate_order_hook(
     clock = now_fn or (lambda: datetime.now(tz=timezone.utc))
     duplicate_window_seconds = duplicate_window_ms / 1000
     seen: dict[tuple[str, ...], float] = {}
+    lock = Lock()
 
     def hook(context: ValidationRequestContext) -> ValidationDecision | None:
         if context.action != ValidationAction.ENTER:
@@ -154,23 +159,24 @@ def make_duplicate_order_hook(
         now = clock().timestamp()
         cutoff = now - duplicate_window_seconds
 
-        stale_keys = [k for k, ts in seen.items() if ts <= cutoff]
-        for stale_key in stale_keys:
-            seen.pop(stale_key, None)
+        with lock:
+            stale_keys = [k for k, ts in seen.items() if ts <= cutoff]
+            for stale_key in stale_keys:
+                seen.pop(stale_key, None)
 
-        prior = seen.get(key)
-        if prior is not None and (now - prior) < duplicate_window_seconds:
-            return ValidationDecision(
-                allowed=False,
-                failed_stage=ValidationStage.INTAKE,
-                reason_code='INTAKE_DUPLICATE_ORDER_WINDOW',
-                message=(
-                    'duplicate command_id detected within '
-                    f'{duplicate_window_ms}ms window'
-                ),
-            )
+            prior = seen.get(key)
+            if prior is not None and (now - prior) < duplicate_window_seconds:
+                return ValidationDecision(
+                    allowed=False,
+                    failed_stage=ValidationStage.INTAKE,
+                    reason_code='INTAKE_DUPLICATE_ORDER_WINDOW',
+                    message=(
+                        'duplicate command_id detected within '
+                        f'{duplicate_window_ms}ms window'
+                    ),
+                )
 
-        seen[key] = now
+            seen[key] = now
         return None
 
     return hook
