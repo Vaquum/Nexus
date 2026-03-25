@@ -31,7 +31,7 @@ class TradeCommand:
         size: Base asset quantity; None for AMEND_ORDER/CANCEL_ORDER.
         stp_mode: Self-trade prevention; required for NEW_ORDER, None otherwise.
         trade_id: Position reference for EXIT actions.
-        reservation_id: Capital lock reference for ENTER actions.
+        reservation_id: Capital lock reference for ENTER and size-increasing MODIFY.
     '''
 
     command_id: str
