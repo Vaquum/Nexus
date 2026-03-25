@@ -1,4 +1,9 @@
-'''Trade command type enum for Praxis Connector outbound translation.'''
+'''Trade command type enum for Praxis Connector outbound translation.
+
+Maps ValidationAction intents to Trading sub-system command semantics.
+ENTER/EXIT become NEW_ORDER, MODIFY becomes AMEND_ORDER, ABORT/CANCEL
+become CANCEL_ORDER.
+'''
 
 from __future__ import annotations
 

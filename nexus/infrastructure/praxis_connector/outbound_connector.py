@@ -1,4 +1,9 @@
-'''Outbound connector protocol for Trading sub-system dispatch.'''
+'''Outbound connector protocol for Trading sub-system dispatch.
+
+Defines the interface for submitting TradeCommands to the Trading
+sub-system (Praxis). Concrete implementations handle transport details
+such as HTTP, message queues, or in-memory mocks for testing.
+'''
 
 from __future__ import annotations
 
