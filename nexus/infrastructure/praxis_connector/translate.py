@@ -34,7 +34,7 @@ def translate_to_trade_command(
 
     Args:
         context: Validated action request context.
-        decision: Validation pipeline decision (caller ensures allowed).
+        decision: Validation pipeline decision (must be allowed).
         config: Instance configuration for account/venue/stp_mode.
         now: Timestamp for command creation.
 
@@ -42,11 +42,20 @@ def translate_to_trade_command(
         TradeCommand ready for Trading sub-system dispatch.
 
     Raises:
-        ValueError: If now is not timezone-aware.
+        ValueError: If decision is not allowed, command_id is missing,
+            or now is not timezone-aware.
     '''
+
+    if not decision.allowed:
+        msg = 'translate_to_trade_command: decision must be allowed'
+        raise ValueError(msg)
 
     if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
         msg = 'translate_to_trade_command requires timezone-aware datetime'
+        raise ValueError(msg)
+
+    if not context.command_id:
+        msg = 'translate_to_trade_command requires non-empty command_id'
         raise ValueError(msg)
 
     command_type = _ACTION_TO_COMMAND_TYPE[context.action]
@@ -57,7 +66,7 @@ def translate_to_trade_command(
         reservation_id = decision.reservation.reservation_id
 
     return TradeCommand(
-        command_id=context.command_id or '',
+        command_id=context.command_id,
         command_type=command_type,
         account_id=config.account_id,
         venue=config.venue,

@@ -396,3 +396,59 @@ def test_cancel_order_with_stp_mode_rejected() -> None:
             created_at=_now(),
             stp_mode=STPMode.CANCEL_TAKER,
         )
+
+
+def test_amend_order_with_side_rejected() -> None:
+    with pytest.raises(ValueError, match='AMEND_ORDER must not have side'):
+        TradeCommand(
+            command_id='cmd_001',
+            command_type=TradeCommandType.AMEND_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('1500'),
+            created_at=_now(),
+            side=OrderSide.BUY,
+        )
+
+
+def test_amend_order_with_size_rejected() -> None:
+    with pytest.raises(ValueError, match='AMEND_ORDER must not have size'):
+        TradeCommand(
+            command_id='cmd_001',
+            command_type=TradeCommandType.AMEND_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('1500'),
+            created_at=_now(),
+            size=Decimal('0.02'),
+        )
+
+
+def test_cancel_order_with_side_rejected() -> None:
+    with pytest.raises(ValueError, match='CANCEL_ORDER must not have side'):
+        TradeCommand(
+            command_id='cmd_001',
+            command_type=TradeCommandType.CANCEL_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('0'),
+            created_at=_now(),
+            side=OrderSide.SELL,
+        )
+
+
+def test_cancel_order_with_size_rejected() -> None:
+    with pytest.raises(ValueError, match='CANCEL_ORDER must not have size'):
+        TradeCommand(
+            command_id='cmd_001',
+            command_type=TradeCommandType.CANCEL_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('0'),
+            created_at=_now(),
+            size=Decimal('0.01'),
+        )

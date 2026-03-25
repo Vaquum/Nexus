@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -14,6 +14,7 @@ from nexus.core.validator.pipeline_models import (
     ValidationAction,
     ValidationDecision,
     ValidationRequestContext,
+    ValidationStage,
 )
 from nexus.core.capital_controller.reservation import Reservation
 from nexus.infrastructure.praxis_connector.trade_command_type import TradeCommandType
@@ -46,7 +47,7 @@ def _reservation() -> Reservation:
         notional=Decimal('1000'),
         estimated_fees=Decimal('1'),
         created_at=now,
-        expires_at=now.replace(minute=now.minute + 1),
+        expires_at=now + timedelta(minutes=1),
     )
 
 
@@ -235,3 +236,41 @@ def test_stp_mode_from_config() -> None:
         config = _config(stp_mode=mode)
         cmd = translate_to_trade_command(context, decision, config, now)
         assert cmd.stp_mode == mode
+
+
+def test_denied_decision_rejected() -> None:
+    context = _enter_context()
+    decision = ValidationDecision(
+        allowed=False,
+        failed_stage=ValidationStage.CAPITAL,
+        reason_code='CAPITAL_INSUFFICIENT',
+        message='Insufficient capital',
+    )
+    config = _config()
+    now = _now()
+
+    with pytest.raises(ValueError, match='decision must be allowed'):
+        translate_to_trade_command(context, decision, config, now)
+
+
+def test_missing_command_id_rejected() -> None:
+    context = ValidationRequestContext(
+        strategy_id='strat_001',
+        action=ValidationAction.EXIT,
+        symbol='BTCUSDT',
+        order_side=OrderSide.SELL,
+        order_size=Decimal('0.01'),
+        command_id=None,
+        trade_id='trade_001',
+        order_notional=Decimal('1000'),
+        estimated_fees=Decimal('1'),
+        strategy_budget=Decimal('5000'),
+        state=_state(),
+        config=_config(),
+    )
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    with pytest.raises(ValueError, match='non-empty command_id'):
+        translate_to_trade_command(context, decision, config, now)

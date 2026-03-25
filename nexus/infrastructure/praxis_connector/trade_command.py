@@ -134,11 +134,23 @@ class TradeCommand:
                 raise ValueError(msg)
 
         elif self.command_type == TradeCommandType.AMEND_ORDER:
+            if self.side is not None:
+                msg = 'TradeCommand: AMEND_ORDER must not have side'
+                raise ValueError(msg)
+            if self.size is not None:
+                msg = 'TradeCommand: AMEND_ORDER must not have size'
+                raise ValueError(msg)
             if self.stp_mode is not None:
                 msg = 'TradeCommand: AMEND_ORDER must not have stp_mode'
                 raise ValueError(msg)
 
         elif self.command_type == TradeCommandType.CANCEL_ORDER:
+            if self.side is not None:
+                msg = 'TradeCommand: CANCEL_ORDER must not have side'
+                raise ValueError(msg)
+            if self.size is not None:
+                msg = 'TradeCommand: CANCEL_ORDER must not have size'
+                raise ValueError(msg)
             if self.stp_mode is not None:
                 msg = 'TradeCommand: CANCEL_ORDER must not have stp_mode'
                 raise ValueError(msg)

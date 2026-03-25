@@ -8,7 +8,10 @@
 - Add [`trade_command.py`](nexus/infrastructure/praxis_connector/trade_command.py) with frozen `TradeCommand` dataclass and command-type-specific validation
 - Add [`translate.py`](nexus/infrastructure/praxis_connector/translate.py) with `translate_to_trade_command()` mapping ValidationAction to TradeCommand
 - Add [`outbound_connector.py`](nexus/infrastructure/praxis_connector/outbound_connector.py) with `OutboundConnector` protocol for Trading sub-system dispatch
-- Add 39 tests covering STPMode, TradeCommandType, TradeCommand validation, and translation for all action types (552 total)
+- Fix `translate_to_trade_command` to require allowed decision and non-empty `command_id` with explicit guards
+- Fix `TradeCommand` to reject `side`/`size` for `AMEND_ORDER`/`CANCEL_ORDER` command types
+- Fix test flakiness in `_reservation()` by using `timedelta` instead of `minute` replacement
+- Add 45 tests covering STPMode, TradeCommandType, TradeCommand validation, and translation for all action types (558 total)
 
 ## v0.1.0 on 16th of March, 2026
 
