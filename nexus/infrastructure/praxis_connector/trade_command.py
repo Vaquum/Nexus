@@ -27,8 +27,8 @@ class TradeCommand:
         symbol: Trading pair.
         notional: Quote asset amount.
         created_at: Command creation timestamp.
-        side: BUY/SELL direction; None for CANCEL_ORDER.
-        size: Base asset quantity; None for CANCEL_ORDER.
+        side: BUY/SELL direction; None for AMEND_ORDER/CANCEL_ORDER.
+        size: Base asset quantity; None for AMEND_ORDER/CANCEL_ORDER.
         stp_mode: Self-trade prevention; required for NEW_ORDER, None otherwise.
         trade_id: Position reference for EXIT actions.
         reservation_id: Capital lock reference for ENTER actions.
