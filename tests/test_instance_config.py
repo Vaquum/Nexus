@@ -7,6 +7,7 @@ from typing import cast
 
 import pytest
 
+from nexus.core.stp_mode import STPMode
 from nexus.instance_config import InstanceConfig
 
 
@@ -27,6 +28,7 @@ def test_valid_creation() -> None:
     assert cfg.max_spread_bps is None
     assert cfg.price_deviation_max_bps is None
     assert cfg.reference_price_source is None
+    assert cfg.stp_mode == STPMode.CANCEL_TAKER
     assert cfg.capital_pct == {}
 
 
@@ -374,6 +376,36 @@ def test_invalid_reference_price_source_rejected() -> None:
             allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('5'),
             reference_price_source='origo_last',
+        )
+
+
+def test_valid_creation_with_stp_mode_cancel_maker() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        stp_mode=STPMode.CANCEL_MAKER,
+    )
+    assert cfg.stp_mode == STPMode.CANCEL_MAKER
+
+
+def test_valid_creation_with_stp_mode_cancel_both() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        allocated_capital=Decimal('10000'),
+        stp_mode=STPMode.CANCEL_BOTH,
+    )
+    assert cfg.stp_mode == STPMode.CANCEL_BOTH
+
+
+def test_invalid_stp_mode_rejected() -> None:
+    with pytest.raises(ValueError, match='stp_mode'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=cast(STPMode, cast(object, 'CANCEL_TAKER')),
         )
 
 

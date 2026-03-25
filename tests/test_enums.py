@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nexus.core.domain.enums import BreachLevel, OperationalMode, OrderSide
+from nexus.core.stp_mode import STPMode
 
 
 def test_operational_mode_members() -> None:
@@ -38,3 +39,21 @@ def test_breach_level_members() -> None:
         BreachLevel.BREACH,
         BreachLevel.HALT,
     }
+
+
+def test_stp_mode_members() -> None:
+    '''Verify STPMode has exactly three members.'''
+
+    assert set(STPMode) == {
+        STPMode.CANCEL_MAKER,
+        STPMode.CANCEL_TAKER,
+        STPMode.CANCEL_BOTH,
+    }
+
+
+def test_stp_mode_values() -> None:
+    '''Verify STPMode string values.'''
+
+    assert STPMode.CANCEL_MAKER.value == 'CANCEL_MAKER'
+    assert STPMode.CANCEL_TAKER.value == 'CANCEL_TAKER'
+    assert STPMode.CANCEL_BOTH.value == 'CANCEL_BOTH'
