@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from types import MappingProxyType
 
+from nexus.core.stp_mode import STPMode
+
 __all__ = ['InstanceConfig']
 
 _ZERO = Decimal('0')
@@ -42,6 +44,9 @@ class InstanceConfig:
             bps.
         reference_price_source: Optional Stage-3 reference price source
             identifier used for deviation checks.
+        stp_mode: Self-trade prevention mode for order submission. Determines
+            behavior when a new order would match the account's own resting
+            order. Defaults to ``CANCEL_TAKER``.
         capital_pct: Strategy capital-allocation percentages keyed by
             strategy_id.
     '''
@@ -55,6 +60,7 @@ class InstanceConfig:
     max_spread_bps: Decimal | None = None
     price_deviation_max_bps: Decimal | None = None
     reference_price_source: str | None = None
+    stp_mode: STPMode = STPMode.CANCEL_TAKER
     capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -157,6 +163,10 @@ class InstanceConfig:
                 'InstanceConfig.reference_price_source is required when '
                 'price_deviation_max_bps is set'
             )
+            raise ValueError(msg)
+
+        if not isinstance(self.stp_mode, STPMode):
+            msg = 'InstanceConfig.stp_mode must be an STPMode member'
             raise ValueError(msg)
 
         if not isinstance(self.capital_pct, Mapping):
