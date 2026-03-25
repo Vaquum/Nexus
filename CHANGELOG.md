@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.15.0 on 25th of March, 2026
+
+- Add [`stp_mode.py`](nexus/core/stp_mode.py) with `STPMode` enum (CANCEL_MAKER, CANCEL_TAKER, CANCEL_BOTH) for self-trade prevention
+- Add `stp_mode` field to `InstanceConfig` with default `CANCEL_TAKER` and validation
+- Add [`trade_command_type.py`](nexus/infrastructure/praxis_connector/trade_command_type.py) with `TradeCommandType` enum (NEW_ORDER, AMEND_ORDER, CANCEL_ORDER)
+- Add [`trade_command.py`](nexus/infrastructure/praxis_connector/trade_command.py) with frozen `TradeCommand` dataclass and command-type-specific validation
+- Add [`translate.py`](nexus/infrastructure/praxis_connector/translate.py) with `translate_to_trade_command()` mapping ValidationAction to TradeCommand
+- Add [`outbound_connector.py`](nexus/infrastructure/praxis_connector/outbound_connector.py) with `OutboundConnector` protocol for Trading sub-system dispatch
+- Add 39 tests covering STPMode, TradeCommandType, TradeCommand validation, and translation for all action types (552 total)
+
 ## v0.1.0 on 16th of March, 2026
 
 - Add CI pipeline mirroring Praxis: Ruff, Mypy strict, pytest, CodeQL workflows
