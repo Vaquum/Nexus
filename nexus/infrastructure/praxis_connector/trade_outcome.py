@@ -76,11 +76,15 @@ class TradeOutcome:
 
         if self.outcome_type.is_fill:
             self._validate_fill_fields()
+        else:
+            self._validate_non_fill_fields()
 
-        if self.outcome_type == TradeOutcomeType.REJECTED and (
-            self.reject_reason is None or not self.reject_reason.strip()
-        ):
-            msg = 'TradeOutcome.reject_reason required for REJECTED outcome'
+        if self.outcome_type == TradeOutcomeType.REJECTED:
+            if self.reject_reason is None or not self.reject_reason.strip():
+                msg = 'TradeOutcome.reject_reason required for REJECTED outcome'
+                raise ValueError(msg)
+        elif self.reject_reason is not None:
+            msg = 'TradeOutcome.reject_reason must be None for non-REJECTED outcomes'
             raise ValueError(msg)
 
         if self.remaining_size is not None:
@@ -150,4 +154,23 @@ class TradeOutcome:
 
         if self.actual_fees < _ZERO:
             msg = 'TradeOutcome.actual_fees must be non-negative'
+            raise ValueError(msg)
+
+    def _validate_non_fill_fields(self) -> None:
+        '''Validate that fill-specific fields are absent for non-fill outcomes.'''
+
+        if self.fill_size is not None:
+            msg = 'TradeOutcome.fill_size must be None for non-fill outcomes'
+            raise ValueError(msg)
+
+        if self.fill_price is not None:
+            msg = 'TradeOutcome.fill_price must be None for non-fill outcomes'
+            raise ValueError(msg)
+
+        if self.fill_notional is not None:
+            msg = 'TradeOutcome.fill_notional must be None for non-fill outcomes'
+            raise ValueError(msg)
+
+        if self.actual_fees is not None:
+            msg = 'TradeOutcome.actual_fees must be None for non-fill outcomes'
             raise ValueError(msg)

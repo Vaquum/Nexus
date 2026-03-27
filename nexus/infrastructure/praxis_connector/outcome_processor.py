@@ -108,7 +108,7 @@ class OutcomeProcessor:
             return ProcessResult(
                 success=False,
                 outcome_type=outcome.outcome_type,
-                error_reason='order_fill failed: order not found, wrong state, or insufficient fee_reserve',
+                error_reason='order_fill failed: order not found, wrong state, fill_notional exceeds remaining, or insufficient fee_reserve',
             )
 
         position_updated = self._update_position_on_fill(outcome, context)
@@ -163,10 +163,11 @@ class OutcomeProcessor:
         position_updated = False
 
         if context.is_exit:
-            clear_size = (
+            clear_size = min(
                 outcome.remaining_size
                 if outcome.remaining_size is not None
-                else context.order_size
+                else context.order_size,
+                context.order_size,
             )
             position_updated = self._clear_pending_exit(context, clear_size)
 
