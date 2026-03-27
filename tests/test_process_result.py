@@ -5,7 +5,6 @@ from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcom
 
 
 class TestProcessResultConstruction:
-
     def test_success_result_valid(self) -> None:
         result = ProcessResult(
             success=True,
@@ -48,7 +47,6 @@ class TestProcessResultConstruction:
 
 
 class TestProcessResultValidation:
-
     def test_invalid_outcome_type_rejected(self) -> None:
         with pytest.raises(ValueError, match='outcome_type must be a TradeOutcomeType'):
             ProcessResult(
@@ -57,14 +55,18 @@ class TestProcessResultValidation:
             )
 
     def test_failure_without_error_reason_rejected(self) -> None:
-        with pytest.raises(ValueError, match='error_reason required when success is False'):
+        with pytest.raises(
+            ValueError, match='error_reason required when success is False'
+        ):
             ProcessResult(
                 success=False,
                 outcome_type=TradeOutcomeType.REJECTED,
             )
 
     def test_success_with_error_reason_rejected(self) -> None:
-        with pytest.raises(ValueError, match='error_reason must be None when success is True'):
+        with pytest.raises(
+            ValueError, match='error_reason must be None when success is True'
+        ):
             ProcessResult(
                 success=True,
                 outcome_type=TradeOutcomeType.ACK,
@@ -73,7 +75,6 @@ class TestProcessResultValidation:
 
 
 class TestProcessResultDefaults:
-
     def test_defaults_for_minimal_success(self) -> None:
         result = ProcessResult(
             success=True,

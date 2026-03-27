@@ -62,7 +62,10 @@ class TradeOutcome:
             msg = 'TradeOutcome.outcome_type must be a TradeOutcomeType member'
             raise ValueError(msg)
 
-        if self.timestamp.tzinfo is None or self.timestamp.tzinfo.utcoffset(self.timestamp) is None:
+        if (
+            self.timestamp.tzinfo is None
+            or self.timestamp.tzinfo.utcoffset(self.timestamp) is None
+        ):
             msg = 'TradeOutcome.timestamp must be timezone-aware'
             raise ValueError(msg)
 
@@ -76,7 +79,10 @@ class TradeOutcome:
             raise ValueError(msg)
 
         if self.remaining_size is not None:
-            if not isinstance(self.remaining_size, Decimal) or not self.remaining_size.is_finite():
+            if (
+                not isinstance(self.remaining_size, Decimal)
+                or not self.remaining_size.is_finite()
+            ):
                 msg = 'TradeOutcome.remaining_size must be a finite Decimal'
                 raise ValueError(msg)
 
@@ -115,7 +121,10 @@ class TradeOutcome:
             msg = 'TradeOutcome.fill_notional required for fill outcomes'
             raise ValueError(msg)
 
-        if not isinstance(self.fill_notional, Decimal) or not self.fill_notional.is_finite():
+        if (
+            not isinstance(self.fill_notional, Decimal)
+            or not self.fill_notional.is_finite()
+        ):
             msg = 'TradeOutcome.fill_notional must be a finite Decimal'
             raise ValueError(msg)
 
@@ -127,7 +136,10 @@ class TradeOutcome:
             msg = 'TradeOutcome.actual_fees required for fill outcomes'
             raise ValueError(msg)
 
-        if not isinstance(self.actual_fees, Decimal) or not self.actual_fees.is_finite():
+        if (
+            not isinstance(self.actual_fees, Decimal)
+            or not self.actual_fees.is_finite()
+        ):
             msg = 'TradeOutcome.actual_fees must be a finite Decimal'
             raise ValueError(msg)
 

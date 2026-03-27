@@ -197,8 +197,8 @@ class OutcomeProcessor:
 
         new_size = old_size + fill_size
         new_entry_price = (
-            (old_size * position.entry_price + fill_size * fill_price) / new_size
-        )
+            old_size * position.entry_price + fill_size * fill_price
+        ) / new_size
 
         position.size = new_size
         position.entry_price = new_entry_price

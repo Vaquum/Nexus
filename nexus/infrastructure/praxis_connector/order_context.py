@@ -68,7 +68,10 @@ class OrderContext:
             msg = 'OrderContext.order_size must be positive'
             raise ValueError(msg)
 
-        if not isinstance(self.order_notional, Decimal) or not self.order_notional.is_finite():
+        if (
+            not isinstance(self.order_notional, Decimal)
+            or not self.order_notional.is_finite()
+        ):
             msg = 'OrderContext.order_notional must be a finite Decimal'
             raise ValueError(msg)
 
@@ -76,7 +79,10 @@ class OrderContext:
             msg = 'OrderContext.order_notional must be positive'
             raise ValueError(msg)
 
-        if not isinstance(self.estimated_fees, Decimal) or not self.estimated_fees.is_finite():
+        if (
+            not isinstance(self.estimated_fees, Decimal)
+            or not self.estimated_fees.is_finite()
+        ):
             msg = 'OrderContext.estimated_fees must be a finite Decimal'
             raise ValueError(msg)
 
