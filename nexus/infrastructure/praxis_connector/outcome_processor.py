@@ -51,6 +51,16 @@ class OutcomeProcessor:
             ProcessResult indicating success and what was updated.
         '''
 
+        if context.command_id != outcome.command_id:
+            return ProcessResult(
+                success=False,
+                outcome_type=outcome.outcome_type,
+                error_reason=(
+                    f'context.command_id {context.command_id!r} does not match '
+                    f'outcome.command_id {outcome.command_id!r}'
+                ),
+            )
+
         if outcome.outcome_type == TradeOutcomeType.ACK:
             return self._handle_ack(outcome)
 

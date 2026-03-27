@@ -647,6 +647,35 @@ class TestOrderFill:
         assert ctrl._state.position_notional == pre_position
         assert ctrl._state.fee_reserve == pre_reserve
 
+    def test_order_fill_adjusts_per_strategy_deployed_on_fee_surplus(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        pre_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
+
+        ctrl.order_fill('ORD-001', Decimal('100'), Decimal('5'))
+
+        post_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
+        assert post_deployed == pre_deployed - Decimal('5')
+
+    def test_order_fill_adjusts_per_strategy_deployed_on_fee_deficit(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='5')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl._state.fee_reserve = Decimal('10')
+        pre_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
+
+        ctrl.order_fill('ORD-001', Decimal('100'), Decimal('8'))
+
+        post_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
+        assert post_deployed == pre_deployed + Decimal('3')
+
 
 class TestOrderCancel:
     def test_order_cancel_success(self) -> None:

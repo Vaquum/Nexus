@@ -95,7 +95,17 @@ class TestOutcomeProcessorAck:
             timestamp=_now(),
         )
 
-        result = proc.process(outcome, _entry_context())
+        ctx = OrderContext(
+            command_id='nonexistent',
+            strategy_id='strat_001',
+            trade_id=None,
+            side=OrderSide.BUY,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, ctx)
         assert result.success is False
         assert result.error_reason is not None
         assert 'order_ack failed' in result.error_reason
@@ -184,7 +194,17 @@ class TestOutcomeProcessorFill:
             actual_fees=Decimal('1'),
         )
 
-        result = proc.process(outcome, _entry_context())
+        ctx = OrderContext(
+            command_id='nonexistent',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, ctx)
         assert result.success is False
         assert result.error_reason is not None
         assert 'order_fill failed' in result.error_reason
@@ -462,6 +482,38 @@ class TestPositionReduction:
         assert result.success is True
         assert result.position_updated is False
         assert state.positions['trade_001'].size == Decimal('0.01')
+
+
+class TestCommandIdMismatch:
+    def test_command_id_mismatch_rejected(self) -> None:
+        proc, ctrl, _ = _make_processor()
+        _setup_working_order(ctrl)
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        mismatched_ctx = OrderContext(
+            command_id='cmd_999',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, mismatched_ctx)
+        assert result.success is False
+        assert result.error_reason is not None
+        assert 'does not match' in result.error_reason
 
 
 class TestCancelUsesRemainingSize:
