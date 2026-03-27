@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.16.0 on 27th of March, 2026
+
+- Add [`trade_outcome_type.py`](nexus/infrastructure/praxis_connector/trade_outcome_type.py) with `TradeOutcomeType` enum (ACK, PARTIAL, FILLED, REJECTED, EXPIRED, CANCELED)
+- Add [`trade_outcome.py`](nexus/infrastructure/praxis_connector/trade_outcome.py) with frozen `TradeOutcome` dataclass and outcome-type-specific validation (fill outcomes require `actual_fees`)
+- Add [`inbound_connector.py`](nexus/infrastructure/praxis_connector/inbound_connector.py) with `InboundConnector` protocol for receiving outcomes from Trading sub-system
+- Add [`order_context.py`](nexus/infrastructure/praxis_connector/order_context.py) with frozen `OrderContext` dataclass bridging outcome processing with order metadata (side, trade_id, estimated_fees)
+- Add [`process_result.py`](nexus/infrastructure/praxis_connector/process_result.py) with frozen `ProcessResult` dataclass for outcome processing results
+- Extend `CapitalController.order_fill()` with `actual_fees` parameter and fee reconciliation against `fee_reserve`
+- Add [`outcome_processor.py`](nexus/infrastructure/praxis_connector/outcome_processor.py) with `OutcomeProcessor` routing outcomes to Capital Controller lifecycle methods
+- Add position growth with VWAP entry price calculation on entry fills
+- Add position reduction with `pending_exit` clearing on exit fills, removing closed positions from state
+- Add 126 tests covering TradeOutcome validation, OutcomeProcessor routing, position growth/reduction, and fee reconciliation (638 total)
+
 ## v0.15.0 on 25th of March, 2026
 
 - Add [`stp_mode.py`](nexus/core/stp_mode.py) with `STPMode` enum (CANCEL_MAKER, CANCEL_TAKER, CANCEL_BOTH) for self-trade prevention
