@@ -10,11 +10,13 @@ from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.process_result import ProcessResult
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.strategy_event import StrategyEvent
 
 __all__ = ['OutcomeProcessor']
 
@@ -120,7 +122,18 @@ class OutcomeProcessor:
 
             capital_updated = True
 
-        position_updated, _realized_pnl = self._update_position_on_fill(outcome, context)
+        position_updated, realized_pnl = self._update_position_on_fill(outcome, context)
+
+        if realized_pnl is not None:
+            self._update_strategy_risk_state(context.strategy_id, realized_pnl)
+            self._state.risk.update_cumulative_realized_pnl(self._state.risk.realized_pnl)
+            event = StrategyEvent(
+                strategy_id=context.strategy_id,
+                event_type='trade_outcome',
+                realized_pnl=realized_pnl,
+                timestamp=outcome.timestamp,
+            )
+            self._store.append_event(event)
 
         return ProcessResult(
             success=True,
@@ -275,3 +288,27 @@ class OutcomeProcessor:
         position.pending_exit = max(_ZERO, position.pending_exit - size)
 
         return True
+
+    def _update_strategy_risk_state(
+        self,
+        strategy_id: str,
+        realized_pnl: Decimal,
+    ) -> None:
+        strategy_state = self._state.risk.per_strategy.get(strategy_id)
+
+        if strategy_state is None:
+            strategy_state = StrategyRiskState(strategy_id=strategy_id)
+            self._state.risk.per_strategy[strategy_id] = strategy_state
+
+        strategy_state.strategy_realized_pnl += realized_pnl
+
+        if realized_pnl < _ZERO:
+            loss = abs(realized_pnl)
+            strategy_state.rolling_loss_24h += loss
+            strategy_state.rolling_loss_7d += loss
+            strategy_state.rolling_loss_30d += loss
+
+        strategy_state.high_water_mark = max(
+            strategy_state.high_water_mark,
+            strategy_state.strategy_realized_pnl,
+        )
