@@ -405,22 +405,27 @@ class CapitalController:
 
             return True
 
-    def order_fill(self, order_id: str, fill_notional: Decimal) -> bool:
+    def order_fill(
+        self,
+        order_id: str,
+        fill_notional: Decimal,
+        actual_fees: Decimal,
+    ) -> bool:
         '''Handle a fill (partial or full) on a working order.
 
         Moves capital from working_order_notional to position_notional.
-        The moved amount includes the fill plus its proportional share of
-        estimated fees. Partial fills update remaining_notional; full fills
-        remove the order.
+        Working decreases by estimated amount; position increases by actual
+        cost (fill_notional + actual_fees). Fee variance is reconciled against
+        fee_reserve: surplus adds, deficit draws.
 
         Args:
             order_id: ID of the filled order.
-            fill_notional: Quote capital filled (excluding fees). The
-                proportional fee component is computed and added.
+            fill_notional: Quote capital filled (excluding fees).
+            actual_fees: Actual fees charged by venue for this fill.
 
         Returns:
             True if successful, False if order not found, wrong state,
-            or fill_notional exceeds remaining.
+            fill_notional exceeds remaining, or insufficient fee_reserve.
         '''
 
         if not isinstance(fill_notional, Decimal) or not fill_notional.is_finite():
@@ -429,6 +434,14 @@ class CapitalController:
 
         if fill_notional <= _ZERO:
             msg = f'fill_notional must be positive: {fill_notional}'
+            raise ValueError(msg)
+
+        if not isinstance(actual_fees, Decimal) or not actual_fees.is_finite():
+            msg = f'actual_fees must be a finite Decimal: {actual_fees}'
+            raise ValueError(msg)
+
+        if actual_fees < _ZERO:
+            msg = f'actual_fees must be non-negative: {actual_fees}'
             raise ValueError(msg)
 
         with self._lock:
@@ -447,8 +460,8 @@ class CapitalController:
             new_remaining = order.remaining_notional - fill_notional
 
             if new_remaining == _ZERO:
-                fill_with_fees = pre_fill_remaining
-                self._orders.pop(order_id)
+                fill_with_estimated = pre_fill_remaining
+                proportional_estimated = pre_fill_remaining - order.remaining_notional
             else:
                 updated = TrackedOrder(
                     order_id=order.order_id,
@@ -460,11 +473,22 @@ class CapitalController:
                     state=OrderLifecycleState.WORKING,
                     created_at=order.created_at,
                 )
-                fill_with_fees = pre_fill_remaining - updated.remaining_total
+                fill_with_estimated = pre_fill_remaining - updated.remaining_total
+                proportional_estimated = fill_with_estimated - fill_notional
+
+            fee_delta = proportional_estimated - actual_fees
+
+            if fee_delta < _ZERO and abs(fee_delta) > self._state.fee_reserve:
+                return False
+
+            if new_remaining == _ZERO:
+                self._orders.pop(order_id)
+            else:
                 self._orders[order_id] = updated
 
-            self._state.working_order_notional -= fill_with_fees
-            self._state.position_notional += fill_with_fees
+            self._state.working_order_notional -= fill_with_estimated
+            self._state.position_notional += fill_notional + actual_fees
+            self._state.fee_reserve += fee_delta
 
             return True
 
