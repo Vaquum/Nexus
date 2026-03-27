@@ -153,7 +153,12 @@ class OutcomeProcessor:
         position_updated = False
 
         if context.is_exit:
-            position_updated = self._clear_pending_exit(context, context.order_size)
+            clear_size = (
+                outcome.remaining_size
+                if outcome.remaining_size is not None
+                else context.order_size
+            )
+            position_updated = self._clear_pending_exit(context, clear_size)
 
         return ProcessResult(
             success=True,
@@ -221,6 +226,9 @@ class OutcomeProcessor:
             return False
 
         fill_size = outcome.fill_size
+
+        if fill_size > position.size:
+            return False
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)

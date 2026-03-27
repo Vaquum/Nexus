@@ -150,6 +150,15 @@ class TestTradeOutcomeIdValidation:
 
 
 class TestTradeOutcomeTimestampValidation:
+    def test_non_datetime_timestamp_rejected(self) -> None:
+        with pytest.raises(ValueError, match='timestamp must be a datetime instance'):
+            TradeOutcome(
+                outcome_id='out_001',
+                command_id='cmd_001',
+                outcome_type=TradeOutcomeType.ACK,
+                timestamp='2024-01-01T00:00:00Z',  # type: ignore[arg-type]
+            )
+
     def test_naive_timestamp_rejected(self) -> None:
         with pytest.raises(ValueError, match='timestamp must be timezone-aware'):
             TradeOutcome(

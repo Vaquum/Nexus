@@ -630,6 +630,23 @@ class TestOrderFill:
         with pytest.raises(ValueError, match='non-negative'):
             ctrl.order_fill('ORD-001', Decimal('100'), Decimal('-1'))
 
+    def test_order_fill_fee_reserve_insufficiency_rejected(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        pre_working = ctrl._state.working_order_notional
+        pre_position = ctrl._state.position_notional
+        pre_reserve = ctrl._state.fee_reserve
+
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('10'))
+        assert filled is False
+        assert ctrl._state.working_order_notional == pre_working
+        assert ctrl._state.position_notional == pre_position
+        assert ctrl._state.fee_reserve == pre_reserve
+
 
 class TestOrderCancel:
     def test_order_cancel_success(self) -> None:

@@ -432,3 +432,72 @@ class TestPositionReduction:
 
         proc.process(outcome, _exit_context())
         assert 'trade_001' not in state.positions
+
+    def test_exit_fill_overfill_rejected(self) -> None:
+        proc, ctrl, state = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.02'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+        assert result.position_updated is False
+        assert state.positions['trade_001'].size == Decimal('0.01')
+
+
+class TestCancelUsesRemainingSize:
+    def test_cancel_after_partial_fill_uses_remaining_size(self) -> None:
+        proc, ctrl, state = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=_now(),
+            remaining_size=Decimal('0.005'),
+        )
+
+        ctx = OrderContext(
+            command_id='cmd_001',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, ctx)
+        assert result.success is True
+        assert result.position_updated is True
+        assert state.positions['trade_001'].pending_exit == Decimal('0.005')

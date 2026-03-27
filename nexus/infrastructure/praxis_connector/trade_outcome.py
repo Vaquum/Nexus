@@ -62,6 +62,10 @@ class TradeOutcome:
             msg = 'TradeOutcome.outcome_type must be a TradeOutcomeType member'
             raise ValueError(msg)
 
+        if not isinstance(self.timestamp, datetime):
+            msg = 'TradeOutcome.timestamp must be a datetime instance'
+            raise ValueError(msg)
+
         if (
             self.timestamp.tzinfo is None
             or self.timestamp.tzinfo.utcoffset(self.timestamp) is None
