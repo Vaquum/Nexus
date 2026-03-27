@@ -14,6 +14,7 @@ from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.process_result import ProcessResult
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.infrastructure.state_store import StateStore
 
 __all__ = ['OutcomeProcessor']
 
@@ -26,15 +27,18 @@ class OutcomeProcessor:
     Args:
         capital_controller: Capital lifecycle manager.
         instance_state: Runtime state containing positions.
+        state_store: Persistence facade for WAL and snapshots.
     '''
 
     def __init__(
         self,
         capital_controller: CapitalController,
         instance_state: InstanceState,
+        state_store: StateStore,
     ) -> None:
         self._capital = capital_controller
         self._state = instance_state
+        self._store = state_store
 
     def process(
         self,
@@ -116,7 +120,7 @@ class OutcomeProcessor:
 
             capital_updated = True
 
-        position_updated = self._update_position_on_fill(outcome, context)
+        position_updated, _realized_pnl = self._update_position_on_fill(outcome, context)
 
         return ProcessResult(
             success=True,
@@ -187,12 +191,12 @@ class OutcomeProcessor:
         self,
         outcome: TradeOutcome,
         context: OrderContext,
-    ) -> bool:
+    ) -> tuple[bool, Decimal | None]:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
 
         if context.is_entry:
-            return self._grow_position(outcome, context)
+            return self._grow_position(outcome, context), None
 
         return self._reduce_position(outcome, context)
 
@@ -230,21 +234,26 @@ class OutcomeProcessor:
         self,
         outcome: TradeOutcome,
         context: OrderContext,
-    ) -> bool:
+    ) -> tuple[bool, Decimal | None]:
         assert outcome.fill_size is not None
+        assert outcome.fill_price is not None
 
         if context.trade_id is None:
-            return False
+            return False, None
 
         position = self._state.positions.get(context.trade_id)
 
         if position is None:
-            return False
+            return False, None
 
         fill_size = outcome.fill_size
+        fill_price = outcome.fill_price
 
         if fill_size > position.size:
-            return False
+            return False, None
+
+        entry_price = position.entry_price
+        realized_pnl = (fill_price - entry_price) * fill_size
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
@@ -252,7 +261,7 @@ class OutcomeProcessor:
         if position.is_closed:
             del self._state.positions[context.trade_id]
 
-        return True
+        return True, realized_pnl
 
     def _clear_pending_exit(self, context: OrderContext, size: Decimal) -> bool:
         if context.trade_id is None:

@@ -1,5 +1,7 @@
+import tempfile
 from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.capital_state import CapitalState
@@ -10,6 +12,7 @@ from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.infrastructure.state_store import StateStore
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
@@ -19,12 +22,16 @@ def _now() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
-def _make_processor() -> tuple[OutcomeProcessor, CapitalController, InstanceState]:
+def _make_processor() -> tuple[
+    OutcomeProcessor, CapitalController, InstanceState, StateStore, tempfile.TemporaryDirectory[str]
+]:
     capital_state = CapitalState(capital_pool=_POOL)
     instance_state = InstanceState(capital=capital_state)
     controller = CapitalController(capital_state)
-    processor = OutcomeProcessor(controller, instance_state)
-    return processor, controller, instance_state
+    tmp_dir = tempfile.TemporaryDirectory()
+    state_store = StateStore(Path(tmp_dir.name))
+    processor = OutcomeProcessor(controller, instance_state, state_store)
+    return processor, controller, instance_state, state_store, tmp_dir
 
 
 def _setup_in_flight_order(ctrl: CapitalController, order_id: str = 'cmd_001') -> None:
@@ -69,7 +76,7 @@ def _exit_context(trade_id: str = 'trade_001') -> OrderContext:
 
 class TestOutcomeProcessorAck:
     def test_ack_success(self) -> None:
-        proc, ctrl, _ = _make_processor()
+        proc, ctrl, _, _, _tmp = _make_processor()
         _setup_in_flight_order(ctrl)
 
         outcome = TradeOutcome(
@@ -86,7 +93,7 @@ class TestOutcomeProcessorAck:
         assert result.position_updated is False
 
     def test_ack_order_not_found(self) -> None:
-        proc, _, _ = _make_processor()
+        proc, _, _, _, _tmp = _make_processor()
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -113,7 +120,7 @@ class TestOutcomeProcessorAck:
 
 class TestOutcomeProcessorFill:
     def test_fill_success(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -143,7 +150,7 @@ class TestOutcomeProcessorFill:
         assert result.position_updated is True
 
     def test_partial_fill_success(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
 
         res = ctrl.check_and_reserve(
             strategy_id='strat_001',
@@ -181,7 +188,7 @@ class TestOutcomeProcessorFill:
         assert result.outcome_type == TradeOutcomeType.PARTIAL
 
     def test_fill_order_not_found(self) -> None:
-        proc, _, _ = _make_processor()
+        proc, _, _, _, _tmp = _make_processor()
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -212,7 +219,7 @@ class TestOutcomeProcessorFill:
 
 class TestOutcomeProcessorReject:
     def test_reject_entry_order(self) -> None:
-        proc, ctrl, _ = _make_processor()
+        proc, ctrl, _, _, _tmp = _make_processor()
         _setup_in_flight_order(ctrl)
 
         outcome = TradeOutcome(
@@ -230,7 +237,7 @@ class TestOutcomeProcessorReject:
         assert result.position_updated is False
 
     def test_reject_exit_order_clears_pending_exit(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_in_flight_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -259,7 +266,7 @@ class TestOutcomeProcessorReject:
 
 class TestOutcomeProcessorCancel:
     def test_cancel_success(self) -> None:
-        proc, ctrl, _ = _make_processor()
+        proc, ctrl, _, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         outcome = TradeOutcome(
@@ -275,7 +282,7 @@ class TestOutcomeProcessorCancel:
         assert result.capital_updated is True
 
     def test_expired_success(self) -> None:
-        proc, ctrl, _ = _make_processor()
+        proc, ctrl, _, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         outcome = TradeOutcome(
@@ -290,7 +297,7 @@ class TestOutcomeProcessorCancel:
         assert result.outcome_type == TradeOutcomeType.EXPIRED
 
     def test_cancel_exit_order_clears_pending_exit(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -318,7 +325,7 @@ class TestOutcomeProcessorCancel:
 
 class TestPositionGrowth:
     def test_entry_fill_grows_position(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -345,7 +352,7 @@ class TestPositionGrowth:
         assert state.positions['trade_001'].size == Decimal('0.02')
 
     def test_entry_fill_calculates_vwap(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -376,7 +383,7 @@ class TestPositionGrowth:
         assert state.positions['trade_001'].entry_price == expected
 
     def test_entry_fill_no_position_returns_false(self) -> None:
-        proc, ctrl, _ = _make_processor()
+        proc, ctrl, _, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         outcome = TradeOutcome(
@@ -397,7 +404,7 @@ class TestPositionGrowth:
 
 class TestPositionReduction:
     def test_exit_fill_reduces_position(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -426,7 +433,7 @@ class TestPositionReduction:
         assert state.positions['trade_001'].pending_exit == _ZERO
 
     def test_exit_fill_removes_closed_position(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -454,7 +461,7 @@ class TestPositionReduction:
         assert 'trade_001' not in state.positions
 
     def test_exit_fill_overfill_rejected(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
@@ -486,7 +493,7 @@ class TestPositionReduction:
 
 class TestCommandIdMismatch:
     def test_command_id_mismatch_rejected(self) -> None:
-        proc, ctrl, _ = _make_processor()
+        proc, ctrl, _, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         outcome = TradeOutcome(
@@ -518,7 +525,7 @@ class TestCommandIdMismatch:
 
 class TestCancelUsesRemainingSize:
     def test_cancel_after_partial_fill_uses_remaining_size(self) -> None:
-        proc, ctrl, state = _make_processor()
+        proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
         state.positions['trade_001'] = Position(
