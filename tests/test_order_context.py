@@ -31,7 +31,6 @@ def _exit_context() -> OrderContext:
 
 
 class TestOrderContextConstruction:
-
     def test_entry_context_valid(self) -> None:
         ctx = _entry_context()
         assert ctx.command_id == 'cmd_001'
@@ -55,7 +54,6 @@ class TestOrderContextConstruction:
 
 
 class TestOrderContextIsEntryExit:
-
     def test_is_entry_for_buy(self) -> None:
         ctx = _entry_context()
         assert ctx.is_entry is True
@@ -68,7 +66,6 @@ class TestOrderContextIsEntryExit:
 
 
 class TestOrderContextIdValidation:
-
     def test_empty_command_id_rejected(self) -> None:
         with pytest.raises(ValueError, match='command_id must be a non-empty string'):
             OrderContext(
@@ -106,7 +103,9 @@ class TestOrderContextIdValidation:
             )
 
     def test_empty_trade_id_rejected(self) -> None:
-        with pytest.raises(ValueError, match='trade_id must be a non-empty string if provided'):
+        with pytest.raises(
+            ValueError, match='trade_id must be a non-empty string if provided'
+        ):
             OrderContext(
                 command_id='cmd_001',
                 strategy_id='strat_001',
@@ -118,7 +117,9 @@ class TestOrderContextIdValidation:
             )
 
     def test_whitespace_trade_id_rejected(self) -> None:
-        with pytest.raises(ValueError, match='trade_id must be a non-empty string if provided'):
+        with pytest.raises(
+            ValueError, match='trade_id must be a non-empty string if provided'
+        ):
             OrderContext(
                 command_id='cmd_001',
                 strategy_id='strat_001',
@@ -131,7 +132,6 @@ class TestOrderContextIdValidation:
 
 
 class TestOrderContextNumericValidation:
-
     def test_order_size_zero_rejected(self) -> None:
         with pytest.raises(ValueError, match='order_size must be positive'):
             OrderContext(

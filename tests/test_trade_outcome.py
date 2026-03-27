@@ -21,7 +21,9 @@ def _ack_outcome() -> TradeOutcome:
     )
 
 
-def _fill_outcome(outcome_type: TradeOutcomeType = TradeOutcomeType.FILLED) -> TradeOutcome:
+def _fill_outcome(
+    outcome_type: TradeOutcomeType = TradeOutcomeType.FILLED,
+) -> TradeOutcome:
     return TradeOutcome(
         outcome_id='out_001',
         command_id='cmd_001',
@@ -35,7 +37,6 @@ def _fill_outcome(outcome_type: TradeOutcomeType = TradeOutcomeType.FILLED) -> T
 
 
 class TestTradeOutcomeConstruction:
-
     def test_ack_outcome_valid(self) -> None:
         outcome = _ack_outcome()
         assert outcome.outcome_type == TradeOutcomeType.ACK
@@ -111,7 +112,6 @@ class TestTradeOutcomeConstruction:
 
 
 class TestTradeOutcomeIdValidation:
-
     def test_empty_outcome_id_rejected(self) -> None:
         with pytest.raises(ValueError, match='outcome_id must be a non-empty string'):
             TradeOutcome(
@@ -150,7 +150,6 @@ class TestTradeOutcomeIdValidation:
 
 
 class TestTradeOutcomeTimestampValidation:
-
     def test_naive_timestamp_rejected(self) -> None:
         with pytest.raises(ValueError, match='timestamp must be timezone-aware'):
             TradeOutcome(
@@ -162,7 +161,6 @@ class TestTradeOutcomeTimestampValidation:
 
 
 class TestTradeOutcomeFillValidation:
-
     def test_filled_missing_fill_size_rejected(self) -> None:
         with pytest.raises(ValueError, match='fill_size required for fill outcomes'):
             TradeOutcome(
@@ -188,7 +186,9 @@ class TestTradeOutcomeFillValidation:
             )
 
     def test_filled_missing_fill_notional_rejected(self) -> None:
-        with pytest.raises(ValueError, match='fill_notional required for fill outcomes'):
+        with pytest.raises(
+            ValueError, match='fill_notional required for fill outcomes'
+        ):
             TradeOutcome(
                 outcome_id='out_001',
                 command_id='cmd_001',
@@ -313,7 +313,6 @@ class TestTradeOutcomeFillValidation:
 
 
 class TestTradeOutcomeRejectValidation:
-
     def test_rejected_missing_reason_rejected(self) -> None:
         with pytest.raises(ValueError, match='reject_reason required for REJECTED'):
             TradeOutcome(
@@ -345,7 +344,6 @@ class TestTradeOutcomeRejectValidation:
 
 
 class TestTradeOutcomeRemainingSizeValidation:
-
     def test_remaining_size_negative_rejected(self) -> None:
         with pytest.raises(ValueError, match='remaining_size must be non-negative'):
             TradeOutcome(

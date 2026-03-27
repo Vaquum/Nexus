@@ -737,9 +737,15 @@ class TestNonTerminatingFeeRatio:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
-        ctrl.order_fill('ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333'))
-        ctrl.order_fill('ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333'))
-        ctrl.order_fill('ORD-001', Decimal('1'), Decimal('0.333333333333333333333333334'))
+        ctrl.order_fill(
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333')
+        )
+        ctrl.order_fill(
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333')
+        )
+        ctrl.order_fill(
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333334')
+        )
 
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('4')
@@ -752,7 +758,9 @@ class TestNonTerminatingFeeRatio:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
-        ctrl.order_fill('ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333'))
+        ctrl.order_fill(
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333')
+        )
         ctrl.order_cancel('ORD-001')
 
         assert ctrl._state.working_order_notional == _ZERO
@@ -780,7 +788,9 @@ class TestLifecycleConcurrency:
                     sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
                     if sent:
                         acked = ctrl.order_ack(f'ORD-{idx}')
-                        filled = ctrl.order_fill(f'ORD-{idx}', Decimal('500'), Decimal('5'))
+                        filled = ctrl.order_fill(
+                            f'ORD-{idx}', Decimal('500'), Decimal('5')
+                        )
                         if not acked or not filled:
                             msg = (
                                 f'Lifecycle failure ORD-{idx}: '
