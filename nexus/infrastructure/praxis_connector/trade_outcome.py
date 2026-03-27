@@ -87,6 +87,17 @@ class TradeOutcome:
             msg = 'TradeOutcome.reject_reason must be None for non-REJECTED outcomes'
             raise ValueError(msg)
 
+        if self.outcome_type == TradeOutcomeType.CANCELED:
+            if self.cancel_reason is not None and not self.cancel_reason.strip():
+                msg = (
+                    'TradeOutcome.cancel_reason must be non-empty when provided '
+                    'for CANCELED outcome'
+                )
+                raise ValueError(msg)
+        elif self.cancel_reason is not None:
+            msg = 'TradeOutcome.cancel_reason must be None for non-CANCELED outcomes'
+            raise ValueError(msg)
+
         if self.remaining_size is not None:
             if (
                 not isinstance(self.remaining_size, Decimal)
