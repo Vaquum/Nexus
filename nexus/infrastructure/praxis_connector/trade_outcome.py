@@ -30,7 +30,8 @@ class TradeOutcome:
         fill_price: Execution price; required for PARTIAL/FILLED.
         fill_notional: Quote amount filled; required for PARTIAL/FILLED.
         actual_fees: Actual fees charged; required for PARTIAL/FILLED.
-        remaining_size: Size still working; None for terminal outcomes.
+        remaining_size: Size still working. Present on PARTIAL fills; may be
+            provided on CANCELED/EXPIRED to indicate unfilled remainder.
         reject_reason: Venue rejection reason; required for REJECTED.
         cancel_reason: Cancellation reason; optional for CANCELED.
     '''
