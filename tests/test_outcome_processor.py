@@ -560,3 +560,230 @@ class TestCancelUsesRemainingSize:
         assert result.success is True
         assert result.position_updated is True
         assert state.positions['trade_001'].pending_exit == Decimal('0.005')
+
+
+class TestRiskMetricsRecalculation:
+    def test_exit_fill_loss_updates_rolling_loss_counters(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('49000'),
+            fill_notional=Decimal('490'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        strategy_risk = state.risk.per_strategy['strat_001']
+        expected_loss = Decimal('10')
+        assert strategy_risk.rolling_loss_24h == expected_loss
+        assert strategy_risk.rolling_loss_7d == expected_loss
+        assert strategy_risk.rolling_loss_30d == expected_loss
+
+    def test_exit_fill_updates_strategy_realized_pnl(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('510'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        strategy_risk = state.risk.per_strategy['strat_001']
+        expected_pnl = Decimal('10')
+        assert strategy_risk.strategy_realized_pnl == expected_pnl
+
+    def test_exit_fill_updates_instance_cumulative_realized_pnl(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.risk.starting_capital = _POOL
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('510'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        expected_pnl = Decimal('10')
+        assert state.risk.cumulative_realized_pnl == expected_pnl
+
+    def test_exit_fill_triggers_drawdown_recompute(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.risk.starting_capital = _POOL
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('510'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        expected_equity = _POOL + Decimal('10')
+        assert state.risk.equity == expected_equity
+        assert state.risk.equity_hwm == expected_equity
+
+    def test_profitable_exit_does_not_add_to_rolling_losses(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('510'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        strategy_risk = state.risk.per_strategy['strat_001']
+        assert strategy_risk.rolling_loss_24h == _ZERO
+        assert strategy_risk.rolling_loss_7d == _ZERO
+        assert strategy_risk.rolling_loss_30d == _ZERO
+
+    def test_multiple_strategies_isolated(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('49000'),
+            fill_notional=Decimal('490'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        assert 'strat_001' in state.risk.per_strategy
+        assert 'strat_002' not in state.risk.per_strategy
+
+        strat1_risk = state.risk.per_strategy['strat_001']
+        assert strat1_risk.rolling_loss_24h == Decimal('10')
+
+    def test_strategy_event_appended_to_wal_on_exit_fill(self) -> None:
+        proc, ctrl, state, store, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('510'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        entries = store._wal.read_all()
+        event_entries = [e for e in entries if e.entry_type.name == 'STRATEGY_EVENT']
+        assert len(event_entries) == 1
