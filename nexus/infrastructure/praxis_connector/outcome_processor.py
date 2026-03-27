@@ -98,18 +98,23 @@ class OutcomeProcessor:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
 
-        success = self._capital.order_fill(
-            outcome.command_id,
-            outcome.fill_notional,
-            outcome.actual_fees,
-        )
+        capital_updated = False
 
-        if not success:
-            return ProcessResult(
-                success=False,
-                outcome_type=outcome.outcome_type,
-                error_reason='order_fill failed: order not found, wrong state, fill_notional exceeds remaining, or insufficient fee_reserve',
+        if context.is_entry:
+            success = self._capital.order_fill(
+                outcome.command_id,
+                outcome.fill_notional,
+                outcome.actual_fees,
             )
+
+            if not success:
+                return ProcessResult(
+                    success=False,
+                    outcome_type=outcome.outcome_type,
+                    error_reason='order_fill failed: order not found, wrong state, fill_notional exceeds remaining, or insufficient fee_reserve',
+                )
+
+            capital_updated = True
 
         position_updated = self._update_position_on_fill(outcome, context)
 
@@ -117,7 +122,7 @@ class OutcomeProcessor:
             success=True,
             outcome_type=outcome.outcome_type,
             position_updated=position_updated,
-            capital_updated=True,
+            capital_updated=capital_updated,
         )
 
     def _handle_reject(
