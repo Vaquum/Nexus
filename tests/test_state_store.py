@@ -15,6 +15,8 @@ from nexus.infrastructure.wal import WriteAheadLog
 from nexus.infrastructure.wal_codec import deserialize_event
 from nexus.infrastructure.wal_entry import WALEntryType
 
+_ZERO = Decimal(0)
+
 
 def _make_state(pool: str = '10000') -> InstanceState:
     '''Build an InstanceState with the given capital pool.'''
@@ -444,13 +446,40 @@ class TestRefreshRollingLosses:
 
         assert state.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('50')
 
-    def test_refresh_with_no_events_preserves_state(self, tmp_path: Path) -> None:
+    def test_refresh_with_no_events_zeros_stale_losses(self, tmp_path: Path) -> None:
         store = StateStore(tmp_path / 'state')
         state = _make_state_with_risk()
         store.append_mutation(state)
 
-        original_loss = state.risk.per_strategy['strat_a'].rolling_loss_24h
+        store.refresh_rolling_losses(state)
+
+        assert state.risk.per_strategy['strat_a'].rolling_loss_24h == _ZERO
+
+    def test_refresh_zeros_strategy_not_in_wal(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+
+        srs_a = StrategyRiskState(
+            strategy_id='strat_a', rolling_loss_24h=Decimal('100')
+        )
+        srs_b = StrategyRiskState(
+            strategy_id='strat_b', rolling_loss_24h=Decimal('200')
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs_a, 'strat_b': srs_b}),
+        )
+        store.append_mutation(state)
+
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-50'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
 
         store.refresh_rolling_losses(state)
 
-        assert state.risk.per_strategy['strat_a'].rolling_loss_24h == original_loss
+        assert state.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('50')
+        assert state.risk.per_strategy['strat_b'].rolling_loss_24h == _ZERO

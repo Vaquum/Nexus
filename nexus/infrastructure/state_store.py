@@ -175,19 +175,10 @@ class StateStore:
             if entry.entry_type == WALEntryType.STRATEGY_EVENT
         ]
 
-        if not events:
-            return
-
         recovery_time = datetime.now(tz=timezone.utc)
-        losses = derive_rolling_losses(events, recovery_time)
-        seen_strategies = {e.strategy_id for e in events}
+        losses = derive_rolling_losses(events, recovery_time) if events else {}
 
-        for sid in seen_strategies:
-            if sid not in state.risk.per_strategy:
-                continue
-
-            srs = state.risk.per_strategy[sid]
-
+        for sid, srs in state.risk.per_strategy.items():
             if sid in losses:
                 srs.rolling_loss_24h = losses[sid].rolling_loss_24h
                 srs.rolling_loss_7d = losses[sid].rolling_loss_7d

@@ -3,7 +3,7 @@
 ## v0.17.0 on 28th of March, 2026
 
 - Add `StateStore` dependency to `OutcomeProcessor` for WAL persistence of risk events
-- Compute realized P&L in `_reduce_position` using `(fill_price - entry_price) × fill_size`
+- Compute realized P&L in `_reduce_position` using side-aware formula: `side_multiplier × (fill_price - entry_price) × fill_size` where `side_multiplier` is `-1` for shorts
 - Add `_update_strategy_risk_state()` to update per-strategy `strategy_realized_pnl`, `rolling_loss_24h/7d/30d`, and `high_water_mark`
 - Update instance-level `cumulative_realized_pnl` triggering `recompute_drawdown_metrics()` on exit fills
 - Persist `StrategyEvent` to WAL via `StateStore.append_event()` on every exit fill
