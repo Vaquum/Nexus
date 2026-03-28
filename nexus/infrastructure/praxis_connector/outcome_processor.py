@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
+from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.infrastructure.praxis_connector.order_context import OrderContext
@@ -266,7 +267,8 @@ class OutcomeProcessor:
             return False, None
 
         entry_price = position.entry_price
-        realized_pnl = (fill_price - entry_price) * fill_size
+        side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
+        realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)

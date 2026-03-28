@@ -787,3 +787,35 @@ class TestRiskMetricsRecalculation:
         entries = store._wal.read_all()
         event_entries = [e for e in entries if e.entry_type.name == 'STRATEGY_EVENT']
         assert len(event_entries) == 1
+
+    def test_short_position_pnl_sign_correct(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.SELL,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('49000'),
+            fill_notional=Decimal('490'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        strategy_risk = state.risk.per_strategy['strat_001']
+        expected_pnl = Decimal('10')
+        assert strategy_risk.strategy_realized_pnl == expected_pnl
+        assert strategy_risk.rolling_loss_24h == _ZERO

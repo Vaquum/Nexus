@@ -421,3 +421,36 @@ class TestRecoverWithEvents:
         recovered = store2.recover()
         assert recovered is not None
         assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('25')
+
+
+class TestRefreshRollingLosses:
+    def test_refresh_updates_in_memory_state(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        state = _make_state_with_risk()
+        store.append_mutation(state)
+
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-50'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        state.risk.per_strategy['strat_a'].rolling_loss_24h = Decimal('999')
+
+        store.refresh_rolling_losses(state)
+
+        assert state.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('50')
+
+    def test_refresh_with_no_events_preserves_state(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        state = _make_state_with_risk()
+        store.append_mutation(state)
+
+        original_loss = state.risk.per_strategy['strat_a'].rolling_loss_24h
+
+        store.refresh_rolling_losses(state)
+
+        assert state.risk.per_strategy['strat_a'].rolling_loss_24h == original_loss
