@@ -294,6 +294,17 @@ class OutcomeProcessor:
         strategy_id: str,
         realized_pnl: Decimal,
     ) -> None:
+        '''Update per-strategy risk metrics after an exit fill.
+
+        Gets or creates StrategyRiskState for strategy_id, increments
+        strategy_realized_pnl, adds to rolling loss counters if loss,
+        and updates high_water_mark.
+
+        Args:
+            strategy_id: Strategy that realized the P&L.
+            realized_pnl: P&L from exit fill (negative for losses).
+        '''
+
         strategy_state = self._state.risk.per_strategy.get(strategy_id)
 
         if strategy_state is None:
