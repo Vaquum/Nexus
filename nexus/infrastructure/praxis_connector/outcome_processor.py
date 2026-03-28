@@ -9,11 +9,15 @@ from __future__ import annotations
 from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
+from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.process_result import ProcessResult
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.strategy_event import StrategyEvent
 
 __all__ = ['OutcomeProcessor']
 
@@ -26,15 +30,18 @@ class OutcomeProcessor:
     Args:
         capital_controller: Capital lifecycle manager.
         instance_state: Runtime state containing positions.
+        state_store: Persistence facade for WAL and snapshots.
     '''
 
     def __init__(
         self,
         capital_controller: CapitalController,
         instance_state: InstanceState,
+        state_store: StateStore,
     ) -> None:
         self._capital = capital_controller
         self._state = instance_state
+        self._store = state_store
 
     def process(
         self,
@@ -116,7 +123,18 @@ class OutcomeProcessor:
 
             capital_updated = True
 
-        position_updated = self._update_position_on_fill(outcome, context)
+        position_updated, realized_pnl = self._update_position_on_fill(outcome, context)
+
+        if realized_pnl is not None:
+            self._update_strategy_risk_state(context.strategy_id, realized_pnl)
+            self._state.risk.update_cumulative_realized_pnl(self._state.risk.realized_pnl)
+            event = StrategyEvent(
+                strategy_id=context.strategy_id,
+                event_type='trade_outcome',
+                realized_pnl=realized_pnl,
+                timestamp=outcome.timestamp,
+            )
+            self._store.append_event(event)
 
         return ProcessResult(
             success=True,
@@ -187,12 +205,12 @@ class OutcomeProcessor:
         self,
         outcome: TradeOutcome,
         context: OrderContext,
-    ) -> bool:
+    ) -> tuple[bool, Decimal | None]:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
 
         if context.is_entry:
-            return self._grow_position(outcome, context)
+            return self._grow_position(outcome, context), None
 
         return self._reduce_position(outcome, context)
 
@@ -230,21 +248,27 @@ class OutcomeProcessor:
         self,
         outcome: TradeOutcome,
         context: OrderContext,
-    ) -> bool:
+    ) -> tuple[bool, Decimal | None]:
         assert outcome.fill_size is not None
+        assert outcome.fill_price is not None
 
         if context.trade_id is None:
-            return False
+            return False, None
 
         position = self._state.positions.get(context.trade_id)
 
         if position is None:
-            return False
+            return False, None
 
         fill_size = outcome.fill_size
+        fill_price = outcome.fill_price
 
         if fill_size > position.size:
-            return False
+            return False, None
+
+        entry_price = position.entry_price
+        side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
+        realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
@@ -252,7 +276,7 @@ class OutcomeProcessor:
         if position.is_closed:
             del self._state.positions[context.trade_id]
 
-        return True
+        return True, realized_pnl
 
     def _clear_pending_exit(self, context: OrderContext, size: Decimal) -> bool:
         if context.trade_id is None:
@@ -266,3 +290,38 @@ class OutcomeProcessor:
         position.pending_exit = max(_ZERO, position.pending_exit - size)
 
         return True
+
+    def _update_strategy_risk_state(
+        self,
+        strategy_id: str,
+        realized_pnl: Decimal,
+    ) -> None:
+        '''Update per-strategy risk metrics after an exit fill.
+
+        Gets or creates StrategyRiskState for strategy_id, increments
+        strategy_realized_pnl, adds to rolling loss counters if loss,
+        and updates high_water_mark.
+
+        Args:
+            strategy_id: Strategy that realized the P&L.
+            realized_pnl: P&L from exit fill (negative for losses).
+        '''
+
+        strategy_state = self._state.risk.per_strategy.get(strategy_id)
+
+        if strategy_state is None:
+            strategy_state = StrategyRiskState(strategy_id=strategy_id)
+            self._state.risk.per_strategy[strategy_id] = strategy_state
+
+        strategy_state.strategy_realized_pnl += realized_pnl
+
+        if realized_pnl < _ZERO:
+            loss = abs(realized_pnl)
+            strategy_state.rolling_loss_24h += loss
+            strategy_state.rolling_loss_7d += loss
+            strategy_state.rolling_loss_30d += loss
+
+        strategy_state.high_water_mark = max(
+            strategy_state.high_water_mark,
+            strategy_state.strategy_realized_pnl,
+        )

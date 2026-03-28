@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.17.0 on 28th of March, 2026
+
+- Add `StateStore` dependency to `OutcomeProcessor` for WAL persistence of risk events
+- Compute realized P&L in `_reduce_position` using side-aware formula: `side_multiplier × (fill_price - entry_price) × fill_size` where `side_multiplier` is `-1` for shorts
+- Add `_update_strategy_risk_state()` to update per-strategy `strategy_realized_pnl`, `rolling_loss_24h/7d/30d`, and `high_water_mark`
+- Update instance-level `cumulative_realized_pnl` triggering `recompute_drawdown_metrics()` on exit fills
+- Persist `StrategyEvent` to WAL via `StateStore.append_event()` on every exit fill
+- Add 7 tests covering risk metrics recalculation, strategy isolation, and WAL persistence (652 total)
+
 ## v0.16.0 on 27th of March, 2026
 
 - Add [`trade_outcome_type.py`](nexus/infrastructure/praxis_connector/trade_outcome_type.py) with `TradeOutcomeType` enum (ACK, PARTIAL, FILLED, REJECTED, EXPIRED, CANCELED)

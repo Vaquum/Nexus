@@ -157,3 +157,33 @@ class StateStore:
                 srs.rolling_loss_30d = _ZERO
 
         return state
+
+    def refresh_rolling_losses(self, state: InstanceState) -> None:
+        '''Re-derive rolling loss counters from WAL events.
+
+        Call periodically during uptime to ensure rolling loss windows
+        remain accurate as old events age out of the 24h/7d/30d windows.
+
+        Args:
+            state: Instance state whose rolling losses will be updated in place.
+        '''
+
+        wal_entries = self._wal.read_all()
+        events = [
+            deserialize_event(entry.payload)
+            for entry in wal_entries
+            if entry.entry_type == WALEntryType.STRATEGY_EVENT
+        ]
+
+        recovery_time = datetime.now(tz=timezone.utc)
+        losses = derive_rolling_losses(events, recovery_time) if events else {}
+
+        for sid, srs in state.risk.per_strategy.items():
+            if sid in losses:
+                srs.rolling_loss_24h = losses[sid].rolling_loss_24h
+                srs.rolling_loss_7d = losses[sid].rolling_loss_7d
+                srs.rolling_loss_30d = losses[sid].rolling_loss_30d
+            else:
+                srs.rolling_loss_24h = _ZERO
+                srs.rolling_loss_7d = _ZERO
+                srs.rolling_loss_30d = _ZERO
