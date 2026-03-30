@@ -127,6 +127,10 @@ no_implicit_optional = true
 module = ["msgpack", "msgpack.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
