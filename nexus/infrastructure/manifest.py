@@ -44,8 +44,8 @@ class StrategySpec:
             msg = 'StrategySpec.strategy_id must be a non-empty string'
             raise ValueError(msg)
 
-        if not isinstance(self.file, str) or not self.file.strip():
-            msg = 'StrategySpec.file must be a non-empty string'
+        if not isinstance(self.file, str) or not self.file.strip() or self.file != self.file.strip():
+            msg = 'StrategySpec.file must be a non-empty string without surrounding whitespace'
             raise ValueError(msg)
 
         if not isinstance(self.permutation_ids, tuple) or not self.permutation_ids:

@@ -86,6 +86,17 @@ class TestStrategySpec:
                 capital_pct=Decimal('10'),
             )
 
+    def test_padded_whitespace_file_raises(self) -> None:
+        '''File with surrounding whitespace raises ValueError.'''
+
+        with pytest.raises(ValueError, match='file must be a non-empty string without surrounding whitespace'):
+            StrategySpec(
+                strategy_id='test',
+                file=' strategies/foo.py ',
+                permutation_ids=('pred1',),
+                capital_pct=Decimal('10'),
+            )
+
     def test_empty_permutation_ids_raises(self) -> None:
         '''Empty permutation_ids raises ValueError.'''
 
