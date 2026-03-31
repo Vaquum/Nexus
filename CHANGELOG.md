@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.18.0 on 31st of March, 2026
+
+- Add [`manifest.py`](nexus/infrastructure/manifest.py) with frozen `StrategySpec` dataclass (strategy_id, file, permutation_ids, capital_pct) and frozen `Manifest` dataclass (capital_pool, strategies)
+- Add `load_manifest()` to parse YAML manifest files with `allocated_capital` ceiling validation
+- Add `_validate_strategy_files()` to verify strategy .py files exist and have valid Python syntax via `importlib`
+- Add `pyyaml>=6.0` runtime dependency and mypy override for yaml module
+- Add 52 tests covering StrategySpec, Manifest, load_manifest parsing, and file validation (708 total)
+
 ## v0.17.0 on 28th of March, 2026
 
 - Add `StateStore` dependency to `OutcomeProcessor` for WAL persistence of risk events
