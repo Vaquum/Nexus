@@ -63,6 +63,10 @@ class Strategy:
         pass
 '''
 
+RUNTIME_ERROR = '''
+import nonexistent_module
+'''
+
 
 class TestLoadStrategyClass:
     '''Tests for load_strategy_class function.'''
@@ -196,6 +200,25 @@ class TestLoadStrategyClass:
             )
 
             assert issubclass(strategy_class, Strategy)
+
+    def test_non_py_suffix_raises(self) -> None:
+        '''Non-.py file suffix raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+
+            with pytest.raises(ValueError, match=r'must be a \.py file'):
+                load_strategy_class(Path('strategy.txt'), tmp_path)
+
+    def test_runtime_error_raises_valueerror(self) -> None:
+        '''Runtime error in strategy module raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            _write_strategy_file(tmp_path, 'bad.py', RUNTIME_ERROR)
+
+            with pytest.raises(ValueError, match='Failed to execute'):
+                load_strategy_class(Path('bad.py'), tmp_path)
 
 
 def _make_spec(

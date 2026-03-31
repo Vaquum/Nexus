@@ -34,6 +34,9 @@ def instantiate_strategy(spec: StrategySpec, base_path: Path) -> Strategy:
 def load_strategy_class(file_path: Path, base_path: Path) -> type[Strategy]:
     '''Load a Strategy class from a Python file.
 
+    The file must define a class named ``Strategy`` that inherits from
+    the Strategy ABC.
+
     Args:
         file_path: Relative path to the strategy .py file.
         base_path: Base directory for resolving the file path.
@@ -47,6 +50,10 @@ def load_strategy_class(file_path: Path, base_path: Path) -> type[Strategy]:
 
     if file_path.is_absolute():
         msg = f'Strategy file path must be relative: {file_path}'
+        raise ValueError(msg)
+
+    if file_path.suffix != '.py':
+        msg = f'Strategy file must be a .py file: {file_path}'
         raise ValueError(msg)
 
     base_resolved = base_path.resolve()
@@ -96,6 +103,11 @@ def _load_module(path: Path) -> ModuleType:
         raise ValueError(msg)
 
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+
+    try:
+        spec.loader.exec_module(module)
+    except Exception as e:
+        msg = f'Failed to execute strategy module: {path}'
+        raise ValueError(msg) from e
 
     return module
