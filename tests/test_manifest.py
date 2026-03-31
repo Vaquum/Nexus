@@ -445,7 +445,7 @@ class TestManifest:
 def _write_yaml(path: Path, content: str) -> None:
     '''Write YAML content to a file.'''
 
-    path.write_text(content)
+    path.write_text(content, encoding='utf-8')
 
 
 def _write_strategy_file(base: Path, rel_path: str, content: str = '') -> None:
@@ -453,7 +453,7 @@ def _write_strategy_file(base: Path, rel_path: str, content: str = '') -> None:
 
     file_path = base / rel_path
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(content or '# Strategy file\n')
+    file_path.write_text(content or '# Strategy file\n', encoding='utf-8')
 
 
 class TestLoadManifest:
