@@ -27,7 +27,7 @@ class StrategySpec:
 
     Args:
         strategy_id: Unique identifier for this strategy.
-        file: Path to the Python strategy implementation.
+        file: Relative path string to the Python strategy implementation.
         permutation_ids: Limen permutation IDs for Trainer/Cohort signal sources.
         capital_pct: Capital allocation percentage for this strategy.
     '''
@@ -156,6 +156,10 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
     except InvalidOperation as e:
         msg = f'Manifest capital_pool is not a valid number: {raw_capital_pool!r}'
         raise ValueError(msg) from e
+
+    if not capital_pool.is_finite() or capital_pool <= _ZERO:
+        msg = f'Manifest capital_pool must be a finite positive number: {capital_pool}'
+        raise ValueError(msg)
 
     if capital_pool > allocated_capital:
         msg = (
