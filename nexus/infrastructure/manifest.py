@@ -2,7 +2,7 @@
 
 Provides frozen dataclasses for manifest structure and a loader
 that parses YAML and validates all constraints including file
-existence and valid Python syntax.
+existence and Python syntax.
 '''
 
 from __future__ import annotations
