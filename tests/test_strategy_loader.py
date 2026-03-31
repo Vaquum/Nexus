@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
-
-from decimal import Decimal
 
 from nexus.infrastructure.manifest import StrategySpec
 from nexus.strategy import Strategy

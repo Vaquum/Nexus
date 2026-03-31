@@ -28,7 +28,11 @@ def instantiate_strategy(spec: StrategySpec, base_path: Path) -> Strategy:
 
     strategy_class = load_strategy_class(Path(spec.file), base_path)
 
-    return strategy_class(spec.strategy_id)
+    try:
+        return strategy_class(spec.strategy_id)
+    except Exception as e:
+        msg = f'Failed to instantiate strategy {spec.strategy_id!r}'
+        raise ValueError(msg) from e
 
 
 def load_strategy_class(file_path: Path, base_path: Path) -> type[Strategy]:
