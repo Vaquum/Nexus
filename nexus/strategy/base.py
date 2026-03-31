@@ -22,11 +22,17 @@ class Strategy(ABC):
     _strategy_id: str
 
     def __init__(self, strategy_id: str) -> None:
-        if not isinstance(strategy_id, str) or not strategy_id.strip():
+        if not isinstance(strategy_id, str):
             msg = 'strategy_id must be a non-empty string'
             raise ValueError(msg)
 
-        self._strategy_id = strategy_id
+        normalized = strategy_id.strip()
+
+        if not normalized:
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        self._strategy_id = normalized
 
     @property
     def strategy_id(self) -> str:

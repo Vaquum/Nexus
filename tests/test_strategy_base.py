@@ -56,6 +56,13 @@ class TestStrategyABC:
         with pytest.raises(ValueError, match='non-empty string'):
             ConcreteStrategy('   ')
 
+    def test_strategy_id_normalized(self) -> None:
+        '''strategy_id is stripped of leading/trailing whitespace.'''
+
+        strategy = ConcreteStrategy('  momentum_v1  ')
+
+        assert strategy.strategy_id == 'momentum_v1'
+
     def test_non_string_strategy_id_raises(self) -> None:
         '''Non-string strategy_id raises ValueError.'''
 
