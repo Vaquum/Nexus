@@ -28,7 +28,7 @@ class StrategySpec:
     Args:
         strategy_id: Unique identifier for this strategy.
         file: Path to the Python strategy implementation.
-        permutation_ids: Permutation IDs to subscribe to (input to Limen).
+        permutation_ids: Limen permutation IDs for Trainer/Cohort signal sources.
         capital_pct: Capital allocation percentage for this strategy.
     '''
 
