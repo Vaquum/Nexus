@@ -231,8 +231,8 @@ class TestStrategySpec:
 
         assert spec.capital_pct == Decimal('12.5')
 
-    def test_single_predictor_fn_allowed(self) -> None:
-        '''Single predictor_fn in tuple is allowed.'''
+    def test_single_permutation_id_allowed(self) -> None:
+        '''Single permutation_id in tuple is allowed.'''
 
         spec = StrategySpec(
             strategy_id='test',
@@ -744,4 +744,120 @@ strategies:
             )
 
             with pytest.raises(ValueError, match=r'syntax error.*bad_syntax\.py'):
+                load_manifest(path, Decimal('20000'))
+
+    def test_invalid_capital_pool_decimal_raises(self) -> None:
+        '''Non-numeric capital_pool raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / 'manifest.yaml'
+
+            _write_strategy_file(tmp_path, 'test.py')
+
+            _write_yaml(
+                path,
+                '''
+capital_pool: not_a_number
+strategies:
+  - id: test
+    file: test.py
+    permutation_ids: [pred1]
+    capital_pct: 100
+''',
+            )
+
+            with pytest.raises(ValueError, match='capital_pool is not a valid number'):
+                load_manifest(path, Decimal('20000'))
+
+    def test_invalid_capital_pct_decimal_raises(self) -> None:
+        '''Non-numeric capital_pct raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / 'manifest.yaml'
+
+            _write_strategy_file(tmp_path, 'test.py')
+
+            _write_yaml(
+                path,
+                '''
+capital_pool: 10000
+strategies:
+  - id: test
+    file: test.py
+    permutation_ids: [pred1]
+    capital_pct: invalid
+''',
+            )
+
+            with pytest.raises(ValueError, match='capital_pct is not a valid number'):
+                load_manifest(path, Decimal('20000'))
+
+    def test_absolute_file_path_raises(self) -> None:
+        '''Absolute strategy file path raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / 'manifest.yaml'
+
+            _write_yaml(
+                path,
+                '''
+capital_pool: 10000
+strategies:
+  - id: absolute
+    file: /etc/passwd
+    permutation_ids: [pred1]
+    capital_pct: 100
+''',
+            )
+
+            with pytest.raises(ValueError, match='file must be relative'):
+                load_manifest(path, Decimal('20000'))
+
+    def test_path_traversal_raises(self) -> None:
+        '''Strategy file path escaping base raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / 'manifest.yaml'
+
+            _write_yaml(
+                path,
+                '''
+capital_pool: 10000
+strategies:
+  - id: escape
+    file: ../../../etc/passwd
+    permutation_ids: [pred1]
+    capital_pct: 100
+''',
+            )
+
+            with pytest.raises(ValueError, match='escapes base path'):
+                load_manifest(path, Decimal('20000'))
+
+    def test_directory_instead_of_file_raises(self) -> None:
+        '''Directory path instead of file raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / 'manifest.yaml'
+
+            (tmp_path / 'a_directory').mkdir()
+
+            _write_yaml(
+                path,
+                '''
+capital_pool: 10000
+strategies:
+  - id: dir_not_file
+    file: a_directory
+    permutation_ids: [pred1]
+    capital_pct: 100
+''',
+            )
+
+            with pytest.raises(ValueError, match='file not found'):
                 load_manifest(path, Decimal('20000'))

@@ -7,9 +7,9 @@ existence and importability.
 
 from __future__ import annotations
 
-import importlib.util
+import ast
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -132,6 +132,7 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
     Raises:
         ValueError: If manifest is invalid or capital_pool exceeds allocated_capital.
         FileNotFoundError: If manifest file does not exist.
+        yaml.YAMLError: If the file contains malformed YAML.
     '''
 
     if not path.exists():
@@ -150,7 +151,11 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
         msg = 'Manifest missing required field: capital_pool'
         raise ValueError(msg)
 
-    capital_pool = Decimal(str(raw_capital_pool))
+    try:
+        capital_pool = Decimal(str(raw_capital_pool))
+    except InvalidOperation as e:
+        msg = f'Manifest capital_pool is not a valid number: {raw_capital_pool!r}'
+        raise ValueError(msg) from e
 
     if capital_pool > allocated_capital:
         msg = (
@@ -193,7 +198,11 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
             msg = f'Strategy {strategy_id!r} missing required field: capital_pct'
             raise ValueError(msg)
 
-        capital_pct = Decimal(str(raw_capital_pct))
+        try:
+            capital_pct = Decimal(str(raw_capital_pct))
+        except InvalidOperation as e:
+            msg = f'Strategy {strategy_id!r} capital_pct is not a valid number: {raw_capital_pct!r}'
+            raise ValueError(msg) from e
 
         specs.append(
             StrategySpec(
@@ -219,27 +228,32 @@ def _validate_strategy_files(manifest: Manifest, base_path: Path) -> None:
         base_path: Base path for resolving relative file paths.
 
     Raises:
-        ValueError: If any strategy file is missing or has syntax errors.
+        ValueError: If any strategy file is missing, escapes base path, or has syntax errors.
     '''
 
-    for spec in manifest.strategies:
-        file_path = base_path / spec.file
+    base_resolved = base_path.resolve()
 
-        if not file_path.exists():
+    for spec in manifest.strategies:
+        raw_path = Path(spec.file)
+
+        if raw_path.is_absolute():
+            msg = f'Strategy {spec.strategy_id!r} file must be relative: {raw_path}'
+            raise ValueError(msg)
+
+        file_path = (base_resolved / raw_path).resolve()
+
+        try:
+            file_path.relative_to(base_resolved)
+        except ValueError as e:
+            msg = f'Strategy {spec.strategy_id!r} file escapes base path: {file_path}'
+            raise ValueError(msg) from e
+
+        if not file_path.is_file():
             msg = f'Strategy {spec.strategy_id!r} file not found: {file_path}'
             raise ValueError(msg)
 
         try:
-            spec_obj = importlib.util.spec_from_file_location(
-                spec.strategy_id,
-                file_path,
-            )
-            if spec_obj is None or spec_obj.loader is None:
-                msg = f'Strategy {spec.strategy_id!r} file cannot be loaded: {file_path}'
-                raise ValueError(msg)
-
-            module = importlib.util.module_from_spec(spec_obj)
-            spec_obj.loader.exec_module(module)
+            ast.parse(file_path.read_text())
         except SyntaxError as e:
             msg = f'Strategy {spec.strategy_id!r} file has syntax error: {file_path}: {e}'
             raise ValueError(msg) from e
