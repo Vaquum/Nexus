@@ -161,6 +161,13 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
         msg = f'Manifest capital_pool must be a finite positive number: {capital_pool}'
         raise ValueError(msg)
 
+    if (
+        not isinstance(allocated_capital, Decimal)
+        or not allocated_capital.is_finite()
+    ):
+        msg = 'allocated_capital must be a finite Decimal'
+        raise ValueError(msg)
+
     if capital_pool > allocated_capital:
         msg = (
             f'Manifest capital_pool {capital_pool} exceeds '

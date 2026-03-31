@@ -509,6 +509,31 @@ strategies:
             with pytest.raises(ValueError, match='exceeds allocated_capital'):
                 load_manifest(path, Decimal('10000'))
 
+    def test_non_finite_allocated_capital_raises(self) -> None:
+        '''Non-finite allocated_capital raises ValueError.'''
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'manifest.yaml'
+            strategy = Path(tmp) / 'test.py'
+            strategy.write_text('pass')
+            _write_yaml(
+                path,
+                '''
+capital_pool: 5000
+strategies:
+  - id: test
+    file: test.py
+    permutation_ids: [pred1]
+    capital_pct: 100
+''',
+            )
+
+            with pytest.raises(ValueError, match='allocated_capital must be a finite'):
+                load_manifest(path, Decimal('NaN'))
+
+            with pytest.raises(ValueError, match='allocated_capital must be a finite'):
+                load_manifest(path, Decimal('Infinity'))
+
     def test_missing_capital_pool_raises(self) -> None:
         '''Missing capital_pool raises ValueError.'''
 
