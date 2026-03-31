@@ -178,3 +178,10 @@
 - Add `_validate_strategy_files()` to verify strategy .py files exist and have valid Python syntax via `ast.parse()`
 - Add `pyyaml>=6.0` runtime dependency and mypy override for yaml module
 - Add 58 tests covering StrategySpec, Manifest, load_manifest parsing, and file validation (714 total)
+
+## v0.19.0 on 31st of March, 2026
+
+- Add [`base.py`](nexus/strategy/base.py) with `Strategy` ABC defining `on_save() → bytes` and `on_load(bytes) → None` lifecycle hooks for state persistence
+- Add [`loader.py`](nexus/strategy/loader.py) with `load_strategy_class()` for dynamic import from .py files and `instantiate_strategy()` for creating Strategy instances from manifest specs
+- Add path traversal prevention and ABC inheritance validation in strategy loader
+- Add 27 tests covering Strategy ABC, on_save/on_load lifecycle, and dynamic loading (742 total)
