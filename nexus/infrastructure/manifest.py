@@ -2,7 +2,7 @@
 
 Provides frozen dataclasses for manifest structure and a loader
 that parses YAML and validates all constraints including file
-existence and importability.
+existence and valid Python syntax.
 '''
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
         yaml.YAMLError: If the file contains malformed YAML.
     '''
 
-    if not path.exists():
+    if not path.is_file():
         msg = f'Manifest file not found: {path}'
         raise FileNotFoundError(msg)
 
