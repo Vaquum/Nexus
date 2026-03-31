@@ -139,8 +139,8 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
         msg = f'Manifest file not found: {path}'
         raise FileNotFoundError(msg)
 
-    with path.open() as f:
-        data: dict[str, Any] = yaml.safe_load(f)
+    with path.open(encoding='utf-8') as f:
+        data: Any = yaml.safe_load(f)
 
     if not isinstance(data, dict):
         msg = 'Manifest must be a YAML mapping'
@@ -264,7 +264,7 @@ def _validate_strategy_files(manifest: Manifest, base_path: Path) -> None:
             raise ValueError(msg)
 
         try:
-            ast.parse(file_path.read_text())
+            ast.parse(file_path.read_text(encoding='utf-8'))
         except SyntaxError as e:
             msg = f'Strategy {spec.strategy_id!r} file has syntax error: {file_path}: {e}'
             raise ValueError(msg) from e
