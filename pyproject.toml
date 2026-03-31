@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaquum-nexus"
-version = "0.17.0"
+version = "0.18.0"
 description = "Layer for intelligence and decision-making between signal generation and trade execution."
 readme = "README.md"
 authors = [
@@ -12,7 +12,7 @@ authors = [
 ]
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0"]
+dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0", "pyyaml>=6.0"]
 
 [project.optional-dependencies]
 dev = [
@@ -125,6 +125,10 @@ no_implicit_optional = true
 
 [[tool.mypy.overrides]]
 module = ["msgpack", "msgpack.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["yaml", "yaml.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

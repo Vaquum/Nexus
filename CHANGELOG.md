@@ -1,40 +1,5 @@
 # Changelog
 
-## v0.17.0 on 28th of March, 2026
-
-- Add `StateStore` dependency to `OutcomeProcessor` for WAL persistence of risk events
-- Compute realized P&L in `_reduce_position` using side-aware formula: `side_multiplier × (fill_price - entry_price) × fill_size` where `side_multiplier` is `-1` for shorts
-- Add `_update_strategy_risk_state()` to update per-strategy `strategy_realized_pnl`, `rolling_loss_24h/7d/30d`, and `high_water_mark`
-- Update instance-level `cumulative_realized_pnl` triggering `recompute_drawdown_metrics()` on exit fills
-- Persist `StrategyEvent` to WAL via `StateStore.append_event()` on every exit fill
-- Add 7 tests covering risk metrics recalculation, strategy isolation, and WAL persistence (652 total)
-
-## v0.16.0 on 27th of March, 2026
-
-- Add [`trade_outcome_type.py`](nexus/infrastructure/praxis_connector/trade_outcome_type.py) with `TradeOutcomeType` enum (ACK, PARTIAL, FILLED, REJECTED, EXPIRED, CANCELED)
-- Add [`trade_outcome.py`](nexus/infrastructure/praxis_connector/trade_outcome.py) with frozen `TradeOutcome` dataclass and outcome-type-specific validation (fill outcomes require `actual_fees`)
-- Add [`inbound_connector.py`](nexus/infrastructure/praxis_connector/inbound_connector.py) with `InboundConnector` protocol for receiving outcomes from Trading sub-system
-- Add [`order_context.py`](nexus/infrastructure/praxis_connector/order_context.py) with frozen `OrderContext` dataclass bridging outcome processing with order metadata (side, trade_id, estimated_fees)
-- Add [`process_result.py`](nexus/infrastructure/praxis_connector/process_result.py) with frozen `ProcessResult` dataclass for outcome processing results
-- Extend `CapitalController.order_fill()` with `actual_fees` parameter and fee reconciliation against `fee_reserve`
-- Add [`outcome_processor.py`](nexus/infrastructure/praxis_connector/outcome_processor.py) with `OutcomeProcessor` routing outcomes to Capital Controller lifecycle methods
-- Add position growth with VWAP entry price calculation on entry fills
-- Add position reduction with `pending_exit` clearing on exit fills, removing closed positions from state
-- Add 126 tests covering TradeOutcome validation, OutcomeProcessor routing, position growth/reduction, and fee reconciliation (638 total)
-
-## v0.15.0 on 25th of March, 2026
-
-- Add [`stp_mode.py`](nexus/core/stp_mode.py) with `STPMode` enum (CANCEL_MAKER, CANCEL_TAKER, CANCEL_BOTH) for self-trade prevention
-- Add `stp_mode` field to `InstanceConfig` with default `CANCEL_TAKER` and validation
-- Add [`trade_command_type.py`](nexus/infrastructure/praxis_connector/trade_command_type.py) with `TradeCommandType` enum (NEW_ORDER, AMEND_ORDER, CANCEL_ORDER)
-- Add [`trade_command.py`](nexus/infrastructure/praxis_connector/trade_command.py) with frozen `TradeCommand` dataclass and command-type-specific validation
-- Add [`translate.py`](nexus/infrastructure/praxis_connector/translate.py) with `translate_to_trade_command()` mapping ValidationAction to TradeCommand
-- Add [`outbound_connector.py`](nexus/infrastructure/praxis_connector/outbound_connector.py) with `OutboundConnector` protocol for Trading sub-system dispatch
-- Enforce `translate_to_trade_command` guards for allowed decision and non-empty `command_id`
-- Enforce `TradeCommand` rejection of `side`/`size` for `AMEND_ORDER`/`CANCEL_ORDER` command types
-- Enforce robust `expires_at` computation in tests using `timedelta` instead of `minute` replacement
-- Add 45 tests covering STPMode, TradeCommandType, TradeCommand validation, and translation for all action types (558 total)
-
 ## v0.1.0 on 16th of March, 2026
 
 - Add CI pipeline mirroring Praxis: Ruff, Mypy strict, pytest, CodeQL workflows
@@ -170,3 +135,46 @@
 - Add reference-source identity to price contracts via `PriceCheckSnapshot.reference_price_source` and `PriceStageLimits.reference_price_source` with non-empty validation
 - Fix deviation-stage behavior to deny deterministically when reference source is missing or mismatched (`PRICE_SYSTEM_DATA_UNAVAILABLE`/`PRICE_SNAPSHOT_INVALID`)
 - Add and expand tests for 3.4 config validation, source-aware deviation paths, consequence routing (stale => platform-critical, spread/deviation => strategy-warning), and full-suite stability (512 passing tests)
+
+## v0.15.0 on 25th of March, 2026
+
+- Add [`stp_mode.py`](nexus/core/stp_mode.py) with `STPMode` enum (CANCEL_MAKER, CANCEL_TAKER, CANCEL_BOTH) for self-trade prevention
+- Add `stp_mode` field to `InstanceConfig` with default `CANCEL_TAKER` and validation
+- Add [`trade_command_type.py`](nexus/infrastructure/praxis_connector/trade_command_type.py) with `TradeCommandType` enum (NEW_ORDER, AMEND_ORDER, CANCEL_ORDER)
+- Add [`trade_command.py`](nexus/infrastructure/praxis_connector/trade_command.py) with frozen `TradeCommand` dataclass and command-type-specific validation
+- Add [`translate.py`](nexus/infrastructure/praxis_connector/translate.py) with `translate_to_trade_command()` mapping ValidationAction to TradeCommand
+- Add [`outbound_connector.py`](nexus/infrastructure/praxis_connector/outbound_connector.py) with `OutboundConnector` protocol for Trading sub-system dispatch
+- Enforce `translate_to_trade_command` guards for allowed decision and non-empty `command_id`
+- Enforce `TradeCommand` rejection of `side`/`size` for `AMEND_ORDER`/`CANCEL_ORDER` command types
+- Enforce robust `expires_at` computation in tests using `timedelta` instead of `minute` replacement
+- Add 45 tests covering STPMode, TradeCommandType, TradeCommand validation, and translation for all action types (558 total)
+
+## v0.16.0 on 27th of March, 2026
+
+- Add [`trade_outcome_type.py`](nexus/infrastructure/praxis_connector/trade_outcome_type.py) with `TradeOutcomeType` enum (ACK, PARTIAL, FILLED, REJECTED, EXPIRED, CANCELED)
+- Add [`trade_outcome.py`](nexus/infrastructure/praxis_connector/trade_outcome.py) with frozen `TradeOutcome` dataclass and outcome-type-specific validation (fill outcomes require `actual_fees`)
+- Add [`inbound_connector.py`](nexus/infrastructure/praxis_connector/inbound_connector.py) with `InboundConnector` protocol for receiving outcomes from Trading sub-system
+- Add [`order_context.py`](nexus/infrastructure/praxis_connector/order_context.py) with frozen `OrderContext` dataclass bridging outcome processing with order metadata (side, trade_id, estimated_fees)
+- Add [`process_result.py`](nexus/infrastructure/praxis_connector/process_result.py) with frozen `ProcessResult` dataclass for outcome processing results
+- Extend `CapitalController.order_fill()` with `actual_fees` parameter and fee reconciliation against `fee_reserve`
+- Add [`outcome_processor.py`](nexus/infrastructure/praxis_connector/outcome_processor.py) with `OutcomeProcessor` routing outcomes to Capital Controller lifecycle methods
+- Add position growth with VWAP entry price calculation on entry fills
+- Add position reduction with `pending_exit` clearing on exit fills, removing closed positions from state
+- Add 126 tests covering TradeOutcome validation, OutcomeProcessor routing, position growth/reduction, and fee reconciliation (638 total)
+
+## v0.17.0 on 28th of March, 2026
+
+- Add `StateStore` dependency to `OutcomeProcessor` for WAL persistence of risk events
+- Compute realized P&L in `_reduce_position` using side-aware formula: `side_multiplier × (fill_price - entry_price) × fill_size` where `side_multiplier` is `-1` for shorts
+- Add `_update_strategy_risk_state()` to update per-strategy `strategy_realized_pnl`, `rolling_loss_24h/7d/30d`, and `high_water_mark`
+- Update instance-level `cumulative_realized_pnl` triggering `recompute_drawdown_metrics()` on exit fills
+- Persist `StrategyEvent` to WAL via `StateStore.append_event()` on every exit fill
+- Add 7 tests covering risk metrics recalculation, strategy isolation, and WAL persistence (652 total)
+
+## v0.18.0 on 31st of March, 2026
+
+- Add [`manifest.py`](nexus/infrastructure/manifest.py) with frozen `StrategySpec` dataclass (strategy_id, file, permutation_ids, capital_pct) and frozen `Manifest` dataclass (capital_pool, strategies)
+- Add `load_manifest()` to parse YAML manifest files with `allocated_capital` ceiling validation
+- Add `_validate_strategy_files()` to verify strategy .py files exist and have valid Python syntax via `ast.parse()`
+- Add `pyyaml>=6.0` runtime dependency and mypy override for yaml module
+- Add 58 tests covering StrategySpec, Manifest, load_manifest parsing, and file validation (714 total)
