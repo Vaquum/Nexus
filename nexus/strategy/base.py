@@ -58,6 +58,8 @@ class Strategy(ABC):
             Serialized state as bytes.
         '''
 
+        ...
+
     @abstractmethod
     def on_load(self, data: bytes) -> None:
         '''Restore strategy state from persisted bytes.
@@ -68,6 +70,8 @@ class Strategy(ABC):
         Args:
             data: Serialized state from a prior on_save() call.
         '''
+
+        ...
 
     @abstractmethod
     def on_startup(
@@ -87,6 +91,8 @@ class Strategy(ABC):
         Returns:
             List of actions to execute, or empty list for no action.
         '''
+
+        ...
 
     @abstractmethod
     def on_signal(
@@ -108,6 +114,8 @@ class Strategy(ABC):
             List of actions to execute, or empty list for no action.
         '''
 
+        ...
+
     @abstractmethod
     def on_outcome(
         self,
@@ -127,6 +135,8 @@ class Strategy(ABC):
         Returns:
             List of actions to execute, or empty list for no action.
         '''
+
+        ...
 
     @abstractmethod
     def on_timer(
@@ -148,6 +158,8 @@ class Strategy(ABC):
             List of actions to execute, or empty list for no action.
         '''
 
+        ...
+
     @abstractmethod
     def on_shutdown(
         self,
@@ -166,3 +178,5 @@ class Strategy(ABC):
         Returns:
             List of actions to execute, or empty list for no action.
         '''
+
+        ...
