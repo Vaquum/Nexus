@@ -28,7 +28,7 @@ from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 
 class Strategy(Strategy):
     def on_save(self) -> bytes:
-        return b""
+        return b''
 
     def on_load(self, data: bytes) -> None:
         pass

@@ -16,9 +16,10 @@ class Signal:
 
     Args:
         predictor_fn_id: Identifier of the predictor function that produced this signal.
-        values: Signal values dict. Currently binary (CAN_ENTER=1, NO_PREDICTION=0).
-            Future: confidence scores, directional strength, multi-class signals.
-        timestamp: When the signal was generated.
+        values: Signal values dict. Keys must be strings. Numeric values (int, float,
+            Decimal) must be finite. Common patterns: binary flags (CAN_ENTER=1),
+            confidence scores, directional strength.
+        timestamp: When the signal was generated (must be timezone-aware).
     '''
 
     predictor_fn_id: str
