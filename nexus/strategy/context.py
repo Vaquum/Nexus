@@ -15,6 +15,10 @@ _ZERO = Decimal(0)
 class StrategyContext:
     '''Context provided to strategy event callbacks.
 
+    NOTE: Position objects are mutable by design (size/unrealized_pnl change).
+    Strategies must not mutate positions; any mutations are unsupported and
+    ignored by the Strategy Runner.
+
     Args:
         positions: Current open positions for this strategy.
         capital_available: Capital available for new positions in quote asset.

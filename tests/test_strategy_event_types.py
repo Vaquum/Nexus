@@ -46,6 +46,19 @@ class TestStrategyParams:
 
         assert params.get('anything') is None
 
+    def test_raw_is_immutable(self) -> None:
+        '''raw dict is defensively copied and immutable.'''
+
+        original = {'key': 'value'}
+        params = StrategyParams(raw=original)
+
+        original['key'] = 'mutated'
+
+        assert params.raw['key'] == 'value'
+
+        with pytest.raises(TypeError):
+            params.raw['new'] = 'fail'  # type: ignore[index]
+
 
 class TestSignal:
     '''Tests for Signal dataclass.'''
@@ -127,6 +140,43 @@ class TestSignal:
                 values={'confidence': math.nan},
                 timestamp=datetime.now(timezone.utc),
             )
+
+    def test_decimal_nan_raises(self) -> None:
+        '''Decimal NaN raises ValueError.'''
+
+        with pytest.raises(ValueError, match='must be finite'):
+            Signal(
+                predictor_fn_id='test',
+                values={'confidence': Decimal('NaN')},
+                timestamp=datetime.now(timezone.utc),
+            )
+
+    def test_decimal_infinity_raises(self) -> None:
+        '''Decimal Infinity raises ValueError.'''
+
+        with pytest.raises(ValueError, match='must be finite'):
+            Signal(
+                predictor_fn_id='test',
+                values={'confidence': Decimal('Infinity')},
+                timestamp=datetime.now(timezone.utc),
+            )
+
+    def test_values_is_immutable(self) -> None:
+        '''values dict is defensively copied and immutable.'''
+
+        original = {'CAN_ENTER': 1}
+        signal = Signal(
+            predictor_fn_id='test',
+            values=original,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        original['CAN_ENTER'] = 999
+
+        assert signal.values['CAN_ENTER'] == 1
+
+        with pytest.raises(TypeError):
+            signal.values['new'] = 'fail'  # type: ignore[index]
 
     def test_non_string_key_raises(self) -> None:
         '''Non-string key in values raises ValueError.'''

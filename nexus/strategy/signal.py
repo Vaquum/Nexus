@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
+from types import MappingProxyType
 from typing import Any
 
 
@@ -14,16 +16,19 @@ class Signal:
 
     Args:
         predictor_fn_id: Identifier of the predictor function that produced this signal.
-        values: Signal values dict. Currently binary (CAN_ENTER=1, NO_PREDICTION=0).
-            Future: confidence scores, directional strength, multi-class signals.
+        values: Signal values dict (stored as MappingProxyType). Currently binary
+            (CAN_ENTER=1, NO_PREDICTION=0). Future: confidence scores, directional
+            strength, multi-class signals.
         timestamp: When the signal was generated.
     '''
 
     predictor_fn_id: str
-    values: dict[str, Any]
+    values: dict[str, Any] | MappingProxyType[str, Any]
     timestamp: datetime
 
     def __post_init__(self) -> None:
+        '''Validate fields and wrap values as immutable.'''
+
         if not isinstance(self.predictor_fn_id, str) or not self.predictor_fn_id.strip():
             msg = 'predictor_fn_id must be a non-empty string'
             raise ValueError(msg)
@@ -41,9 +46,15 @@ class Signal:
                 msg = f'values[{key!r}] must be finite'
                 raise ValueError(msg)
 
+            if isinstance(val, Decimal) and not val.is_finite():
+                msg = f'values[{key!r}] must be finite'
+                raise ValueError(msg)
+
         if not isinstance(self.timestamp, datetime):
             msg = 'timestamp must be a datetime'
             raise ValueError(msg)
+
+        object.__setattr__(self, 'values', MappingProxyType(dict(self.values)))
 
     def get(self, key: str, default: Any = None) -> Any:
         '''Get a signal value by key.
