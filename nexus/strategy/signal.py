@@ -16,14 +16,13 @@ class Signal:
 
     Args:
         predictor_fn_id: Identifier of the predictor function that produced this signal.
-        values: Signal values dict (stored as MappingProxyType). Currently binary
-            (CAN_ENTER=1, NO_PREDICTION=0). Future: confidence scores, directional
-            strength, multi-class signals.
+        values: Signal values dict. Currently binary (CAN_ENTER=1, NO_PREDICTION=0).
+            Future: confidence scores, directional strength, multi-class signals.
         timestamp: When the signal was generated.
     '''
 
     predictor_fn_id: str
-    values: dict[str, Any] | MappingProxyType[str, Any]
+    values: dict[str, Any]
     timestamp: datetime
 
     def __post_init__(self) -> None:

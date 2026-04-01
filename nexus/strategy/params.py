@@ -16,10 +16,10 @@ class StrategyParams:
     and wrapped as immutable at construction.
 
     Args:
-        raw: Raw parameters dict from manifest (stored as MappingProxyType).
+        raw: Raw parameters dict from manifest.
     '''
 
-    raw: dict[str, Any] | MappingProxyType[str, Any]
+    raw: dict[str, Any]
 
     def __post_init__(self) -> None:
         '''Validate and wrap raw dict as immutable.'''
