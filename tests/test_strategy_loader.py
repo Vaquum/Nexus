@@ -22,7 +22,9 @@ def _write_strategy_file(base: Path, rel_path: str, content: str) -> None:
 
 
 VALID_STRATEGY = '''
-from nexus.strategy import Strategy
+from nexus.strategy import Action, Strategy, StrategyContext, StrategyParams
+from nexus.strategy.signal import Signal
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 
 class Strategy(Strategy):
     def on_save(self) -> bytes:
@@ -30,6 +32,21 @@ class Strategy(Strategy):
 
     def on_load(self, data: bytes) -> None:
         pass
+
+    def on_startup(self, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_signal(self, signal: Signal, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_outcome(self, outcome: TradeOutcome, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_timer(self, timer_id: str, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_shutdown(self, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
 '''
 
 MISSING_ON_SAVE = '''
@@ -180,7 +197,7 @@ class TestLoadStrategyClass:
             strategy_class = load_strategy_class(Path('bad.py'), tmp_path)
 
             with pytest.raises(TypeError, match='abstract'):
-                strategy_class('test')  # type: ignore[abstract]
+                strategy_class('test')
 
     def test_nested_path_loads(self) -> None:
         '''Nested directory path loads successfully.'''

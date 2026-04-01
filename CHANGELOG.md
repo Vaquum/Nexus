@@ -185,3 +185,13 @@
 - Add [`loader.py`](nexus/strategy/loader.py) with `load_strategy_class()` for dynamic import from .py files and `instantiate_strategy()` for creating Strategy instances from manifest specs
 - Add path traversal prevention and ABC inheritance validation in strategy loader
 - Add 27 tests covering Strategy ABC, on_save/on_load lifecycle, and dynamic loading (742 total)
+
+## v0.20.0 on 1st of April, 2026
+
+- Add [`params.py`](nexus/strategy/params.py) with `StrategyParams` frozen dataclass wrapping manifest parameters
+- Add [`signal.py`](nexus/strategy/signal.py) with `Signal` frozen dataclass for predictor function output (predictor_fn_id, values dict, timestamp)
+- Add [`action.py`](nexus/strategy/action.py) with `ActionType` enum (ENTER, EXIT, MODIFY, ABORT) and `Action` frozen dataclass
+- Add [`context.py`](nexus/strategy/context.py) with `StrategyContext` frozen dataclass (positions, capital_available, operational_mode)
+- Extend `Strategy` ABC with five event callbacks: `on_startup`, `on_signal`, `on_outcome`, `on_timer`, `on_shutdown`
+- Wire new types in [`nexus/strategy/__init__.py`](nexus/strategy/__init__.py) public API
+- Add 57 tests covering event dispatch types and Strategy callbacks (772 total)
