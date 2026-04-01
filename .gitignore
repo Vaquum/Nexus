@@ -27,3 +27,5 @@ build/
 .cursor/
 nexus-journals/
 .claude/
+.tldr/
+.tldrignore
