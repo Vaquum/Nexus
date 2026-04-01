@@ -25,20 +25,30 @@ class StrategyRunner:
             msg = 'executors must be a dict'
             raise ValueError(msg)
 
+        normalized: dict[str, StrategyExecutor] = {}
+
         for strategy_id, executor in executors.items():
             if not isinstance(strategy_id, str) or not strategy_id.strip():
                 msg = 'executor keys must be non-empty strings'
                 raise ValueError(msg)
 
+            key = strategy_id.strip()
+
             if not isinstance(executor, StrategyExecutor):
-                msg = f'executor for {strategy_id!r} must be a StrategyExecutor'
+                msg = f'executor for {key!r} must be a StrategyExecutor'
                 raise ValueError(msg)
 
-            if executor.strategy_id != strategy_id:
-                msg = f'executor strategy_id {executor.strategy_id!r} does not match key {strategy_id!r}'
+            if executor.strategy_id != key:
+                msg = f'executor strategy_id {executor.strategy_id!r} does not match key {key!r}'
                 raise ValueError(msg)
 
-        self._executors = dict(executors)
+            if key in normalized:
+                msg = f'duplicate strategy_id after normalization: {key!r}'
+                raise ValueError(msg)
+
+            normalized[key] = executor
+
+        self._executors = normalized
 
     def _get_executor(self, strategy_id: str) -> StrategyExecutor:
         '''Get executor for strategy_id or raise ValueError.'''

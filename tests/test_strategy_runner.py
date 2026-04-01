@@ -149,6 +149,13 @@ class TestStrategyRunnerConstruction:
         with pytest.raises(ValueError, match='does not match key'):
             StrategyRunner({'wrong_key': executor})
 
+    def test_duplicate_key_after_normalization_rejected(self) -> None:
+        strategy = StubStrategy('s1')
+        executor = StrategyExecutor(strategy)
+
+        with pytest.raises(ValueError, match='duplicate strategy_id'):
+            StrategyRunner({'s1': executor, ' s1 ': executor})
+
 
 class TestStrategyRunnerDispatch:
 
