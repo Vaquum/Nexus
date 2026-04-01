@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from nexus.strategy import Strategy
+from nexus.strategy import Action, Strategy, StrategyContext, StrategyParams
+from nexus.strategy.signal import Signal
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 
 
 class ConcreteStrategy(Strategy):
@@ -19,6 +21,44 @@ class ConcreteStrategy(Strategy):
 
     def on_load(self, data: bytes) -> None:
         self._state = data
+
+    def on_startup(
+        self,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_signal(
+        self,
+        _signal: Signal,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_outcome(
+        self,
+        _outcome: TradeOutcome,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_timer(
+        self,
+        _timer_id: str,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_shutdown(
+        self,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
 
 
 class TestStrategyABC:
@@ -135,6 +175,47 @@ class MissingOnLoadStrategy(Strategy):
         return b''
 
 
+class MissingOnStartupStrategy(Strategy):
+    '''Strategy missing on_startup implementation.'''
+
+    def on_save(self) -> bytes:
+        return b''
+
+    def on_load(self, _data: bytes) -> None:
+        pass
+
+    def on_signal(
+        self,
+        _signal: Signal,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_outcome(
+        self,
+        _outcome: TradeOutcome,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_timer(
+        self,
+        _timer_id: str,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+    def on_shutdown(
+        self,
+        _params: StrategyParams,
+        _context: StrategyContext,
+    ) -> list[Action]:
+        return []
+
+
 class TestMissingMethods:
     '''Tests for strategies missing required methods.'''
 
@@ -149,3 +230,118 @@ class TestMissingMethods:
 
         with pytest.raises(TypeError, match='abstract'):
             MissingOnLoadStrategy('test')  # type: ignore[abstract]
+
+    def test_missing_on_startup_raises(self) -> None:
+        '''Strategy missing on_startup cannot be instantiated.'''
+
+        with pytest.raises(TypeError, match='abstract'):
+            MissingOnStartupStrategy('test')  # type: ignore[abstract]
+
+
+class TestEventCallbacks:
+    '''Tests for event callback methods.'''
+
+    def test_callbacks_return_empty_list(self) -> None:
+        '''Callbacks can return empty list.'''
+
+        from datetime import datetime, timezone
+        from decimal import Decimal
+
+        from nexus.core.domain.enums import OperationalMode
+        from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+        from nexus.infrastructure.praxis_connector.trade_outcome_type import (
+            TradeOutcomeType,
+        )
+
+        strategy = ConcreteStrategy('test')
+        params = StrategyParams(raw={})
+        ctx = StrategyContext(
+            positions=(),
+            capital_available=Decimal('10000'),
+            operational_mode=OperationalMode.ACTIVE,
+        )
+        signal = Signal(
+            predictor_fn_id='pred1',
+            values={'CAN_ENTER': 1},
+            timestamp=datetime.now(timezone.utc),
+        )
+        outcome = TradeOutcome(
+            outcome_id='out1',
+            command_id='cmd1',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=datetime.now(timezone.utc),
+        )
+
+        assert strategy.on_startup(params, ctx) == []
+        assert strategy.on_signal(signal, params, ctx) == []
+        assert strategy.on_outcome(outcome, params, ctx) == []
+        assert strategy.on_timer('timer1', params, ctx) == []
+        assert strategy.on_shutdown(params, ctx) == []
+
+    def test_callbacks_return_action_list(self) -> None:
+        '''Callbacks can return list of Actions.'''
+
+        from decimal import Decimal
+
+        from nexus.core.domain.enums import OperationalMode
+        from nexus.strategy import ActionType
+
+        class ActionReturningStrategy(Strategy):
+            '''Strategy that returns actions from callbacks.'''
+
+            def on_save(self) -> bytes:
+                return b''
+
+            def on_load(self, _data: bytes) -> None:
+                pass
+
+            def on_startup(
+                self,
+                _params: StrategyParams,
+                _context: StrategyContext,
+            ) -> list[Action]:
+                return [Action(action_type=ActionType.ENTER)]
+
+            def on_signal(
+                self,
+                _signal: Signal,
+                _params: StrategyParams,
+                _context: StrategyContext,
+            ) -> list[Action]:
+                return [Action(action_type=ActionType.ENTER)]
+
+            def on_outcome(
+                self,
+                _outcome: TradeOutcome,
+                _params: StrategyParams,
+                _context: StrategyContext,
+            ) -> list[Action]:
+                return [Action(action_type=ActionType.EXIT)]
+
+            def on_timer(
+                self,
+                _timer_id: str,
+                _params: StrategyParams,
+                _context: StrategyContext,
+            ) -> list[Action]:
+                return [Action(action_type=ActionType.MODIFY)]
+
+            def on_shutdown(
+                self,
+                _params: StrategyParams,
+                _context: StrategyContext,
+            ) -> list[Action]:
+                return [Action(action_type=ActionType.ABORT)]
+
+        strategy = ActionReturningStrategy('test')
+        params = StrategyParams(raw={})
+        ctx = StrategyContext(
+            positions=(),
+            capital_available=Decimal('10000'),
+            operational_mode=OperationalMode.ACTIVE,
+        )
+
+        result = strategy.on_startup(params, ctx)
+
+        assert len(result) == 1
+        assert result[0].action_type == ActionType.ENTER
