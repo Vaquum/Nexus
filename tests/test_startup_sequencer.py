@@ -17,6 +17,10 @@ def _make_mock_state_store() -> MagicMock:
     return mock
 
 
+_PLACEHOLDER_MANIFEST = Path('/placeholder/manifest.yaml')
+_PLACEHOLDER_STRATEGIES = Path('/placeholder/strategies')
+
+
 def _make_sequencer(
     state_store: StateStore | None = None,
     manifest_path: Path | None = None,
@@ -25,8 +29,8 @@ def _make_sequencer(
 ) -> StartupSequencer:
     return StartupSequencer(
         state_store=state_store or _make_mock_state_store(),
-        manifest_path=manifest_path or Path('/tmp/manifest.yaml'),
-        strategies_base_path=strategies_base_path or Path('/tmp/strategies'),
+        manifest_path=manifest_path or _PLACEHOLDER_MANIFEST,
+        strategies_base_path=strategies_base_path or _PLACEHOLDER_STRATEGIES,
         allocated_capital=allocated_capital or Decimal('10000'),
     )
 
@@ -42,8 +46,8 @@ class TestStartupSequencerConstruction:
         with pytest.raises(ValueError, match='must be a StateStore'):
             StartupSequencer(
                 state_store='not a state store',  # type: ignore[arg-type]
-                manifest_path=Path('/tmp/manifest.yaml'),
-                strategies_base_path=Path('/tmp/strategies'),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
                 allocated_capital=Decimal('10000'),
             )
 
@@ -51,8 +55,8 @@ class TestStartupSequencerConstruction:
         with pytest.raises(ValueError, match='must be a Path'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
-                manifest_path='/tmp/manifest.yaml',  # type: ignore[arg-type]
-                strategies_base_path=Path('/tmp/strategies'),
+                manifest_path='/placeholder/manifest.yaml',  # type: ignore[arg-type]
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
                 allocated_capital=Decimal('10000'),
             )
 
@@ -60,8 +64,8 @@ class TestStartupSequencerConstruction:
         with pytest.raises(ValueError, match='must be a Path'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
-                manifest_path=Path('/tmp/manifest.yaml'),
-                strategies_base_path='/tmp/strategies',  # type: ignore[arg-type]
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path='/placeholder/strategies',  # type: ignore[arg-type]
                 allocated_capital=Decimal('10000'),
             )
 
@@ -69,8 +73,8 @@ class TestStartupSequencerConstruction:
         with pytest.raises(ValueError, match='must be a finite Decimal'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
-                manifest_path=Path('/tmp/manifest.yaml'),
-                strategies_base_path=Path('/tmp/strategies'),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
                 allocated_capital=10000,  # type: ignore[arg-type]
             )
 
@@ -78,8 +82,8 @@ class TestStartupSequencerConstruction:
         with pytest.raises(ValueError, match='must be a finite Decimal'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
-                manifest_path=Path('/tmp/manifest.yaml'),
-                strategies_base_path=Path('/tmp/strategies'),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
                 allocated_capital=Decimal('Infinity'),
             )
 
@@ -146,6 +150,127 @@ class TestExternalIntegrationStubs:
         sequencer._reconcile_capital()
 
         assert 'not implemented' in caplog.text.lower() or True
+
+
+VALID_STRATEGY = '''
+from nexus.strategy import Action, Strategy, StrategyContext, StrategyParams
+from nexus.strategy.signal import Signal
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+
+class Strategy(Strategy):
+    def on_save(self) -> bytes:
+        return b''
+
+    def on_load(self, data: bytes) -> None:
+        pass
+
+    def on_startup(self, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_signal(self, signal: Signal, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_outcome(self, outcome: TradeOutcome, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_timer(self, timer_id: str, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+
+    def on_shutdown(self, params: StrategyParams, context: StrategyContext) -> list[Action]:
+        return []
+'''
+
+
+class TestManifestLoading:
+
+    def test_load_manifest_stores_result(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 5000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+
+        sequencer._load_manifest()
+
+        assert sequencer._manifest is not None
+        assert sequencer._manifest.capital_pool == Decimal('5000')
+        assert len(sequencer._manifest.strategies) == 1
+
+    def test_load_manifest_wraps_exception_in_startup_error(self) -> None:
+        sequencer = _make_sequencer(manifest_path=Path('/nonexistent/manifest.yaml'))
+
+        with pytest.raises(StartupError, match='load_manifest') as exc_info:
+            sequencer._load_manifest()
+
+        assert 'not found' in exc_info.value.reason.lower()
+
+
+class TestStrategyInstantiation:
+
+    def test_instantiate_strategies_creates_runner(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 5000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+
+        sequencer._instantiate_strategies()
+
+        assert sequencer._runner is not None
+
+    def test_instantiate_strategies_fails_without_manifest(self) -> None:
+        sequencer = _make_sequencer()
+
+        with pytest.raises(StartupError, match='instantiate_strategies') as exc_info:
+            sequencer._instantiate_strategies()
+
+        assert 'manifest not loaded' in exc_info.value.reason
+
+    def test_instantiate_strategies_wraps_exception_in_startup_error(
+        self, tmp_path: Path
+    ) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'bad_import.py'
+        strategy_file.write_text('import nonexistent_module_xyz_123\n')
+        manifest_path.write_text(
+            'capital_pool: 5000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: bad_import.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+
+        with pytest.raises(StartupError, match='instantiate_strategies') as exc_info:
+            sequencer._instantiate_strategies()
+
+        assert 'failed' in exc_info.value.reason.lower()
 
 
 class TestStartupError:

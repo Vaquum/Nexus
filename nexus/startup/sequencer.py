@@ -7,7 +7,9 @@ from pathlib import Path
 
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
-from nexus.infrastructure.manifest import Manifest
+from nexus.infrastructure.manifest import Manifest, load_manifest
+from nexus.strategy.loader import instantiate_strategy
+from nexus.strategy.executor import StrategyExecutor
 from nexus.strategy.runner import StrategyRunner
 from nexus.startup.error import StartupError
 
@@ -121,12 +123,27 @@ class StartupSequencer:
     def _load_manifest(self) -> None:
         '''Load and validate strategy manifest.'''
 
-        raise NotImplementedError
+        try:
+            self._manifest = load_manifest(self._manifest_path, self._allocated_capital)
+        except Exception as e:
+            raise StartupError('load_manifest', str(e)) from e
 
     def _instantiate_strategies(self) -> None:
         '''Instantiate strategy classes and build StrategyRunner.'''
 
-        raise NotImplementedError
+        if self._manifest is None:
+            raise StartupError('instantiate_strategies', 'manifest not loaded')
+
+        try:
+            executors: dict[str, StrategyExecutor] = {}
+
+            for spec in self._manifest.strategies:
+                strategy = instantiate_strategy(spec, self._strategies_base_path)
+                executors[spec.strategy_id] = StrategyExecutor(strategy)
+
+            self._runner = StrategyRunner(executors)
+        except Exception as e:
+            raise StartupError('instantiate_strategies', str(e)) from e
 
     def _restore_strategy_state(self) -> None:
         '''Call on_load(bytes) on each strategy for state restoration.'''
