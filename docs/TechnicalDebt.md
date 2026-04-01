@@ -50,3 +50,22 @@ Several lifecycle methods return `False` for failure paths (for example, missing
 - Keep soft-failure behavior for expected misses and add strict reason taxonomy.
 - Convert invariant-breach paths to hard-failure exceptions.
 - Standardize on explicit result types (`ok`, `reason_code`, `message`, `context`) instead of bare booleans.
+
+---
+
+## TD-004: All timestamps must be UTC
+
+**Origin**: 7.3 (event dispatch types)
+**Severity**: High
+**Modules**:
+- `nexus/strategy/signal.py`
+- `nexus/infrastructure/praxis_connector/trade_outcome.py`
+- `nexus/infrastructure/strategy_event.py`
+- `nexus/core/capital_controller/reservation.py`
+- `nexus/core/capital_controller/tracked_order.py`
+- `nexus/infrastructure/praxis_connector/trade_command.py`
+
+Current validation checks for tz-awareness (`tzinfo is not None`) but does not enforce UTC specifically. A timestamp with `tzinfo=+05:00` passes validation but violates the UTC-only convention.
+
+**When to fix**: ASAP
+**Migration**: Replace tz-awareness checks with explicit UTC checks (`timestamp.tzinfo == timezone.utc`).
