@@ -208,6 +208,18 @@ class TestSignal:
                 timestamp='not a datetime',  # type: ignore[arg-type]
             )
 
+    def test_naive_timestamp_raises(self) -> None:
+        '''Naive datetime raises ValueError.'''
+
+        from datetime import datetime as dt
+
+        with pytest.raises(ValueError, match='timezone-aware'):
+            Signal(
+                predictor_fn_id='test',
+                values={'CAN_ENTER': 1},
+                timestamp=dt.now(),
+            )
+
 
 class TestActionType:
     '''Tests for ActionType enum.'''
