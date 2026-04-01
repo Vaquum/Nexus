@@ -146,14 +146,24 @@ class StartupSequencer:
             raise StartupError('instantiate_strategies', str(e)) from e
 
     def _restore_strategy_state(self) -> None:
-        '''Call on_load(bytes) on each strategy for state restoration.'''
+        '''Call on_load(bytes) on each strategy for state restoration.
 
-        raise NotImplementedError
+        Stub: logs warning, does nothing. See TD-007.
+        Strategy state blob storage not implemented yet.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('restore_strategy_state not implemented')
 
     def _replay_strategy_events(self) -> None:
-        '''Replay strategy events from WAL (actions discarded).'''
+        '''Replay strategy events from WAL (actions discarded).
 
-        raise NotImplementedError
+        Stub: logs warning, does nothing. See TD-008.
+        Event replay to strategies not implemented yet.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('replay_strategy_events not implemented')
 
     def _wire_predictor_fns(self) -> None:
         '''Wire predictor_fn subscriptions (stub).'''
