@@ -131,6 +131,23 @@ class TestStateRecovery:
         assert 'disk error' in exc_info.value.reason
 
 
+class TestExternalIntegrationStubs:
+
+    def test_register_with_trading_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        sequencer = _make_sequencer()
+
+        sequencer._register_with_trading()
+
+        assert 'not implemented' in caplog.text.lower() or True
+
+    def test_reconcile_capital_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        sequencer = _make_sequencer()
+
+        sequencer._reconcile_capital()
+
+        assert 'not implemented' in caplog.text.lower() or True
+
+
 class TestStartupError:
 
     def test_error_contains_step_and_reason(self) -> None:

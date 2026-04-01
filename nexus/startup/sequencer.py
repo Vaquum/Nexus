@@ -101,14 +101,22 @@ class StartupSequencer:
             raise StartupError('recover_state', str(e)) from e
 
     def _register_with_trading(self) -> None:
-        '''Register with Trading sub-system (stub).'''
+        '''Register with Trading sub-system.
 
-        raise NotImplementedError
+        Stub: logs warning, does nothing. See TD-005.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('register_with_trading not implemented')
 
     def _reconcile_capital(self) -> None:
-        '''Reconcile capital state against Trading positions (stub).'''
+        '''Reconcile capital state against Trading positions.
 
-        raise NotImplementedError
+        Stub: logs warning, does nothing. See TD-006.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('reconcile_capital not implemented')
 
     def _load_manifest(self) -> None:
         '''Load and validate strategy manifest.'''

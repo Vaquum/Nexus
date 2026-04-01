@@ -69,3 +69,29 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: ASAP
 **Migration**: Replace tz-awareness checks with explicit UTC checks (`timestamp.tzinfo == timezone.utc`).
+
+---
+
+## TD-005: StartupSequencer._register_with_trading is a stub
+
+**Origin**: 9.1.3 (external integration stubs)
+**Severity**: High (no Trading sub-system registration)
+**Module**: `nexus/startup/sequencer.py`
+
+`_register_with_trading()` logs a warning and does nothing. The Manager instance does not register with the Trading sub-system (Praxis), meaning Praxis has no knowledge of active Manager instances.
+
+**When to fix**: When Praxis Connector is built.
+**Migration**: Implement actual registration via Praxis Connector API. Remove this entry when done.
+
+---
+
+## TD-006: StartupSequencer._reconcile_capital is a stub
+
+**Origin**: 9.1.3 (external integration stubs)
+**Severity**: High (no capital reconciliation)
+**Module**: `nexus/startup/sequencer.py`
+
+`_reconcile_capital()` logs a warning and does nothing. Capital state is not reconciled against Trading sub-system positions on startup, meaning Manager may have stale or incorrect capital/position data.
+
+**When to fix**: When Reconciler is built.
+**Migration**: Implement actual reconciliation via Reconciler. Remove this entry when done.
