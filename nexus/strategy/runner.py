@@ -53,10 +53,20 @@ class StrategyRunner:
     def _get_executor(self, strategy_id: str) -> StrategyExecutor:
         '''Get executor for strategy_id or raise ValueError.'''
 
-        executor = self._executors.get(strategy_id)
+        if not isinstance(strategy_id, str):
+            msg = f'strategy_id must be a string, got {type(strategy_id).__name__}'
+            raise ValueError(msg)
+
+        key = strategy_id.strip()
+
+        if not key:
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        executor = self._executors.get(key)
 
         if executor is None:
-            msg = f'unknown strategy_id: {strategy_id!r}'
+            msg = f'unknown strategy_id: {key!r}'
             raise ValueError(msg)
 
         return executor

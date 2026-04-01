@@ -200,4 +200,4 @@
 
 - Add [`executor.py`](nexus/strategy/executor.py) with `StrategyExecutor` class wrapping Strategy instance with `threading.Lock` for serialized callback execution
 - Add [`runner.py`](nexus/strategy/runner.py) with `StrategyRunner` class orchestrating multiple executors by strategy_id
-- Add 27 tests covering executor delegation, runner routing, unknown strategy rejection, and concurrent dispatch serialization (804 total)
+- Add 29 tests covering executor delegation, runner routing, unknown strategy rejection, and concurrent dispatch serialization (806 total)

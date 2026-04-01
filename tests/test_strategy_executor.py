@@ -27,7 +27,7 @@ class StubStrategy(Strategy):
     def on_save(self) -> bytes:
         return b''
 
-    def on_load(self, data: bytes) -> None:
+    def on_load(self, _data: bytes) -> None:
         pass
 
     def on_startup(

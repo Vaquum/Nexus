@@ -211,6 +211,14 @@ class TestStrategyRunnerUnknownStrategy:
         with pytest.raises(ValueError, match='unknown strategy_id'):
             runner.dispatch_startup('unknown', _make_params(), _make_context())
 
+    def test_dispatch_with_whitespace_padded_id_normalizes(self) -> None:
+        runner, strategies = _make_runner_with_strategies('s1')
+
+        actions = runner.dispatch_startup(' s1 ', _make_params(), _make_context())
+
+        assert strategies['s1'].calls == ['on_startup']
+        assert len(actions) == 1
+
     def test_dispatch_signal_unknown_strategy_raises(self) -> None:
         runner, _ = _make_runner_with_strategies('s1')
 
