@@ -86,14 +86,49 @@ class TestStartupSequencerConstruction:
 
 class TestStartupSequencerStart:
 
-    def test_start_calls_load_state_first(self) -> None:
-        sequencer = _make_sequencer()
-
-        with pytest.raises(NotImplementedError):
-            sequencer.start()
-
     def test_start_returns_runner_when_complete(self) -> None:
         pass
+
+
+class TestStateRecovery:
+
+    def test_recover_state_calls_state_store_recover(self) -> None:
+        mock_store = _make_mock_state_store()
+        mock_store.recover.return_value = None
+        sequencer = _make_sequencer(state_store=mock_store)
+
+        sequencer._recover_state()
+
+        mock_store.recover.assert_called_once()
+
+    def test_recover_state_stores_result(self) -> None:
+        mock_store = _make_mock_state_store()
+        mock_state = MagicMock()
+        mock_store.recover.return_value = mock_state
+        sequencer = _make_sequencer(state_store=mock_store)
+
+        sequencer._recover_state()
+
+        assert sequencer._state is mock_state
+
+    def test_recover_state_handles_none(self) -> None:
+        mock_store = _make_mock_state_store()
+        mock_store.recover.return_value = None
+        sequencer = _make_sequencer(state_store=mock_store)
+
+        sequencer._recover_state()
+
+        assert sequencer._state is None
+
+    def test_recover_state_wraps_exception_in_startup_error(self) -> None:
+        mock_store = _make_mock_state_store()
+        mock_store.recover.side_effect = RuntimeError('disk error')
+        sequencer = _make_sequencer(state_store=mock_store)
+
+        with pytest.raises(StartupError, match='recover_state') as exc_info:
+            sequencer._recover_state()
+
+        assert 'disk error' in exc_info.value.reason
 
 
 class TestStartupError:

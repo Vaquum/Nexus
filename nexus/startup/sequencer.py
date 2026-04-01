@@ -71,8 +71,7 @@ class StartupSequencer:
             StartupError: If any step fails.
         '''
 
-        self._load_state()
-        self._replay_wal()
+        self._recover_state()
         self._register_with_trading()
         self._reconcile_capital()
         self._load_manifest()
@@ -89,15 +88,17 @@ class StartupSequencer:
 
         return self._runner
 
-    def _load_state(self) -> None:
-        '''Load persisted InstanceState from state_store.'''
+    def _recover_state(self) -> None:
+        '''Recover InstanceState from snapshot and WAL.
 
-        raise NotImplementedError
+        Delegates to StateStore.recover() which loads the latest snapshot
+        and replays STATE_MUTATION entries from WAL atomically.
+        '''
 
-    def _replay_wal(self) -> None:
-        '''Replay WAL entries from last snapshot.'''
-
-        raise NotImplementedError
+        try:
+            self._state = self._state_store.recover()
+        except Exception as e:
+            raise StartupError('recover_state', str(e)) from e
 
     def _register_with_trading(self) -> None:
         '''Register with Trading sub-system (stub).'''
