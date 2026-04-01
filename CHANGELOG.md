@@ -195,3 +195,9 @@
 - Extend `Strategy` ABC with five event callbacks: `on_startup`, `on_signal`, `on_outcome`, `on_timer`, `on_shutdown`
 - Wire new types in [`nexus/strategy/__init__.py`](nexus/strategy/__init__.py) public API
 - Add 57 tests covering event dispatch types and Strategy callbacks (772 total)
+
+## v0.21.0 on 2nd of April, 2026
+
+- Add [`executor.py`](nexus/strategy/executor.py) with `StrategyExecutor` class wrapping Strategy instance with `threading.Lock` for serialized callback execution
+- Add [`runner.py`](nexus/strategy/runner.py) with `StrategyRunner` class orchestrating multiple executors by strategy_id
+- Add 29 tests covering executor delegation, runner routing, unknown strategy rejection, and concurrent dispatch serialization (806 total)
