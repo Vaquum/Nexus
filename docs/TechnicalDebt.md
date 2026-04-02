@@ -147,3 +147,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When timer system is built.
 **Migration**: Implement timer registration. Remove this entry when done.
+
+---
+
+## TD-011: StartupSequencer._determine_mode always returns ACTIVE
+
+**Origin**: 9.1.7 (startup dispatch)
+**Severity**: Medium (no health-based mode selection)
+**Module**: `nexus/startup/sequencer.py`
+
+`_determine_mode()` always sets ACTIVE without checking health. Should set REDUCE_ONLY if health degraded, HALTED if critical.
+
+**When to fix**: When health monitoring is built.
+**Migration**: Implement health check and mode selection logic. Remove this entry when done.

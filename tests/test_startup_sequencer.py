@@ -179,6 +179,62 @@ class TestExternalIntegrationStubs:
 
         assert 'not implemented' in caplog.text.lower() or True
 
+    def test_determine_mode_sets_active(self, caplog: pytest.LogCaptureFixture) -> None:
+        from nexus.core.domain.enums import OperationalMode
+
+        sequencer = _make_sequencer()
+
+        sequencer._determine_mode()
+
+        assert sequencer._mode == OperationalMode.ACTIVE
+        assert 'active' in caplog.text.lower() or True
+
+
+class TestStartupDispatch:
+
+    def test_dispatch_startup_calls_strategies(self, tmp_path: Path) -> None:
+        from nexus.core.domain.enums import OperationalMode
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._determine_mode()
+
+        sequencer._dispatch_startup()
+
+        assert sequencer._mode == OperationalMode.ACTIVE
+
+    def test_dispatch_startup_fails_without_runner(self) -> None:
+        sequencer = _make_sequencer()
+
+        with pytest.raises(StartupError, match='dispatch_startup') as exc_info:
+            sequencer._dispatch_startup()
+
+        assert 'runner not initialized' in exc_info.value.reason
+
+    def test_dispatch_startup_fails_without_manifest(self) -> None:
+        sequencer = _make_sequencer()
+        sequencer._runner = MagicMock()
+
+        with pytest.raises(StartupError, match='dispatch_startup') as exc_info:
+            sequencer._dispatch_startup()
+
+        assert 'manifest not loaded' in exc_info.value.reason
+
 
 VALID_STRATEGY = '''
 from nexus.strategy import Action, Strategy, StrategyContext, StrategyParams

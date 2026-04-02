@@ -5,13 +5,18 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.manifest import Manifest, load_manifest
+from nexus.strategy.context import StrategyContext
 from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.executor import StrategyExecutor
+from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
 from nexus.startup.error import StartupError
+
+_HUNDRED = Decimal('100')
 
 __all__ = ['StartupSequencer']
 
@@ -186,11 +191,37 @@ class StartupSequencer:
         structlog.get_logger().warning('register_timers not implemented')
 
     def _determine_mode(self) -> None:
-        '''Determine operational mode based on health.'''
+        '''Determine operational mode based on health.
 
-        raise NotImplementedError
+        Stub: always sets ACTIVE. See TD-011.
+        Health check not implemented yet.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('determine_mode health check not implemented, defaulting to ACTIVE')
+        self._mode = OperationalMode.ACTIVE
 
     def _dispatch_startup(self) -> None:
-        '''Dispatch on_startup to all strategies.'''
+        '''Dispatch on_startup to all strategies.
 
-        raise NotImplementedError
+        Calls dispatch_startup on each strategy with context.
+        Actions are not validated (Validator wiring is later phase).
+        '''
+
+        if self._runner is None:
+            raise StartupError('dispatch_startup', 'runner not initialized')
+
+        if self._manifest is None:
+            raise StartupError('dispatch_startup', 'manifest not loaded')
+
+        mode = self._mode
+
+        for spec in self._manifest.strategies:
+            capital_available = self._manifest.capital_pool * spec.capital_pct / _HUNDRED
+            params = StrategyParams(raw={})
+            context = StrategyContext(
+                positions=(),
+                capital_available=capital_available,
+                operational_mode=mode,
+            )
+            self._runner.dispatch_startup(spec.strategy_id, params, context)
