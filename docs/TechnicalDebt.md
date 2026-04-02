@@ -150,7 +150,7 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-011: StartupSequencer._determine_mode always returns ACTIVE
+## TD-011: StartupSequencer._determine_mode always sets ACTIVE
 
 **Origin**: 9.1.7 (startup dispatch)
 **Severity**: Medium (no health-based mode selection)

@@ -24,10 +24,10 @@ __all__ = ['StartupSequencer']
 class StartupSequencer:
     '''Orchestrates the startup sequence for a Manager instance.
 
-    Executes steps in order: load state → replay WAL → register with Trading →
-    reconcile capital → load manifest → instantiate strategies → on_load →
+    Executes steps in order: recover state (snapshot + WAL) → register with Trading →
+    reconcile capital → load manifest → instantiate strategies → restore strategy state →
     replay strategy events → wire predictor_fns → register timers →
-    set mode → on_startup.
+    determine mode → dispatch on_startup.
 
     Args:
         state_store: Persistence facade for state recovery.
