@@ -69,3 +69,94 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: ASAP
 **Migration**: Replace tz-awareness checks with explicit UTC checks (`timestamp.tzinfo == timezone.utc`).
+
+---
+
+## TD-005: StartupSequencer._register_with_trading is a stub
+
+**Origin**: 9.1.3 (external integration stubs)
+**Severity**: High (no Trading sub-system registration)
+**Module**: `nexus/startup/sequencer.py`
+
+`_register_with_trading()` logs a warning and does nothing. The Manager instance does not register with the Trading sub-system (Praxis), meaning Praxis has no knowledge of active Manager instances.
+
+**When to fix**: When Praxis Connector is built.
+**Migration**: Implement actual registration via Praxis Connector API. Remove this entry when done.
+
+---
+
+## TD-006: StartupSequencer._reconcile_capital is a stub
+
+**Origin**: 9.1.3 (external integration stubs)
+**Severity**: High (no capital reconciliation)
+**Module**: `nexus/startup/sequencer.py`
+
+`_reconcile_capital()` logs a warning and does nothing. Capital state is not reconciled against Trading sub-system positions on startup, meaning Manager may have stale or incorrect capital/position data.
+
+**When to fix**: When Reconciler is built.
+**Migration**: Implement actual reconciliation via Reconciler. Remove this entry when done.
+
+---
+
+## TD-007: StartupSequencer._restore_strategy_state is a stub
+
+**Origin**: 9.1.5 (strategy state restoration)
+**Severity**: High (no strategy state persistence)
+**Module**: `nexus/startup/sequencer.py`
+
+`_restore_strategy_state()` logs a warning and does nothing. Strategy state bytes (on_save/on_load) are not persisted or restored. Strategies lose internal state on restart.
+
+**When to fix**: When strategy state blob storage is implemented.
+**Migration**: Add strategy state blob storage to StateStore/snapshots. Call on_load(bytes) for each strategy on startup. Remove this entry when done.
+
+---
+
+## TD-008: StartupSequencer._replay_strategy_events is a stub
+
+**Origin**: 9.1.5 (strategy state restoration)
+**Severity**: Medium (strategy internal state not rebuilt from events)
+**Module**: `nexus/startup/sequencer.py`
+
+`_replay_strategy_events()` logs a warning and does nothing. Strategy events from WAL are not replayed to strategies for internal state rebuilding (actions discarded during replay).
+
+**When to fix**: When event replay infrastructure is built.
+**Migration**: Read STRATEGY_EVENT entries from WAL, dispatch to strategies with actions discarded. Remove this entry when done.
+
+---
+
+## TD-009: StartupSequencer._wire_predictor_fns is a stub
+
+**Origin**: 9.1.6 (runtime setup stubs)
+**Severity**: High (no signal subscription)
+**Module**: `nexus/startup/sequencer.py`
+
+`_wire_predictor_fns()` logs a warning and does nothing. Strategies are not subscribed to predictor functions, meaning no signals will be received.
+
+**When to fix**: When predictor_fn subscription system is built.
+**Migration**: Implement signal subscription wiring. Remove this entry when done.
+
+---
+
+## TD-010: StartupSequencer._register_timers is a stub
+
+**Origin**: 9.1.6 (runtime setup stubs)
+**Severity**: Medium (no timer callbacks)
+**Module**: `nexus/startup/sequencer.py`
+
+`_register_timers()` logs a warning and does nothing. Strategy timers are not registered, meaning on_timer callbacks will not fire.
+
+**When to fix**: When timer system is built.
+**Migration**: Implement timer registration. Remove this entry when done.
+
+---
+
+## TD-011: StartupSequencer._determine_mode always sets ACTIVE
+
+**Origin**: 9.1.7 (startup dispatch)
+**Severity**: Medium (no health-based mode selection)
+**Module**: `nexus/startup/sequencer.py`
+
+`_determine_mode()` always sets ACTIVE without checking health. Should set REDUCE_ONLY if health degraded, HALTED if critical.
+
+**When to fix**: When health monitoring is built.
+**Migration**: Implement health check and mode selection logic. Remove this entry when done.

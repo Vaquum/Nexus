@@ -201,3 +201,15 @@
 - Add [`executor.py`](nexus/strategy/executor.py) with `StrategyExecutor` class wrapping Strategy instance with `threading.Lock` for serialized callback execution
 - Add [`runner.py`](nexus/strategy/runner.py) with `StrategyRunner` class orchestrating multiple executors by strategy_id
 - Add 29 tests covering executor delegation, runner routing, unknown strategy rejection, and concurrent dispatch serialization (806 total)
+
+## v0.22.0 on 2nd of April, 2026
+
+- Add [`nexus/startup/`](nexus/startup/) module with `StartupSequencer` and `StartupError`
+- Add `StartupSequencer.start()` orchestrating full startup sequence: recover state, register with trading, reconcile capital, load manifest, instantiate strategies, restore strategy state, replay events, wire predictor_fns, register timers, determine mode, dispatch startup
+- Add state recovery via `StateStore.recover()` delegation
+- Add manifest loading and strategy instantiation with executor/runner building
+- Add external integration stubs: `_register_with_trading` (TD-005), `_reconcile_capital` (TD-006)
+- Add state restoration stubs: `_restore_strategy_state` (TD-007), `_replay_strategy_events` (TD-008)
+- Add runtime setup stubs: `_wire_predictor_fns` (TD-009), `_register_timers` (TD-010)
+- Add startup dispatch: `_determine_mode` stub (TD-011, always ACTIVE), `_dispatch_startup` calling strategies with context
+- Add 32 tests covering construction validation, state recovery, stubs, manifest loading, strategy instantiation, dispatch, and integration (838 total)
