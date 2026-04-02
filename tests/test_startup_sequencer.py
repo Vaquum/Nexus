@@ -90,8 +90,88 @@ class TestStartupSequencerConstruction:
 
 class TestStartupSequencerStart:
 
-    def test_start_returns_runner_when_complete(self) -> None:
-        pass
+    def test_start_returns_runner(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+
+        runner = sequencer.start()
+
+        assert runner is not None
+
+    def test_start_raises_startup_error_on_step_failure(self) -> None:
+        state_store = _make_mock_state_store()
+        state_store.recover.side_effect = RuntimeError('disk error')
+        sequencer = _make_sequencer(state_store=state_store)
+
+        with pytest.raises(StartupError):
+            sequencer.start()
+
+    def test_start_loads_manifest_before_instantiation(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+
+        sequencer.start()
+
+        assert sequencer._manifest is not None
+        assert sequencer._runner is not None
+
+    def test_start_runner_ready_for_dispatch(self, tmp_path: Path) -> None:
+        from nexus.strategy.runner import StrategyRunner
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+
+        runner = sequencer.start()
+
+        assert isinstance(runner, StrategyRunner)
 
 
 class TestStateRecovery:
