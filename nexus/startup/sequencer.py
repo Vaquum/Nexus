@@ -144,8 +144,9 @@ class StartupSequencer:
             executors: dict[str, StrategyExecutor] = {}
 
             for spec in self._manifest.strategies:
+                strategy_id = spec.strategy_id.strip()
                 strategy = instantiate_strategy(spec, self._strategies_base_path)
-                executors[spec.strategy_id] = StrategyExecutor(strategy)
+                executors[strategy_id] = StrategyExecutor(strategy)
 
             self._runner = StrategyRunner(executors)
         except Exception as e:
