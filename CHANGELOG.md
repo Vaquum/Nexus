@@ -212,4 +212,4 @@
 - Add state restoration stubs: `_restore_strategy_state` (TD-007), `_replay_strategy_events` (TD-008)
 - Add runtime setup stubs: `_wire_predictor_fns` (TD-009), `_register_timers` (TD-010)
 - Add startup dispatch: `_determine_mode` stub (TD-011, always ACTIVE), `_dispatch_startup` calling strategies with context
-- Add 30 tests covering construction validation, state recovery, stubs, manifest loading, strategy instantiation, dispatch, and integration (836 total)
+- Add 32 tests covering construction validation, state recovery, stubs, manifest loading, strategy instantiation, dispatch, and integration (838 total)

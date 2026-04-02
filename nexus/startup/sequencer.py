@@ -67,6 +67,7 @@ class StartupSequencer:
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
         self._runner: StrategyRunner | None = None
+        self._mode: OperationalMode | None = None
 
     def start(self) -> StrategyRunner:
         '''Execute the full startup sequence.
@@ -214,6 +215,9 @@ class StartupSequencer:
         if self._manifest is None:
             raise StartupError('dispatch_startup', 'manifest not loaded')
 
+        if self._mode is None:
+            raise StartupError('dispatch_startup', 'mode not determined')
+
         mode = self._mode
 
         for spec in self._manifest.strategies:
@@ -224,4 +228,8 @@ class StartupSequencer:
                 capital_available=capital_available,
                 operational_mode=mode,
             )
-            self._runner.dispatch_startup(spec.strategy_id, params, context)
+            try:
+                self._runner.dispatch_startup(spec.strategy_id, params, context)
+            except Exception as e:
+                msg = f'strategy {spec.strategy_id} on_startup failed: {e}'
+                raise StartupError('dispatch_startup', msg) from e

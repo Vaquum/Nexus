@@ -217,49 +217,37 @@ class TestStateRecovery:
 
 class TestExternalIntegrationStubs:
 
-    def test_register_with_trading_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_register_with_trading_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
 
         sequencer._register_with_trading()
 
-        assert 'not implemented' in caplog.text.lower() or True
-
-    def test_reconcile_capital_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_reconcile_capital_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
 
         sequencer._reconcile_capital()
 
-        assert 'not implemented' in caplog.text.lower() or True
-
-    def test_restore_strategy_state_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_restore_strategy_state_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
 
         sequencer._restore_strategy_state()
 
-        assert 'not implemented' in caplog.text.lower() or True
-
-    def test_replay_strategy_events_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_replay_strategy_events_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
 
         sequencer._replay_strategy_events()
 
-        assert 'not implemented' in caplog.text.lower() or True
-
-    def test_wire_predictor_fns_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_wire_predictor_fns_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
 
         sequencer._wire_predictor_fns()
 
-        assert 'not implemented' in caplog.text.lower() or True
-
-    def test_register_timers_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_register_timers_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
 
         sequencer._register_timers()
 
-        assert 'not implemented' in caplog.text.lower() or True
-
-    def test_determine_mode_sets_active(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_determine_mode_sets_active(self) -> None:
         from nexus.core.domain.enums import OperationalMode
 
         sequencer = _make_sequencer()
@@ -267,14 +255,11 @@ class TestExternalIntegrationStubs:
         sequencer._determine_mode()
 
         assert sequencer._mode == OperationalMode.ACTIVE
-        assert 'active' in caplog.text.lower() or True
 
 
 class TestStartupDispatch:
 
-    def test_dispatch_startup_calls_strategies(self, tmp_path: Path) -> None:
-        from nexus.core.domain.enums import OperationalMode
-
+    def test_dispatch_startup_invokes_runner_dispatch(self, tmp_path: Path) -> None:
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
@@ -293,10 +278,13 @@ class TestStartupDispatch:
         sequencer._load_manifest()
         sequencer._instantiate_strategies()
         sequencer._determine_mode()
+        sequencer._runner.dispatch_startup = MagicMock()
 
         sequencer._dispatch_startup()
 
-        assert sequencer._mode == OperationalMode.ACTIVE
+        sequencer._runner.dispatch_startup.assert_called_once()
+        call_args = sequencer._runner.dispatch_startup.call_args
+        assert call_args[0][0] == 'test_strat'
 
     def test_dispatch_startup_fails_without_runner(self) -> None:
         sequencer = _make_sequencer()
@@ -314,6 +302,57 @@ class TestStartupDispatch:
             sequencer._dispatch_startup()
 
         assert 'manifest not loaded' in exc_info.value.reason
+
+    def test_dispatch_startup_fails_without_mode(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+
+        with pytest.raises(StartupError, match='dispatch_startup') as exc_info:
+            sequencer._dispatch_startup()
+
+        assert 'mode not determined' in exc_info.value.reason
+
+    def test_dispatch_startup_wraps_strategy_exception(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._determine_mode()
+        sequencer._runner.dispatch_startup = MagicMock(side_effect=RuntimeError('callback failed'))
+
+        with pytest.raises(StartupError, match='dispatch_startup') as exc_info:
+            sequencer._dispatch_startup()
+
+        assert 'test_strat' in exc_info.value.reason
+        assert 'callback failed' in exc_info.value.reason
 
 
 VALID_STRATEGY = '''
