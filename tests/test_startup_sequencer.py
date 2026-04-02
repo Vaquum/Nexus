@@ -409,8 +409,8 @@ class TestManifestLoading:
         assert sequencer._manifest.capital_pool == Decimal('5000')
         assert len(sequencer._manifest.strategies) == 1
 
-    def test_load_manifest_wraps_exception_in_startup_error(self) -> None:
-        sequencer = _make_sequencer(manifest_path=Path('/nonexistent/manifest.yaml'))
+    def test_load_manifest_wraps_exception_in_startup_error(self, tmp_path: Path) -> None:
+        sequencer = _make_sequencer(manifest_path=tmp_path / 'nonexistent_manifest.yaml')
 
         with pytest.raises(StartupError, match='load_manifest') as exc_info:
             sequencer._load_manifest()
