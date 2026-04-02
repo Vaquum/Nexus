@@ -166,14 +166,24 @@ class StartupSequencer:
         structlog.get_logger().warning('replay_strategy_events not implemented')
 
     def _wire_predictor_fns(self) -> None:
-        '''Wire predictor_fn subscriptions (stub).'''
+        '''Wire predictor_fn subscriptions.
 
-        raise NotImplementedError
+        Stub: logs warning, does nothing. See TD-009.
+        Predictor function wiring not implemented yet.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('wire_predictor_fns not implemented')
 
     def _register_timers(self) -> None:
-        '''Register strategy timers (stub).'''
+        '''Register strategy timers.
 
-        raise NotImplementedError
+        Stub: logs warning, does nothing. See TD-010.
+        Timer registration not implemented yet.
+        '''
+
+        import structlog
+        structlog.get_logger().warning('register_timers not implemented')
 
     def _determine_mode(self) -> None:
         '''Determine operational mode based on health.'''

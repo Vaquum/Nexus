@@ -121,3 +121,29 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When event replay infrastructure is built.
 **Migration**: Read STRATEGY_EVENT entries from WAL, dispatch to strategies with actions discarded. Remove this entry when done.
+
+---
+
+## TD-009: StartupSequencer._wire_predictor_fns is a stub
+
+**Origin**: 9.1.6 (runtime setup stubs)
+**Severity**: High (no signal subscription)
+**Module**: `nexus/startup/sequencer.py`
+
+`_wire_predictor_fns()` logs a warning and does nothing. Strategies are not subscribed to predictor functions, meaning no signals will be received.
+
+**When to fix**: When predictor_fn subscription system is built.
+**Migration**: Implement signal subscription wiring. Remove this entry when done.
+
+---
+
+## TD-010: StartupSequencer._register_timers is a stub
+
+**Origin**: 9.1.6 (runtime setup stubs)
+**Severity**: Medium (no timer callbacks)
+**Module**: `nexus/startup/sequencer.py`
+
+`_register_timers()` logs a warning and does nothing. Strategy timers are not registered, meaning on_timer callbacks will not fire.
+
+**When to fix**: When timer system is built.
+**Migration**: Implement timer registration. Remove this entry when done.

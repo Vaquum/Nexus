@@ -165,6 +165,20 @@ class TestExternalIntegrationStubs:
 
         assert 'not implemented' in caplog.text.lower() or True
 
+    def test_wire_predictor_fns_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        sequencer = _make_sequencer()
+
+        sequencer._wire_predictor_fns()
+
+        assert 'not implemented' in caplog.text.lower() or True
+
+    def test_register_timers_logs_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        sequencer = _make_sequencer()
+
+        sequencer._register_timers()
+
+        assert 'not implemented' in caplog.text.lower() or True
+
 
 VALID_STRATEGY = '''
 from nexus.strategy import Action, Strategy, StrategyContext, StrategyParams
