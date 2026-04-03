@@ -213,3 +213,18 @@
 - Add runtime setup stubs: `_wire_predictor_fns` (TD-009), `_register_timers` (TD-010)
 - Add startup dispatch: `_determine_mode` stub (TD-011, always ACTIVE), `_dispatch_startup` calling strategies with context
 - Add 32 tests covering construction validation, state recovery, stubs, manifest loading, strategy instantiation, dispatch, and integration (838 total)
+
+## v0.23.0 on 3rd of April, 2026
+
+- Add [`shutdown_sequencer.py`](nexus/startup/shutdown_sequencer.py) with `ShutdownSequencer` orchestrating graceful termination: stop signals → stop timers → dispatch on_shutdown → submit actions → wait terminal → dispatch on_save → persist strategy state → final checkpoint → deregister
+- Add `_dispatch_shutdown()` building per-strategy context and collecting shutdown actions
+- Add `_submit_actions()` filtering EXIT/ABORT actions, skipping ENTER/MODIFY (TD-015 for Validator integration)
+- Add `_dispatch_save()` calling strategy on_save() and collecting state blobs
+- Add `_persist_strategy_state()` writing strategy state to individual `.bin` files with atomic tmp+rename pattern
+- Add `_final_checkpoint()` delegating to `StateStore.checkpoint()` for final snapshot + WAL truncation
+- Add `ShutdownError` exception to [`error.py`](nexus/startup/error.py)
+- Add `StrategyExecutor.dispatch_save()` and `StrategyRunner.dispatch_save()` for on_save lifecycle dispatch
+- Add `InstanceConfig.shutdown_wait_timeout_seconds` and `shutdown_abort_timeout_seconds` for configurable shutdown timeouts
+- Add shutdown stubs: `_stop_signals` (TD-013), `_stop_timers` (TD-014), `_wait_terminal` (TD-016), `_deregister` (TD-012)
+- Fix import-in-method anti-pattern in [`sequencer.py`](nexus/startup/sequencer.py) by moving structlog to module level
+- Add 19 tests covering construction validation, dispatch shutdown, submit actions filtering, dispatch save, persist strategy state, final checkpoint, and full shutdown sequence (857 total)
