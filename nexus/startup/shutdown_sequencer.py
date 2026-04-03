@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from decimal import Decimal
 from pathlib import Path
 
@@ -230,8 +231,16 @@ class ShutdownSequencer:
             tmp = target.with_suffix('.tmp')
 
             try:
-                tmp.write_bytes(blob)
+                with tmp.open('wb') as f:
+                    f.write(blob)
+                    f.flush()
+                    os.fsync(f.fileno())
                 tmp.replace(target)
+                fd = os.open(str(self._strategy_state_path), os.O_RDONLY)
+                try:
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
             except OSError:
                 _log.exception('persist_strategy_state failed', strategy_id=strategy_id)
 

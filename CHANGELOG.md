@@ -227,4 +227,4 @@
 - Add `InstanceConfig.shutdown_wait_timeout_seconds` and `shutdown_abort_timeout_seconds` for configurable shutdown timeouts
 - Add shutdown stubs: `_stop_signals` (TD-013), `_stop_timers` (TD-014), `_wait_terminal` (TD-016), `_deregister` (TD-012)
 - Fix import-in-method anti-pattern in [`sequencer.py`](nexus/startup/sequencer.py) by moving structlog to module level
-- Add 19 tests covering construction validation, dispatch shutdown, submit actions filtering, dispatch save, persist strategy state, final checkpoint, and full shutdown sequence (857 total)
+- Add 25 tests covering construction validation, dispatch shutdown, submit actions filtering, dispatch save, persist strategy state, final checkpoint, full shutdown sequence, executor/runner dispatch_save, and config timeout validation (863 total)
