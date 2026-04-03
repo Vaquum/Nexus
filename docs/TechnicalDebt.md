@@ -225,3 +225,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When TradeOutcome inbound integration is built.
 **Migration**: Subscribe/poll for TradeOutcome until all commands reach terminal state. Implement timeout with ABORT escalation. Remove this entry when done.
+
+---
+
+## TD-017: StrategySpec allows whitespace-padded strategy_id
+
+**Origin**: 9.2 review (manifest validation gap)
+**Severity**: Medium (potential collision after normalization)
+**Module**: `nexus/infrastructure/manifest.py`
+
+`StrategySpec.__post_init__` validates that `strategy_id.strip()` is non-empty but does not normalize or reject surrounding whitespace. This permits entries like `'s1'` and `' s1 '` to both pass validation as distinct strategies. Downstream code (StartupSequencer, ShutdownSequencer, StrategyRunner) uses `.strip()` on lookup, causing these entries to collide silently — actions and state get attributed to the wrong strategy.
+
+**When to fix**: Before multi-strategy deployments.
+**Migration**: Tighten `StrategySpec.__post_init__` to either (a) strip-and-store the normalized value, or (b) reject strategy_id with leading/trailing whitespace. Validate uniqueness after normalization. Remove this entry when done.
