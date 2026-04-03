@@ -160,3 +160,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When health monitoring is built.
 **Migration**: Implement health check and mode selection logic. Remove this entry when done.
+
+---
+
+## TD-012: OutboundConnector lacks register/deregister API
+
+**Origin**: 9.2 (shutdown sequence planning)
+**Severity**: Medium (no Trading sub-system lifecycle management)
+**Module**: `nexus/infrastructure/praxis_connector/outbound_connector.py`
+
+`OutboundConnector` protocol only defines `send_command()`. RFC-3001 specifies startup registration and shutdown deregistration with the Trading sub-system, but no API exists. Related to TD-005 (registration stub).
+
+**When to fix**: When Praxis Connector integration is built.
+**Migration**: Extend `OutboundConnector` protocol with `register(account_id)` and `deregister(account_id)` methods. Implement in concrete connector. Remove this entry when done.
