@@ -152,6 +152,14 @@ class ShutdownSequencer:
 
         for strategy_id, actions in self._shutdown_actions.items():
             for action in actions:
+                if not isinstance(action, Action):
+                    _log.warning(
+                        'skipping invalid shutdown action',
+                        strategy_id=strategy_id,
+                        action_type=type(action).__name__,
+                    )
+                    continue
+
                 if action.action_type in allowed_types:
                     filtered.append((strategy_id, action))
                 else:
