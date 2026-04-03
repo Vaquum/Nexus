@@ -195,14 +195,21 @@ class TestStateRecovery:
 
         assert sequencer._state is mock_state
 
-    def test_recover_state_handles_none(self) -> None:
+    def test_recover_state_creates_initial_state_on_fresh_start(self) -> None:
+        from nexus.core.domain.instance_state import InstanceState
+
         mock_store = _make_mock_state_store()
         mock_store.recover.return_value = None
-        sequencer = _make_sequencer(state_store=mock_store)
+        sequencer = _make_sequencer(
+            state_store=mock_store,
+            allocated_capital=Decimal('50000'),
+        )
 
         sequencer._recover_state()
 
-        assert sequencer._state is None
+        assert sequencer._state is not None
+        assert isinstance(sequencer._state, InstanceState)
+        assert sequencer._state.capital.capital_pool == Decimal('50000')
 
     def test_recover_state_wraps_exception_in_startup_error(self) -> None:
         mock_store = _make_mock_state_store()

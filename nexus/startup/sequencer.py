@@ -7,6 +7,7 @@ from pathlib import Path
 
 import structlog
 
+from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest, load_manifest
@@ -103,11 +104,17 @@ class StartupSequencer:
         '''Recover InstanceState from snapshot and WAL.
 
         Delegates to StateStore.recover() which loads the latest snapshot
-        and replays STATE_MUTATION entries from WAL atomically.
+        and replays STATE_MUTATION entries from WAL atomically. If no
+        persisted state exists (fresh start), creates initial state from
+        allocated capital. Same code path for fresh start and crash recovery.
         '''
 
         try:
             self._state = self._state_store.recover()
+            if self._state is None:
+                self._state = InstanceState(
+                    capital=CapitalState(capital_pool=self._allocated_capital),
+                )
         except Exception as e:
             raise StartupError('recover_state', str(e)) from e
 
