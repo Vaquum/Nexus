@@ -231,10 +231,11 @@ class ShutdownSequencer:
     def _final_checkpoint(self) -> None:
         '''Save final snapshot and truncate WAL.
 
-        Stub: logs warning, does nothing. Implemented in 9.2.8.
+        Calls StateStore.checkpoint to persist current state
+        and truncate the WAL before exit.
         '''
 
-        _log.warning('final_checkpoint not implemented')
+        self._state_store.checkpoint(self._state)
 
     def _deregister(self) -> None:
         '''Deregister from Trading sub-system.
