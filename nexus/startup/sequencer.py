@@ -5,18 +5,18 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import structlog
+
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
-from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.manifest import Manifest, load_manifest
+from nexus.infrastructure.state_store import StateStore
+from nexus.startup.error import StartupError
 from nexus.strategy.context import StrategyContext
-from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.executor import StrategyExecutor
+from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
-from nexus.startup.error import StartupError
-
-import structlog
 
 _HUNDRED = Decimal('100')
 _log = structlog.get_logger()

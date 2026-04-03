@@ -7,6 +7,7 @@ are added as their respective phases land.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -222,6 +223,11 @@ class InstanceConfig:
             'shutdown_abort_timeout_seconds',
         ):
             value = getattr(self, field_name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-                msg = f'InstanceConfig.{field_name} must be a positive number'
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                msg = f'InstanceConfig.{field_name} must be a finite positive number'
                 raise ValueError(msg)

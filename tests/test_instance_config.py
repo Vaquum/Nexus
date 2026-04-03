@@ -519,7 +519,7 @@ def test_capital_pct_total_above_100_rejected() -> None:
 def test_shutdown_wait_timeout_bool_rejected() -> None:
     '''Verify bool shutdown_wait_timeout_seconds raises ValueError.'''
 
-    with pytest.raises(ValueError, match='shutdown_wait_timeout_seconds must be a positive'):
+    with pytest.raises(ValueError, match='shutdown_wait_timeout_seconds must be a finite positive'):
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
@@ -531,7 +531,7 @@ def test_shutdown_wait_timeout_bool_rejected() -> None:
 def test_shutdown_abort_timeout_bool_rejected() -> None:
     '''Verify bool shutdown_abort_timeout_seconds raises ValueError.'''
 
-    with pytest.raises(ValueError, match='shutdown_abort_timeout_seconds must be a positive'):
+    with pytest.raises(ValueError, match='shutdown_abort_timeout_seconds must be a finite positive'):
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
@@ -543,7 +543,7 @@ def test_shutdown_abort_timeout_bool_rejected() -> None:
 def test_shutdown_wait_timeout_zero_rejected() -> None:
     '''Verify zero shutdown_wait_timeout_seconds raises ValueError.'''
 
-    with pytest.raises(ValueError, match='shutdown_wait_timeout_seconds must be a positive'):
+    with pytest.raises(ValueError, match='shutdown_wait_timeout_seconds must be a finite positive'):
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
@@ -555,7 +555,7 @@ def test_shutdown_wait_timeout_zero_rejected() -> None:
 def test_shutdown_abort_timeout_negative_rejected() -> None:
     '''Verify negative shutdown_abort_timeout_seconds raises ValueError.'''
 
-    with pytest.raises(ValueError, match='shutdown_abort_timeout_seconds must be a positive'):
+    with pytest.raises(ValueError, match='shutdown_abort_timeout_seconds must be a finite positive'):
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',

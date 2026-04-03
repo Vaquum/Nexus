@@ -5,6 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import structlog
+
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest
 from nexus.infrastructure.state_store import StateStore
@@ -12,8 +14,6 @@ from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
-
-import structlog
 
 __all__ = ['ShutdownSequencer']
 
@@ -212,7 +212,11 @@ class ShutdownSequencer:
         if not self._save_blobs:
             return
 
-        self._strategy_state_path.mkdir(parents=True, exist_ok=True)
+        try:
+            self._strategy_state_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            _log.exception('failed to create strategy_state directory')
+            return
 
         for strategy_id, blob in self._save_blobs.items():
             if not blob:
