@@ -219,6 +219,7 @@ class ShutdownSequencer:
             _log.exception('failed to create strategy_state directory')
             return
 
+        wrote_any = False
         for strategy_id, blob in self._save_blobs.items():
             if not blob:
                 continue
@@ -236,13 +237,19 @@ class ShutdownSequencer:
                     f.flush()
                     os.fsync(f.fileno())
                 tmp.replace(target)
+                wrote_any = True
+            except OSError:
+                _log.exception('persist_strategy_state failed', strategy_id=strategy_id)
+
+        if wrote_any:
+            try:
                 fd = os.open(str(self._strategy_state_path), os.O_RDONLY)
                 try:
                     os.fsync(fd)
                 finally:
                     os.close(fd)
             except OSError:
-                _log.exception('persist_strategy_state failed', strategy_id=strategy_id)
+                _log.exception('failed to fsync strategy_state directory')
 
     def _final_checkpoint(self) -> None:
         '''Save final snapshot and truncate WAL.
