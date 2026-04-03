@@ -160,3 +160,81 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When health monitoring is built.
 **Migration**: Implement health check and mode selection logic. Remove this entry when done.
+
+---
+
+## TD-012: OutboundConnector lacks register/deregister API
+
+**Origin**: 9.2 (shutdown sequence planning)
+**Severity**: Medium (no Trading sub-system lifecycle management)
+**Module**: `nexus/infrastructure/praxis_connector/outbound_connector.py`
+
+`OutboundConnector` protocol only defines `send_command()`. RFC-3001 specifies startup registration and shutdown deregistration with the Trading sub-system, but no API exists. Related to TD-005 (registration stub).
+
+**When to fix**: When Praxis Connector integration is built.
+**Migration**: Extend `OutboundConnector` protocol with `register(account_id)` and `deregister(account_id)` methods. Implement in concrete connector. Remove this entry when done.
+
+---
+
+## TD-013: ShutdownSequencer._stop_signals is a stub
+
+**Origin**: 9.2.2 (shutdown sequence)
+**Severity**: High (signals continue during shutdown)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_stop_signals()` logs a warning and does nothing. Without unsubscribing from predictor_fns, new signals can arrive and trigger strategy callbacks during shutdown, causing race conditions. Blocked by TD-009 — cannot stop what was never wired.
+
+**When to fix**: When predictor_fn subscription system is built (after TD-009).
+**Migration**: Implement signal unsubscription. Remove this entry when done.
+
+---
+
+## TD-014: ShutdownSequencer._stop_timers is a stub
+
+**Origin**: 9.2.2 (shutdown sequence)
+**Severity**: Medium (timers continue during shutdown)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_stop_timers()` logs a warning and does nothing. Without cancelling timers, on_timer callbacks can fire during shutdown, causing race conditions. Blocked by TD-010 — cannot stop what was never registered.
+
+**When to fix**: When timer system is built (after TD-010).
+**Migration**: Implement timer cancellation. Remove this entry when done.
+
+---
+
+## TD-015: ShutdownSequencer._submit_actions lacks Validator/Connector
+
+**Origin**: 9.2.4 (shutdown sequence)
+**Severity**: High (shutdown EXIT actions not submitted)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_submit_actions()` filters actions to EXIT/ABORT but cannot validate or submit them. No ValidationPipeline or OutboundConnector is wired in. EXIT actions from on_shutdown are logged but not executed.
+
+**When to fix**: When shutdown integration is built.
+**Migration**: Add validator and connector parameters to ShutdownSequencer. Validate filtered actions through pipeline, submit valid ones via connector. Remove this entry when done.
+
+---
+
+## TD-016: ShutdownSequencer._wait_terminal is a stub
+
+**Origin**: 9.2.5 (shutdown sequence)
+**Severity**: High (no graceful position closure)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_wait_terminal()` logs a warning and returns immediately. Submitted EXIT commands are not tracked to completion. Shutdown proceeds without confirming positions are closed.
+
+**When to fix**: When TradeOutcome inbound integration is built.
+**Migration**: Subscribe/poll for TradeOutcome until all commands reach terminal state. Implement timeout with ABORT escalation. Remove this entry when done.
+
+---
+
+## TD-017: StrategySpec allows whitespace-padded strategy_id
+
+**Origin**: 9.2 review (manifest validation gap)
+**Severity**: Medium (potential collision after normalization)
+**Module**: `nexus/infrastructure/manifest.py`
+
+`StrategySpec.__post_init__` validates that `strategy_id.strip()` is non-empty but does not normalize or reject surrounding whitespace. This permits entries like `'s1'` and `' s1 '` to both pass validation as distinct strategies. Downstream code (StartupSequencer, ShutdownSequencer, StrategyRunner) uses `.strip()` on lookup, causing these entries to collide silently — actions and state get attributed to the wrong strategy.
+
+**When to fix**: Before multi-strategy deployments.
+**Migration**: Tighten `StrategySpec.__post_init__` to either (a) strip-and-store the normalized value, or (b) reject strategy_id with leading/trailing whitespace. Validate uniqueness after normalization. Remove this entry when done.

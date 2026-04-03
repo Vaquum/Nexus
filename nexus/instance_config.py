@@ -7,6 +7,7 @@ are added as their respective phases land.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -49,6 +50,10 @@ class InstanceConfig:
             order. Defaults to ``CANCEL_TAKER``.
         capital_pct: Strategy capital-allocation percentages keyed by
             strategy_id.
+        shutdown_wait_timeout_seconds: Max seconds to wait for commands to
+            reach terminal state during shutdown. Defaults to 30.
+        shutdown_abort_timeout_seconds: Max seconds to wait after issuing
+            ABORT commands during shutdown. Defaults to 10.
     '''
 
     account_id: str
@@ -62,6 +67,8 @@ class InstanceConfig:
     reference_price_source: str | None = None
     stp_mode: STPMode = STPMode.CANCEL_TAKER
     capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
+    shutdown_wait_timeout_seconds: float = 30.0
+    shutdown_abort_timeout_seconds: float = 10.0
 
     def __post_init__(self) -> None:
         '''Validate configuration invariants.'''
@@ -210,3 +217,17 @@ class InstanceConfig:
             'capital_pct',
             MappingProxyType(normalized_capital_pct),
         )
+
+        for field_name in (
+            'shutdown_wait_timeout_seconds',
+            'shutdown_abort_timeout_seconds',
+        ):
+            value = getattr(self, field_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or value <= 0
+            ):
+                msg = f'InstanceConfig.{field_name} must be a finite positive number'
+                raise ValueError(msg)

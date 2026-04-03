@@ -5,18 +5,21 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
+import structlog
+
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
-from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.manifest import Manifest, load_manifest
+from nexus.infrastructure.state_store import StateStore
+from nexus.startup.error import StartupError
 from nexus.strategy.context import StrategyContext
-from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.executor import StrategyExecutor
+from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
-from nexus.startup.error import StartupError
 
 _HUNDRED = Decimal('100')
+_log = structlog.get_logger()
 
 __all__ = ['StartupSequencer']
 
@@ -114,8 +117,7 @@ class StartupSequencer:
         Stub: logs warning, does nothing. See TD-005.
         '''
 
-        import structlog
-        structlog.get_logger().warning('register_with_trading not implemented')
+        _log.warning('register_with_trading not implemented')
 
     def _reconcile_capital(self) -> None:
         '''Reconcile capital state against Trading positions.
@@ -123,8 +125,7 @@ class StartupSequencer:
         Stub: logs warning, does nothing. See TD-006.
         '''
 
-        import structlog
-        structlog.get_logger().warning('reconcile_capital not implemented')
+        _log.warning('reconcile_capital not implemented')
 
     def _load_manifest(self) -> None:
         '''Load and validate strategy manifest.'''
@@ -159,8 +160,7 @@ class StartupSequencer:
         Strategy state blob storage not implemented yet.
         '''
 
-        import structlog
-        structlog.get_logger().warning('restore_strategy_state not implemented')
+        _log.warning('restore_strategy_state not implemented')
 
     def _replay_strategy_events(self) -> None:
         '''Replay strategy events from WAL (actions discarded).
@@ -169,8 +169,7 @@ class StartupSequencer:
         Event replay to strategies not implemented yet.
         '''
 
-        import structlog
-        structlog.get_logger().warning('replay_strategy_events not implemented')
+        _log.warning('replay_strategy_events not implemented')
 
     def _wire_predictor_fns(self) -> None:
         '''Wire predictor_fn subscriptions.
@@ -179,8 +178,7 @@ class StartupSequencer:
         Predictor function wiring not implemented yet.
         '''
 
-        import structlog
-        structlog.get_logger().warning('wire_predictor_fns not implemented')
+        _log.warning('wire_predictor_fns not implemented')
 
     def _register_timers(self) -> None:
         '''Register strategy timers.
@@ -189,8 +187,7 @@ class StartupSequencer:
         Timer registration not implemented yet.
         '''
 
-        import structlog
-        structlog.get_logger().warning('register_timers not implemented')
+        _log.warning('register_timers not implemented')
 
     def _determine_mode(self) -> None:
         '''Determine operational mode based on health.
@@ -199,8 +196,7 @@ class StartupSequencer:
         Health check not implemented yet.
         '''
 
-        import structlog
-        structlog.get_logger().warning('determine_mode health check not implemented, defaulting to ACTIVE')
+        _log.warning('determine_mode health check not implemented, defaulting to ACTIVE')
         self._mode = OperationalMode.ACTIVE
 
     def _dispatch_startup(self) -> None:
