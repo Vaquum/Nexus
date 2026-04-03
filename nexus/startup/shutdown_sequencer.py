@@ -71,6 +71,7 @@ class ShutdownSequencer:
         self._strategy_state_path = strategy_state_path
         self._shutdown_actions: dict[str, list[Action]] = {}
         self._submitted_command_ids: list[str] = []
+        self._save_blobs: dict[str, bytes] = {}
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.
@@ -187,18 +188,45 @@ class ShutdownSequencer:
     def _dispatch_save(self) -> None:
         '''Dispatch on_save to all strategies.
 
-        Stub: logs warning, does nothing. Implemented in 9.2.6.
+        Calls dispatch_save on each strategy to serialize state.
+        Strategy exceptions are logged and skipped with empty bytes.
         '''
 
-        _log.warning('dispatch_save not implemented')
+        for spec in self._manifest.strategies:
+            strategy_id = spec.strategy_id.strip()
+
+            try:
+                blob = self._runner.dispatch_save(strategy_id)
+                self._save_blobs[strategy_id] = blob
+            except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
+                _log.exception('on_save failed', strategy_id=strategy_id)
+                self._save_blobs[strategy_id] = b''
 
     def _persist_strategy_state(self) -> None:
         '''Persist strategy state blobs to disk.
 
-        Stub: logs warning, does nothing. Implemented in 9.2.7.
+        Creates strategy_state directory if needed. Writes each blob
+        to {strategy_id}.bin with atomic write (tmp + rename).
+        Write failures are logged but don't abort shutdown.
         '''
 
-        _log.warning('persist_strategy_state not implemented')
+        if not self._save_blobs:
+            return
+
+        self._strategy_state_path.mkdir(parents=True, exist_ok=True)
+
+        for strategy_id, blob in self._save_blobs.items():
+            if not blob:
+                continue
+
+            target = self._strategy_state_path / f'{strategy_id}.bin'
+            tmp = target.with_suffix('.tmp')
+
+            try:
+                tmp.write_bytes(blob)
+                tmp.replace(target)
+            except OSError:
+                _log.exception('persist_strategy_state failed', strategy_id=strategy_id)
 
     def _final_checkpoint(self) -> None:
         '''Save final snapshot and truncate WAL.

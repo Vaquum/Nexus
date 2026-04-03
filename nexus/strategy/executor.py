@@ -132,3 +132,13 @@ class StrategyExecutor:
 
         with self._lock:
             return self._strategy.on_shutdown(params, context)
+
+    def dispatch_save(self) -> bytes:
+        '''Dispatch save event to strategy under lock.
+
+        Returns:
+            Serialized strategy state bytes.
+        '''
+
+        with self._lock:
+            return self._strategy.on_save()

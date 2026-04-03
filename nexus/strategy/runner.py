@@ -186,3 +186,18 @@ class StrategyRunner:
         '''
 
         return self._get_executor(strategy_id).dispatch_shutdown(params, context)
+
+    def dispatch_save(self, strategy_id: str) -> bytes:
+        '''Dispatch save event to strategy.
+
+        Args:
+            strategy_id: Target strategy identifier.
+
+        Returns:
+            Serialized strategy state bytes.
+
+        Raises:
+            ValueError: If strategy_id is unknown.
+        '''
+
+        return self._get_executor(strategy_id).dispatch_save()
