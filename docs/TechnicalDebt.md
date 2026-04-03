@@ -173,3 +173,29 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When Praxis Connector integration is built.
 **Migration**: Extend `OutboundConnector` protocol with `register(account_id)` and `deregister(account_id)` methods. Implement in concrete connector. Remove this entry when done.
+
+---
+
+## TD-013: ShutdownSequencer._stop_signals is a stub
+
+**Origin**: 9.2.2 (shutdown sequence)
+**Severity**: High (signals continue during shutdown)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_stop_signals()` logs a warning and does nothing. Without unsubscribing from predictor_fns, new signals can arrive and trigger strategy callbacks during shutdown, causing race conditions. Blocked by TD-009 — cannot stop what was never wired.
+
+**When to fix**: When predictor_fn subscription system is built (after TD-009).
+**Migration**: Implement signal unsubscription. Remove this entry when done.
+
+---
+
+## TD-014: ShutdownSequencer._stop_timers is a stub
+
+**Origin**: 9.2.2 (shutdown sequence)
+**Severity**: Medium (timers continue during shutdown)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_stop_timers()` logs a warning and does nothing. Without cancelling timers, on_timer callbacks can fire during shutdown, causing race conditions. Blocked by TD-010 — cannot stop what was never registered.
+
+**When to fix**: When timer system is built (after TD-010).
+**Migration**: Implement timer cancellation. Remove this entry when done.

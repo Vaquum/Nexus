@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest
 from nexus.infrastructure.state_store import StateStore
+from nexus.strategy.action import Action
+from nexus.strategy.context import StrategyContext
+from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
 
 import structlog
@@ -14,6 +18,7 @@ import structlog
 __all__ = ['ShutdownSequencer']
 
 _log = structlog.get_logger()
+_HUNDRED = Decimal('100')
 
 
 class ShutdownSequencer:
@@ -64,6 +69,7 @@ class ShutdownSequencer:
         self._state_store = state_store
         self._state = state
         self._strategy_state_path = strategy_state_path
+        self._shutdown_actions: dict[str, list[Action]] = {}
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.
@@ -101,10 +107,35 @@ class ShutdownSequencer:
     def _dispatch_shutdown(self) -> None:
         '''Dispatch on_shutdown to all strategies.
 
-        Stub: logs warning, does nothing. Implemented in 9.2.3.
+        Calls dispatch_shutdown on each strategy with context built from
+        current state. Collects returned actions keyed by strategy_id.
+        Strategy exceptions are logged and skipped — shutdown continues.
         '''
 
-        _log.warning('dispatch_shutdown not implemented')
+        for spec in self._manifest.strategies:
+            strategy_id = spec.strategy_id.strip()
+
+            positions = tuple(
+                pos for pos in self._state.positions.values()
+                if pos.strategy_id == strategy_id
+            )
+
+            capital_available = self._manifest.capital_pool * spec.capital_pct / _HUNDRED
+            mode = self._state.mode.mode
+
+            params = StrategyParams(raw={})
+            context = StrategyContext(
+                positions=positions,
+                capital_available=capital_available,
+                operational_mode=mode,
+            )
+
+            try:
+                actions = self._runner.dispatch_shutdown(strategy_id, params, context)
+                if actions:
+                    self._shutdown_actions[strategy_id] = actions
+            except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
+                _log.exception('on_shutdown failed', strategy_id=strategy_id)
 
     def _submit_actions(self) -> None:
         '''Submit EXIT/ABORT/CANCEL actions through Validator.
