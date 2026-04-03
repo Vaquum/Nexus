@@ -8,7 +8,7 @@ from pathlib import Path
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest
 from nexus.infrastructure.state_store import StateStore
-from nexus.strategy.action import Action
+from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
@@ -70,6 +70,7 @@ class ShutdownSequencer:
         self._state = state
         self._strategy_state_path = strategy_state_path
         self._shutdown_actions: dict[str, list[Action]] = {}
+        self._submitted_command_ids: list[str] = []
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.
@@ -138,12 +139,34 @@ class ShutdownSequencer:
                 _log.exception('on_shutdown failed', strategy_id=strategy_id)
 
     def _submit_actions(self) -> None:
-        '''Submit EXIT/ABORT/CANCEL actions through Validator.
+        '''Submit EXIT/ABORT actions through Validator.
 
-        Stub: logs warning, does nothing. Implemented in 9.2.4.
+        Filters actions returned by strategies from _dispatch_shutdown.
+        Only EXIT/ABORT are allowed during shutdown; ENTER/MODIFY skipped.
+        Validation and submission are stubs until Validator/Connector wired.
         '''
 
-        _log.warning('submit_actions not implemented')
+        allowed_types = (ActionType.EXIT, ActionType.ABORT)
+        filtered: list[tuple[str, Action]] = []
+
+        for strategy_id, actions in self._shutdown_actions.items():
+            for action in actions:
+                if action.action_type in allowed_types:
+                    filtered.append((strategy_id, action))
+                else:
+                    _log.info(
+                        'skipping non-shutdown action',
+                        strategy_id=strategy_id,
+                        action_type=action.action_type.value,
+                    )
+
+        if not filtered:
+            return
+
+        _log.warning(
+            'submit_actions validation/submission not implemented',
+            action_count=len(filtered),
+        )
 
     def _wait_terminal(self) -> None:
         '''Wait for all submitted commands to reach terminal state.

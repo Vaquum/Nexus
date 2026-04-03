@@ -199,3 +199,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When timer system is built (after TD-010).
 **Migration**: Implement timer cancellation. Remove this entry when done.
+
+---
+
+## TD-015: ShutdownSequencer._submit_actions lacks Validator/Connector
+
+**Origin**: 9.2.4 (shutdown sequence)
+**Severity**: High (shutdown EXIT actions not submitted)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_submit_actions()` filters actions to EXIT/ABORT but cannot validate or submit them. No ValidationPipeline or OutboundConnector is wired in. EXIT actions from on_shutdown are logged but not executed.
+
+**When to fix**: When shutdown integration is built.
+**Migration**: Add validator and connector parameters to ShutdownSequencer. Validate filtered actions through pipeline, submit valid ones via connector. Remove this entry when done.
