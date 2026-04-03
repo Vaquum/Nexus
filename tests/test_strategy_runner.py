@@ -23,7 +23,8 @@ class StubStrategy(Strategy):
         self.calls: list[str] = []
 
     def on_save(self) -> bytes:
-        return b''
+        self.calls.append('on_save')
+        return b'saved_state'
 
     def on_load(self, _data: bytes) -> None:
         pass
@@ -201,6 +202,14 @@ class TestStrategyRunnerDispatch:
 
         assert strategies['s1'].calls == ['on_shutdown']
         assert actions[0].action_type == ActionType.ABORT
+
+    def test_dispatch_save_routes_to_executor(self) -> None:
+        runner, strategies = _make_runner_with_strategies('s1')
+
+        blob = runner.dispatch_save('s1')
+
+        assert strategies['s1'].calls == ['on_save']
+        assert blob == b'saved_state'
 
 
 class TestStrategyRunnerUnknownStrategy:

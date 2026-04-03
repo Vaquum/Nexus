@@ -74,11 +74,7 @@ class ShutdownSequencer:
         self._save_blobs: dict[str, bytes] = {}
 
     def shutdown(self) -> None:
-        '''Execute the full shutdown sequence.
-
-        Raises:
-            ShutdownError: If a critical step fails (state corruption).
-        '''
+        '''Execute the full shutdown sequence.'''
 
         self._stop_signals()
         self._stop_timers()
@@ -87,13 +83,16 @@ class ShutdownSequencer:
         self._wait_terminal()
         self._dispatch_save()
         self._persist_strategy_state()
-        self._final_checkpoint()
+        try:
+            self._final_checkpoint()
+        except Exception:  # noqa: BLE001 - checkpoint failure must not prevent deregister
+            _log.exception('final_checkpoint failed')
         self._deregister()
 
     def _stop_signals(self) -> None:
         '''Stop predictor_fn signal subscriptions.
 
-        Stub: logs warning, does nothing. See TD-009.
+        Stub: logs warning, does nothing. See TD-013.
         '''
 
         _log.warning('stop_signals not implemented')
@@ -101,7 +100,7 @@ class ShutdownSequencer:
     def _stop_timers(self) -> None:
         '''Cancel all registered strategy timers.
 
-        Stub: logs warning, does nothing. See TD-010.
+        Stub: logs warning, does nothing. See TD-014.
         '''
 
         _log.warning('stop_timers not implemented')
@@ -217,6 +216,10 @@ class ShutdownSequencer:
 
         for strategy_id, blob in self._save_blobs.items():
             if not blob:
+                continue
+
+            if '/' in strategy_id or '\\' in strategy_id:
+                _log.error('invalid strategy_id for persistence', strategy_id=strategy_id)
                 continue
 
             target = self._strategy_state_path / f'{strategy_id}.bin'

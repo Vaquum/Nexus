@@ -222,6 +222,6 @@ class InstanceConfig:
             'shutdown_abort_timeout_seconds',
         ):
             value = getattr(self, field_name)
-            if not isinstance(value, (int, float)) or value <= 0:
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
                 msg = f'InstanceConfig.{field_name} must be a positive number'
                 raise ValueError(msg)

@@ -25,7 +25,8 @@ class StubStrategy(Strategy):
         self.delay: float = 0.0
 
     def on_save(self) -> bytes:
-        return b''
+        self.calls.append('on_save')
+        return b'saved_state'
 
     def on_load(self, _data: bytes) -> None:
         pass
@@ -176,6 +177,15 @@ class TestStrategyExecutorDispatch:
         assert strategy.calls == ['on_shutdown']
         assert len(actions) == 1
         assert actions[0].action_type == ActionType.ABORT
+
+    def test_dispatch_save_delegates(self) -> None:
+        strategy = StubStrategy('s1')
+        executor = StrategyExecutor(strategy)
+
+        blob = executor.dispatch_save()
+
+        assert strategy.calls == ['on_save']
+        assert blob == b'saved_state'
 
 
 class TestStrategyExecutorConcurrency:
