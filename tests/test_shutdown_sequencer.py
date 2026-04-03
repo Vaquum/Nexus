@@ -270,3 +270,21 @@ class TestShutdownSequence:
         runner.dispatch_shutdown.assert_called_once()
         runner.dispatch_save.assert_called_once()
         state_store.checkpoint.assert_called_once()
+
+    def test_shutdown_is_idempotent(self, tmp_path: Path) -> None:
+        runner = _make_mock_runner()
+        runner.dispatch_shutdown.return_value = []
+        runner.dispatch_save.return_value = b''
+        state_store = _make_mock_state_store()
+        sequencer = _make_sequencer(
+            runner=runner,
+            state_store=state_store,
+            strategy_state_path=tmp_path,
+        )
+
+        sequencer.shutdown()
+        sequencer.shutdown()
+
+        assert runner.dispatch_shutdown.call_count == 2
+        assert runner.dispatch_save.call_count == 2
+        assert state_store.checkpoint.call_count == 2

@@ -77,6 +77,10 @@ class ShutdownSequencer:
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
 
+        self._shutdown_actions.clear()
+        self._submitted_command_ids.clear()
+        self._save_blobs.clear()
+
         self._stop_signals()
         self._stop_timers()
         self._dispatch_shutdown()
