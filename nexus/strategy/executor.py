@@ -142,3 +142,13 @@ class StrategyExecutor:
 
         with self._lock:
             return self._strategy.on_save()
+
+    def dispatch_load(self, data: bytes) -> None:
+        '''Dispatch load event to strategy under lock.
+
+        Args:
+            data: Serialized strategy state bytes from previous shutdown.
+        '''
+
+        with self._lock:
+            self._strategy.on_load(data)

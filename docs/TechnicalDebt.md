@@ -98,19 +98,6 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-007: StartupSequencer._restore_strategy_state is a stub
-
-**Origin**: 9.1.5 (strategy state restoration)
-**Severity**: High (no strategy state persistence)
-**Module**: `nexus/startup/sequencer.py`
-
-`_restore_strategy_state()` logs a warning and does nothing. Strategy state bytes (on_save/on_load) are not persisted or restored. Strategies lose internal state on restart.
-
-**When to fix**: When strategy state blob storage is implemented.
-**Migration**: Add strategy state blob storage to StateStore/snapshots. Call on_load(bytes) for each strategy on startup. Remove this entry when done.
-
----
-
 ## TD-008: StartupSequencer._replay_strategy_events is a stub
 
 **Origin**: 9.1.5 (strategy state restoration)

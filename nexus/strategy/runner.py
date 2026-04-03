@@ -201,3 +201,16 @@ class StrategyRunner:
         '''
 
         return self._get_executor(strategy_id).dispatch_save()
+
+    def dispatch_load(self, strategy_id: str, data: bytes) -> None:
+        '''Dispatch load event to strategy.
+
+        Args:
+            strategy_id: Target strategy identifier.
+            data: Serialized strategy state bytes from previous shutdown.
+
+        Raises:
+            ValueError: If strategy_id is unknown.
+        '''
+
+        self._get_executor(strategy_id).dispatch_load(data)

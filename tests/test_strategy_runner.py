@@ -26,8 +26,9 @@ class StubStrategy(Strategy):
         self.calls.append('on_save')
         return b'saved_state'
 
-    def on_load(self, _data: bytes) -> None:
-        pass
+    def on_load(self, data: bytes) -> None:
+        self.calls.append('on_load')
+        self.loaded_data = data
 
     def on_startup(
         self,
@@ -211,6 +212,14 @@ class TestStrategyRunnerDispatch:
         assert strategies['s1'].calls == ['on_save']
         assert blob == b'saved_state'
 
+    def test_dispatch_load_routes_to_executor(self) -> None:
+        runner, strategies = _make_runner_with_strategies('s1')
+
+        runner.dispatch_load('s1', b'restored_state')
+
+        assert strategies['s1'].calls == ['on_load']
+        assert strategies['s1'].loaded_data == b'restored_state'
+
 
 class TestStrategyRunnerUnknownStrategy:
 
@@ -251,6 +260,12 @@ class TestStrategyRunnerUnknownStrategy:
 
         with pytest.raises(ValueError, match='unknown strategy_id'):
             runner.dispatch_shutdown('unknown', _make_params(), _make_context())
+
+    def test_dispatch_load_unknown_strategy_raises(self) -> None:
+        runner, _ = _make_runner_with_strategies('s1')
+
+        with pytest.raises(ValueError, match='unknown strategy_id'):
+            runner.dispatch_load('unknown', b'data')
 
 
 class TestStrategyRunnerMultipleStrategies:

@@ -28,8 +28,9 @@ class StubStrategy(Strategy):
         self.calls.append('on_save')
         return b'saved_state'
 
-    def on_load(self, _data: bytes) -> None:
-        pass
+    def on_load(self, data: bytes) -> None:
+        self.calls.append('on_load')
+        self.loaded_data = data
 
     def on_startup(
         self,
@@ -186,6 +187,15 @@ class TestStrategyExecutorDispatch:
 
         assert strategy.calls == ['on_save']
         assert blob == b'saved_state'
+
+    def test_dispatch_load_delegates(self) -> None:
+        strategy = StubStrategy('s1')
+        executor = StrategyExecutor(strategy)
+
+        executor.dispatch_load(b'restored_state')
+
+        assert strategy.calls == ['on_load']
+        assert strategy.loaded_data == b'restored_state'
 
 
 class TestStrategyExecutorConcurrency:
