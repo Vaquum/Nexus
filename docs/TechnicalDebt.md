@@ -212,3 +212,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: When shutdown integration is built.
 **Migration**: Add validator and connector parameters to ShutdownSequencer. Validate filtered actions through pipeline, submit valid ones via connector. Remove this entry when done.
+
+---
+
+## TD-016: ShutdownSequencer._wait_terminal is a stub
+
+**Origin**: 9.2.5 (shutdown sequence)
+**Severity**: High (no graceful position closure)
+**Module**: `nexus/startup/shutdown_sequencer.py`
+
+`_wait_terminal()` logs a warning and returns immediately. Submitted EXIT commands are not tracked to completion. Shutdown proceeds without confirming positions are closed.
+
+**When to fix**: When TradeOutcome inbound integration is built.
+**Migration**: Subscribe/poll for TradeOutcome until all commands reach terminal state. Implement timeout with ABORT escalation. Remove this entry when done.

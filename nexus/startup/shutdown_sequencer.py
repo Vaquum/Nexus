@@ -171,10 +171,18 @@ class ShutdownSequencer:
     def _wait_terminal(self) -> None:
         '''Wait for all submitted commands to reach terminal state.
 
-        Stub: logs warning, does nothing. Implemented in 9.2.5.
+        Stub: logs warning, returns immediately. No outcome tracking yet.
+        Future: poll/subscribe for TradeOutcome until all commands terminal.
+        On timeout: ABORT remaining commands, wait again with shorter timeout.
         '''
 
-        _log.warning('wait_terminal not implemented')
+        if not self._submitted_command_ids:
+            return
+
+        _log.warning(
+            'wait_terminal not implemented',
+            command_count=len(self._submitted_command_ids),
+        )
 
     def _dispatch_save(self) -> None:
         '''Dispatch on_save to all strategies.
