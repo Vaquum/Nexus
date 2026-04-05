@@ -72,7 +72,7 @@ class TestStartupSequencerConstruction:
             )
 
     def test_invalid_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite Decimal'):
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
                 manifest_path=_PLACEHOLDER_MANIFEST,
@@ -81,12 +81,30 @@ class TestStartupSequencerConstruction:
             )
 
     def test_non_finite_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite Decimal'):
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
                 manifest_path=_PLACEHOLDER_MANIFEST,
                 strategies_base_path=_PLACEHOLDER_STRATEGIES,
                 allocated_capital=Decimal('Infinity'),
+            )
+
+    def test_zero_allocated_capital_rejected(self) -> None:
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
+            StartupSequencer(
+                state_store=_make_mock_state_store(),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
+                allocated_capital=Decimal('0'),
+            )
+
+    def test_negative_allocated_capital_rejected(self) -> None:
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
+            StartupSequencer(
+                state_store=_make_mock_state_store(),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
+                allocated_capital=Decimal('-1000'),
             )
 
 

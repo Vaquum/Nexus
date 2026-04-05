@@ -291,6 +291,13 @@ class TestStrategyRunnerUnknownStrategy:
         with pytest.raises(ValueError, match='unknown strategy_id'):
             runner.dispatch_load('unknown', b'data')
 
+    def test_dispatch_event_replay_unknown_strategy_raises(self) -> None:
+        runner, _ = _make_runner_with_strategies('s1')
+        event = _make_event('s1')
+
+        with pytest.raises(ValueError, match='unknown strategy_id'):
+            runner.dispatch_event_replay('unknown', event)
+
 
 class TestStrategyRunnerMultipleStrategies:
 

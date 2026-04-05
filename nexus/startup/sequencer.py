@@ -61,8 +61,12 @@ class StartupSequencer:
             msg = 'strategies_base_path must be a Path'
             raise ValueError(msg)
 
-        if not isinstance(allocated_capital, Decimal) or not allocated_capital.is_finite():
-            msg = 'allocated_capital must be a finite Decimal'
+        if (
+            not isinstance(allocated_capital, Decimal)
+            or not allocated_capital.is_finite()
+            or allocated_capital <= 0
+        ):
+            msg = 'allocated_capital must be a finite positive Decimal'
             raise ValueError(msg)
 
         if strategy_state_path is not None and not isinstance(strategy_state_path, Path):
