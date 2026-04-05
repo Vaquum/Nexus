@@ -98,19 +98,6 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-008: StartupSequencer._replay_strategy_events is a stub
-
-**Origin**: 9.1.5 (strategy state restoration)
-**Severity**: Medium (strategy internal state not rebuilt from events)
-**Module**: `nexus/startup/sequencer.py`
-
-`_replay_strategy_events()` logs a warning and does nothing. Strategy events from WAL are not replayed to strategies for internal state rebuilding (actions discarded during replay).
-
-**When to fix**: When event replay infrastructure is built.
-**Migration**: Read STRATEGY_EVENT entries from WAL, dispatch to strategies with actions discarded. Remove this entry when done.
-
----
-
 ## TD-009: StartupSequencer._wire_predictor_fns is a stub
 
 **Origin**: 9.1.6 (runtime setup stubs)

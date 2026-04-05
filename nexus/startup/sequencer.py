@@ -204,13 +204,38 @@ class StartupSequencer:
                 _log.exception('on_load failed', strategy_id=strategy_id)
 
     def _replay_strategy_events(self) -> None:
-        '''Replay strategy events from WAL (actions discarded).
+        '''Replay strategy events from WAL for state reconstruction.
 
-        Stub: logs warning, does nothing. See TD-008.
-        Event replay to strategies not implemented yet.
+        Reads STRATEGY_EVENT entries from WAL via StateStore and dispatches
+        them to the appropriate strategies. Strategies can use these events
+        to rebuild internal state (e.g., P&L tracking, position history).
+        Same code path for fresh start (no events) and crash recovery (events exist).
         '''
 
-        _log.warning('replay_strategy_events not implemented')
+        if self._runner is None:
+            raise StartupError('replay_strategy_events', 'runner not initialized')
+
+        if self._manifest is None:
+            raise StartupError('replay_strategy_events', 'manifest not loaded')
+
+        events = self._state_store.read_events()
+
+        if not events:
+            return
+
+        known_strategies = {spec.strategy_id.strip() for spec in self._manifest.strategies}
+
+        for event in events:
+            strategy_id = event.strategy_id.strip()
+
+            if strategy_id not in known_strategies:
+                _log.warning('skipping event for unknown strategy', strategy_id=strategy_id)
+                continue
+
+            try:
+                self._runner.dispatch_event_replay(strategy_id, event)
+            except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
+                _log.exception('on_event_replay failed', strategy_id=strategy_id)
 
     def _wire_predictor_fns(self) -> None:
         '''Wire predictor_fn subscriptions.

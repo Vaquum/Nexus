@@ -10,6 +10,7 @@ import pytest
 from nexus.core.domain.enums import OperationalMode
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.strategy import Action, ActionType, Strategy, StrategyContext, StrategyParams
 from nexus.strategy.executor import StrategyExecutor
 from nexus.strategy.runner import StrategyRunner
@@ -73,6 +74,10 @@ class StubStrategy(Strategy):
         self.calls.append('on_shutdown')
         return [Action(ActionType.ABORT)]
 
+    def on_event_replay(self, event: StrategyEvent) -> None:
+        self.calls.append('on_event_replay')
+        self.replayed_event = event
+
 
 def _make_params() -> StrategyParams:
     return StrategyParams(raw={'key': 'value'})
@@ -99,6 +104,15 @@ def _make_outcome() -> TradeOutcome:
         outcome_id='out1',
         command_id='cmd1',
         outcome_type=TradeOutcomeType.ACK,
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+
+
+def _make_event(strategy_id: str = 's1') -> StrategyEvent:
+    return StrategyEvent(
+        strategy_id=strategy_id,
+        event_type='trade_outcome',
+        realized_pnl=Decimal('-50'),
         timestamp=datetime.now(tz=timezone.utc),
     )
 
@@ -219,6 +233,16 @@ class TestStrategyRunnerDispatch:
 
         assert strategies['s1'].calls == ['on_load']
         assert strategies['s1'].loaded_data == b'restored_state'
+
+    def test_dispatch_event_replay_routes_to_executor(self) -> None:
+        runner, strategies = _make_runner_with_strategies('s1', 's2')
+        event = _make_event('s1')
+
+        runner.dispatch_event_replay('s1', event)
+
+        assert strategies['s1'].calls == ['on_event_replay']
+        assert strategies['s1'].replayed_event == event
+        assert strategies['s2'].calls == []
 
 
 class TestStrategyRunnerUnknownStrategy:
