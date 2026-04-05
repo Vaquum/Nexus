@@ -26,12 +26,14 @@ def _make_sequencer(
     manifest_path: Path | None = None,
     strategies_base_path: Path | None = None,
     allocated_capital: Decimal | None = None,
+    strategy_state_path: Path | None = None,
 ) -> StartupSequencer:
     return StartupSequencer(
         state_store=state_store or _make_mock_state_store(),
         manifest_path=manifest_path or _PLACEHOLDER_MANIFEST,
         strategies_base_path=strategies_base_path or _PLACEHOLDER_STRATEGIES,
         allocated_capital=allocated_capital or Decimal('10000'),
+        strategy_state_path=strategy_state_path,
     )
 
 
@@ -70,7 +72,7 @@ class TestStartupSequencerConstruction:
             )
 
     def test_invalid_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite Decimal'):
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
                 manifest_path=_PLACEHOLDER_MANIFEST,
@@ -79,12 +81,30 @@ class TestStartupSequencerConstruction:
             )
 
     def test_non_finite_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite Decimal'):
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
             StartupSequencer(
                 state_store=_make_mock_state_store(),
                 manifest_path=_PLACEHOLDER_MANIFEST,
                 strategies_base_path=_PLACEHOLDER_STRATEGIES,
                 allocated_capital=Decimal('Infinity'),
+            )
+
+    def test_zero_allocated_capital_rejected(self) -> None:
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
+            StartupSequencer(
+                state_store=_make_mock_state_store(),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
+                allocated_capital=Decimal('0'),
+            )
+
+    def test_negative_allocated_capital_rejected(self) -> None:
+        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
+            StartupSequencer(
+                state_store=_make_mock_state_store(),
+                manifest_path=_PLACEHOLDER_MANIFEST,
+                strategies_base_path=_PLACEHOLDER_STRATEGIES,
+                allocated_capital=Decimal('-1000'),
             )
 
 
@@ -195,14 +215,21 @@ class TestStateRecovery:
 
         assert sequencer._state is mock_state
 
-    def test_recover_state_handles_none(self) -> None:
+    def test_recover_state_creates_initial_state_on_fresh_start(self) -> None:
+        from nexus.core.domain.instance_state import InstanceState
+
         mock_store = _make_mock_state_store()
         mock_store.recover.return_value = None
-        sequencer = _make_sequencer(state_store=mock_store)
+        sequencer = _make_sequencer(
+            state_store=mock_store,
+            allocated_capital=Decimal('50000'),
+        )
 
         sequencer._recover_state()
 
-        assert sequencer._state is None
+        assert sequencer._state is not None
+        assert isinstance(sequencer._state, InstanceState)
+        assert sequencer._state.capital.capital_pool == Decimal('50000')
 
     def test_recover_state_wraps_exception_in_startup_error(self) -> None:
         mock_store = _make_mock_state_store()
@@ -227,15 +254,35 @@ class TestExternalIntegrationStubs:
 
         sequencer._reconcile_capital()
 
-    def test_restore_strategy_state_does_not_raise(self) -> None:
+    def test_restore_strategy_state_without_path_logs_warning(self) -> None:
         sequencer = _make_sequencer()
+        sequencer._runner = MagicMock()
+        sequencer._manifest = MagicMock()
 
         sequencer._restore_strategy_state()
 
-    def test_replay_strategy_events_does_not_raise(self) -> None:
+    def test_replay_strategy_events_fails_without_runner(self) -> None:
         sequencer = _make_sequencer()
 
-        sequencer._replay_strategy_events()
+        with pytest.raises(StartupError, match='replay_strategy_events'):
+            sequencer._replay_strategy_events()
+
+    def test_replay_strategy_events_fails_without_manifest(self) -> None:
+        sequencer = _make_sequencer()
+        sequencer._runner = MagicMock()
+
+        with pytest.raises(StartupError, match='replay_strategy_events'):
+            sequencer._replay_strategy_events()
+
+    def test_replay_strategy_events_wraps_read_events_failure(self) -> None:
+        mock_store = _make_mock_state_store()
+        mock_store.read_events.side_effect = RuntimeError('WAL corrupted')
+        sequencer = _make_sequencer(state_store=mock_store)
+        sequencer._runner = MagicMock()
+        sequencer._manifest = MagicMock()
+
+        with pytest.raises(StartupError, match='replay_strategy_events'):
+            sequencer._replay_strategy_events()
 
     def test_wire_predictor_fns_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
@@ -255,6 +302,217 @@ class TestExternalIntegrationStubs:
         sequencer._determine_mode()
 
         assert sequencer._mode == OperationalMode.ACTIVE
+
+
+class TestStrategyStateRestoration:
+
+    def test_restore_loads_existing_state_file(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_state_path = tmp_path / 'strategy_state'
+        strategy_state_path.mkdir()
+        (strategy_state_path / 'test_strat.bin').write_bytes(b'saved_data')
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+
+        sequencer._restore_strategy_state()
+
+    def test_restore_uses_empty_bytes_when_file_missing(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_state_path = tmp_path / 'strategy_state'
+        strategy_state_path.mkdir()
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+
+        sequencer._restore_strategy_state()
+
+    def test_restore_fails_without_runner(self) -> None:
+        sequencer = _make_sequencer(strategy_state_path=Path('/placeholder/state'))
+
+        with pytest.raises(StartupError, match='restore_strategy_state'):
+            sequencer._restore_strategy_state()
+
+    def test_restore_fails_without_manifest(self) -> None:
+        sequencer = _make_sequencer(strategy_state_path=Path('/placeholder/state'))
+        sequencer._runner = MagicMock()
+
+        with pytest.raises(StartupError, match='restore_strategy_state'):
+            sequencer._restore_strategy_state()
+
+    def test_restore_skips_unsafe_strategy_id_with_path_separator(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_state_path = tmp_path / 'strategy_state'
+        strategy_state_path.mkdir()
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: ../evil\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._runner = MagicMock()
+
+        sequencer._restore_strategy_state()
+
+        sequencer._runner.dispatch_load.assert_not_called()
+
+
+class TestEventReplay:
+
+    def test_replay_with_no_events_succeeds(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        state_store.read_events.return_value = []
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+
+        sequencer._replay_strategy_events()
+
+    def test_replay_dispatches_events_to_runner(self, tmp_path: Path) -> None:
+        from datetime import datetime, timezone
+        from nexus.infrastructure.strategy_event import StrategyEvent
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        event = StrategyEvent(
+            strategy_id='test_strat',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-50'),
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        state_store.read_events.return_value = [event]
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._runner.dispatch_event_replay = MagicMock()
+
+        sequencer._replay_strategy_events()
+
+        sequencer._runner.dispatch_event_replay.assert_called_once_with('test_strat', event)
+
+    def test_replay_skips_unknown_strategy(self, tmp_path: Path) -> None:
+        from datetime import datetime, timezone
+        from nexus.infrastructure.strategy_event import StrategyEvent
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        event = StrategyEvent(
+            strategy_id='unknown_strat',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-50'),
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        state_store.read_events.return_value = [event]
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._runner.dispatch_event_replay = MagicMock()
+
+        sequencer._replay_strategy_events()
+
+        sequencer._runner.dispatch_event_replay.assert_not_called()
 
 
 class TestStartupDispatch:
@@ -485,3 +743,185 @@ class TestStartupError:
         assert error.reason == 'file not found'
         assert 'load_state' in str(error)
         assert 'file not found' in str(error)
+
+
+class TestCrashOnlyDesign:
+
+    def test_fresh_start_always_calls_recover(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        state_store.read_events.return_value = []
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+
+        sequencer.start()
+
+        state_store.recover.assert_called_once()
+
+    def test_crash_recovery_calls_dispatch_load_with_file_contents(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_state_path = tmp_path / 'strategy_state'
+        strategy_state_path.mkdir()
+        (strategy_state_path / 'test_strat.bin').write_bytes(b'recovered_state_data')
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        state_store.read_events.return_value = []
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._runner.dispatch_load = MagicMock()
+
+        sequencer._restore_strategy_state()
+
+        sequencer._runner.dispatch_load.assert_called_once_with(
+            'test_strat', b'recovered_state_data'
+        )
+
+    def test_fresh_start_calls_dispatch_load_with_empty_bytes(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_state_path = tmp_path / 'strategy_state'
+        strategy_state_path.mkdir()
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        state_store.read_events.return_value = []
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._runner.dispatch_load = MagicMock()
+
+        sequencer._restore_strategy_state()
+
+        sequencer._runner.dispatch_load.assert_called_once_with('test_strat', b'')
+
+    def test_event_replay_calls_dispatch_event_replay(self, tmp_path: Path) -> None:
+        from datetime import datetime, timezone
+        from nexus.infrastructure.strategy_event import StrategyEvent
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+        event = StrategyEvent(
+            strategy_id='test_strat',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-100'),
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = None
+        state_store.read_events.return_value = [event]
+        sequencer = _make_sequencer(
+            state_store=state_store,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._recover_state()
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._runner.dispatch_event_replay = MagicMock()
+
+        sequencer._replay_strategy_events()
+
+        sequencer._runner.dispatch_event_replay.assert_called_once_with('test_strat', event)
+
+    def test_same_code_path_for_fresh_and_crash(self, tmp_path: Path) -> None:
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_state_path = tmp_path / 'strategy_state'
+        strategy_state_path.mkdir()
+
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            '    permutation_ids: [p1]\n'
+            '    capital_pct: 50\n'
+        )
+
+        state_store_fresh = _make_mock_state_store()
+        state_store_fresh.recover.return_value = None
+        state_store_fresh.read_events.return_value = []
+
+        sequencer_fresh = _make_sequencer(
+            state_store=state_store_fresh,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        runner_fresh = sequencer_fresh.start()
+
+        (strategy_state_path / 'test_strat.bin').write_bytes(b'crash_state')
+        state_store_crash = _make_mock_state_store()
+        state_store_crash.recover.return_value = None
+        state_store_crash.read_events.return_value = []
+
+        sequencer_crash = _make_sequencer(
+            state_store=state_store_crash,
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            strategy_state_path=strategy_state_path,
+        )
+        runner_crash = sequencer_crash.start()
+
+        state_store_fresh.recover.assert_called_once()
+        state_store_crash.recover.assert_called_once()
+        assert runner_fresh is not None
+        assert runner_crash is not None

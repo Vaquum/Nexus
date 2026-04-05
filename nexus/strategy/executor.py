@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.strategy.action import Action
 from nexus.strategy.base import Strategy
 from nexus.strategy.context import StrategyContext
@@ -142,3 +143,23 @@ class StrategyExecutor:
 
         with self._lock:
             return self._strategy.on_save()
+
+    def dispatch_load(self, data: bytes) -> None:
+        '''Dispatch load event to strategy under lock.
+
+        Args:
+            data: Serialized strategy state bytes from previous shutdown.
+        '''
+
+        with self._lock:
+            self._strategy.on_load(data)
+
+    def dispatch_event_replay(self, event: StrategyEvent) -> None:
+        '''Dispatch event replay to strategy under lock.
+
+        Args:
+            event: Strategy event record from WAL for state reconstruction.
+        '''
+
+        with self._lock:
+            self._strategy.on_event_replay(event)

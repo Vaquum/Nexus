@@ -425,6 +425,45 @@ class TestRecoverWithEvents:
         assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('25')
 
 
+class TestReadEvents:
+    def test_read_events_returns_empty_list_when_no_events(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        assert store.read_events() == []
+
+    def test_read_events_returns_single_event(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        event = _make_event()
+        store.append_event(event)
+
+        events = store.read_events()
+        assert len(events) == 1
+        assert events[0].strategy_id == event.strategy_id
+        assert events[0].realized_pnl == event.realized_pnl
+
+    def test_read_events_returns_multiple_events_in_order(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        store.append_event(_make_event(strategy_id='s1', pnl='-10'))
+        store.append_event(_make_event(strategy_id='s2', pnl='-20'))
+        store.append_event(_make_event(strategy_id='s1', pnl='-30'))
+
+        events = store.read_events()
+        assert len(events) == 3
+        assert events[0].strategy_id == 's1'
+        assert events[0].realized_pnl == Decimal('-10')
+        assert events[1].strategy_id == 's2'
+        assert events[2].strategy_id == 's1'
+        assert events[2].realized_pnl == Decimal('-30')
+
+    def test_read_events_ignores_mutation_entries(self, tmp_path: Path) -> None:
+        store = StateStore(tmp_path / 'state')
+        store.append_mutation(_make_state('1000'))
+        store.append_event(_make_event())
+        store.append_mutation(_make_state('2000'))
+
+        events = store.read_events()
+        assert len(events) == 1
+
+
 class TestRefreshRollingLosses:
     def test_refresh_updates_in_memory_state(self, tmp_path: Path) -> None:
         store = StateStore(tmp_path / 'state')

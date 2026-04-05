@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.strategy.action import Action
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.executor import StrategyExecutor
@@ -201,3 +202,29 @@ class StrategyRunner:
         '''
 
         return self._get_executor(strategy_id).dispatch_save()
+
+    def dispatch_load(self, strategy_id: str, data: bytes) -> None:
+        '''Dispatch load event to strategy.
+
+        Args:
+            strategy_id: Target strategy identifier.
+            data: Serialized strategy state bytes from previous shutdown.
+
+        Raises:
+            ValueError: If strategy_id is unknown.
+        '''
+
+        self._get_executor(strategy_id).dispatch_load(data)
+
+    def dispatch_event_replay(self, strategy_id: str, event: StrategyEvent) -> None:
+        '''Dispatch event replay to strategy.
+
+        Args:
+            strategy_id: Target strategy identifier.
+            event: Strategy event record from WAL for state reconstruction.
+
+        Raises:
+            ValueError: If strategy_id is unknown.
+        '''
+
+        self._get_executor(strategy_id).dispatch_event_replay(event)

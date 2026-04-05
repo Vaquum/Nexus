@@ -158,6 +158,20 @@ class StateStore:
 
         return state
 
+    def read_events(self) -> list[StrategyEvent]:
+        '''Read all STRATEGY_EVENT entries from WAL.
+
+        Returns:
+            List of StrategyEvent records from WAL, in sequence order.
+        '''
+
+        wal_entries = self._wal.read_all()
+        return [
+            deserialize_event(entry.payload)
+            for entry in wal_entries
+            if entry.entry_type == WALEntryType.STRATEGY_EVENT
+        ]
+
     def refresh_rolling_losses(self, state: InstanceState) -> None:
         '''Re-derive rolling loss counters from WAL events.
 
@@ -168,12 +182,7 @@ class StateStore:
             state: Instance state whose rolling losses will be updated in place.
         '''
 
-        wal_entries = self._wal.read_all()
-        events = [
-            deserialize_event(entry.payload)
-            for entry in wal_entries
-            if entry.entry_type == WALEntryType.STRATEGY_EVENT
-        ]
+        events = self.read_events()
 
         recovery_time = datetime.now(tz=timezone.utc)
         losses = derive_rolling_losses(events, recovery_time) if events else {}

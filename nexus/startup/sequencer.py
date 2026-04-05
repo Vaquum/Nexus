@@ -7,6 +7,7 @@ from pathlib import Path
 
 import structlog
 
+from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest, load_manifest
@@ -37,6 +38,7 @@ class StartupSequencer:
         manifest_path: Path to the strategy manifest YAML file.
         strategies_base_path: Base path for resolving strategy file paths.
         allocated_capital: Hard ceiling for manifest capital_pool validation.
+        strategy_state_path: Directory for strategy state blob files.
     '''
 
     def __init__(
@@ -45,6 +47,7 @@ class StartupSequencer:
         manifest_path: Path,
         strategies_base_path: Path,
         allocated_capital: Decimal,
+        strategy_state_path: Path | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
             msg = 'state_store must be a StateStore instance'
@@ -58,14 +61,23 @@ class StartupSequencer:
             msg = 'strategies_base_path must be a Path'
             raise ValueError(msg)
 
-        if not isinstance(allocated_capital, Decimal) or not allocated_capital.is_finite():
-            msg = 'allocated_capital must be a finite Decimal'
+        if (
+            not isinstance(allocated_capital, Decimal)
+            or not allocated_capital.is_finite()
+            or allocated_capital <= 0
+        ):
+            msg = 'allocated_capital must be a finite positive Decimal'
+            raise ValueError(msg)
+
+        if strategy_state_path is not None and not isinstance(strategy_state_path, Path):
+            msg = 'strategy_state_path must be a Path or None'
             raise ValueError(msg)
 
         self._state_store = state_store
         self._manifest_path = manifest_path
         self._strategies_base_path = strategies_base_path
         self._allocated_capital = allocated_capital
+        self._strategy_state_path = strategy_state_path
 
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
@@ -103,11 +115,17 @@ class StartupSequencer:
         '''Recover InstanceState from snapshot and WAL.
 
         Delegates to StateStore.recover() which loads the latest snapshot
-        and replays STATE_MUTATION entries from WAL atomically.
+        and replays STATE_MUTATION entries from WAL atomically. If no
+        persisted state exists (fresh start), creates initial state from
+        allocated capital. Same code path for fresh start and crash recovery.
         '''
 
         try:
             self._state = self._state_store.recover()
+            if self._state is None:
+                self._state = InstanceState(
+                    capital=CapitalState(capital_pool=self._allocated_capital),
+                )
         except Exception as e:
             raise StartupError('recover_state', str(e)) from e
 
@@ -156,20 +174,80 @@ class StartupSequencer:
     def _restore_strategy_state(self) -> None:
         '''Call on_load(bytes) on each strategy for state restoration.
 
-        Stub: logs warning, does nothing. See TD-007.
-        Strategy state blob storage not implemented yet.
+        Loads strategy state from {strategy_state_path}/{strategy_id}.bin
+        if the file exists, otherwise passes empty bytes. Same code path
+        for fresh start (no files) and crash recovery (files exist).
         '''
 
-        _log.warning('restore_strategy_state not implemented')
+        if self._runner is None:
+            raise StartupError('restore_strategy_state', 'runner not initialized')
+
+        if self._manifest is None:
+            raise StartupError('restore_strategy_state', 'manifest not loaded')
+
+        if self._strategy_state_path is None:
+            _log.warning('strategy_state_path not configured, skipping state restoration')
+            return
+
+        for spec in self._manifest.strategies:
+            strategy_id = spec.strategy_id.strip()
+
+            if '/' in strategy_id or '\\' in strategy_id:
+                _log.error('unsafe strategy_id rejected', strategy_id=strategy_id)
+                continue
+
+            state_file = self._strategy_state_path / f'{strategy_id}.bin'
+
+            if state_file.exists():
+                try:
+                    data = state_file.read_bytes()
+                except OSError:
+                    _log.exception('failed to read strategy state', strategy_id=strategy_id)
+                    data = b''
+            else:
+                data = b''
+
+            try:
+                self._runner.dispatch_load(strategy_id, data)
+            except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
+                _log.exception('on_load failed', strategy_id=strategy_id)
 
     def _replay_strategy_events(self) -> None:
-        '''Replay strategy events from WAL (actions discarded).
+        '''Replay strategy events from WAL for state reconstruction.
 
-        Stub: logs warning, does nothing. See TD-008.
-        Event replay to strategies not implemented yet.
+        Reads STRATEGY_EVENT entries from WAL via StateStore and dispatches
+        them to the appropriate strategies. Strategies can use these events
+        to rebuild internal state (e.g., P&L tracking, position history).
+        Same code path for fresh start (no events) and crash recovery (events exist).
         '''
 
-        _log.warning('replay_strategy_events not implemented')
+        if self._runner is None:
+            raise StartupError('replay_strategy_events', 'runner not initialized')
+
+        if self._manifest is None:
+            raise StartupError('replay_strategy_events', 'manifest not loaded')
+
+        try:
+            events = self._state_store.read_events()
+        except Exception as e:
+            raise StartupError('replay_strategy_events', str(e)) from e
+
+        if not events:
+            return
+
+        known_strategies = {spec.strategy_id.strip() for spec in self._manifest.strategies}
+
+        for event in events:
+            strategy_id = event.strategy_id.strip()
+
+            if strategy_id not in known_strategies:
+                _log.warning('skipping event for unknown strategy', strategy_id=strategy_id)
+                continue
+
+            try:
+                self._runner.dispatch_event_replay(strategy_id, event)
+            except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
+                _log.exception('on_event_replay failed', strategy_id=strategy_id)
 
     def _wire_predictor_fns(self) -> None:
         '''Wire predictor_fn subscriptions.

@@ -12,6 +12,7 @@ import pytest
 from nexus.core.domain.enums import OperationalMode
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.strategy import Action, ActionType, Strategy, StrategyContext, StrategyParams
 from nexus.strategy.executor import StrategyExecutor
 from nexus.strategy.signal import Signal
@@ -28,8 +29,9 @@ class StubStrategy(Strategy):
         self.calls.append('on_save')
         return b'saved_state'
 
-    def on_load(self, _data: bytes) -> None:
-        pass
+    def on_load(self, data: bytes) -> None:
+        self.calls.append('on_load')
+        self.loaded_data = data
 
     def on_startup(
         self,
@@ -84,6 +86,10 @@ class StubStrategy(Strategy):
         self.calls.append('on_shutdown')
         return [Action(ActionType.ABORT)]
 
+    def on_event_replay(self, event: StrategyEvent) -> None:
+        self.calls.append('on_event_replay')
+        self.replayed_event = event
+
 
 def _make_params() -> StrategyParams:
     return StrategyParams(raw={'key': 'value'})
@@ -110,6 +116,15 @@ def _make_outcome() -> TradeOutcome:
         outcome_id='out1',
         command_id='cmd1',
         outcome_type=TradeOutcomeType.ACK,
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+
+
+def _make_event() -> StrategyEvent:
+    return StrategyEvent(
+        strategy_id='s1',
+        event_type='trade_outcome',
+        realized_pnl=Decimal('-50'),
         timestamp=datetime.now(tz=timezone.utc),
     )
 
@@ -186,6 +201,25 @@ class TestStrategyExecutorDispatch:
 
         assert strategy.calls == ['on_save']
         assert blob == b'saved_state'
+
+    def test_dispatch_load_delegates(self) -> None:
+        strategy = StubStrategy('s1')
+        executor = StrategyExecutor(strategy)
+
+        executor.dispatch_load(b'restored_state')
+
+        assert strategy.calls == ['on_load']
+        assert strategy.loaded_data == b'restored_state'
+
+    def test_dispatch_event_replay_delegates(self) -> None:
+        strategy = StubStrategy('s1')
+        executor = StrategyExecutor(strategy)
+        event = _make_event()
+
+        executor.dispatch_event_replay(event)
+
+        assert strategy.calls == ['on_event_replay']
+        assert strategy.replayed_event == event
 
 
 class TestStrategyExecutorConcurrency:

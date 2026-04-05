@@ -228,3 +228,18 @@
 - Add shutdown stubs: `_stop_signals` (TD-013), `_stop_timers` (TD-014), `_wait_terminal` (TD-016), `_deregister` (TD-012)
 - Fix import-in-method anti-pattern in [`sequencer.py`](nexus/startup/sequencer.py) by moving structlog to module level
 - Add 25 tests covering construction validation, dispatch shutdown, submit actions filtering, dispatch save, persist strategy state, final checkpoint, full shutdown sequence, executor/runner dispatch_save, and config timeout validation (863 total)
+
+## v0.24.0 on 5th of April, 2026
+
+- Add crash-only design: fresh start and crash recovery share same code path with no branching
+- Add `_recover_state()` creating initial `InstanceState` when `StateStore.recover()` returns None
+- Add `strategy_state_path` parameter to `StartupSequencer` for strategy state restoration directory
+- Add `_restore_strategy_state()` loading `.bin` files into strategies via `dispatch_load()` (completes TD-007)
+- Add `StateStore.read_events()` to read `STRATEGY_EVENT` entries from WAL
+- Add `Strategy.on_event_replay()` optional callback with default no-op for event replay during recovery
+- Add `StrategyExecutor.dispatch_event_replay()` and `StrategyRunner.dispatch_event_replay()` methods
+- Add `_replay_strategy_events()` dispatching WAL events to strategies for state reconstruction (completes TD-008)
+- Add crash-only verification tests proving same code path for fresh start and crash recovery
+- Add path traversal validation for strategy_id in state restoration
+- Add StartupError wrapping for read_events() failures
+- Add 28 tests covering state restoration, event replay, crash-only design verification, and validation (891 total)

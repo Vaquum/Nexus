@@ -9,6 +9,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.strategy.action import Action
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
@@ -180,3 +181,16 @@ class Strategy(ABC):
         '''
 
         ...
+
+    def on_event_replay(self, event: StrategyEvent) -> None:
+        '''Handle replayed event during crash recovery.
+
+        Called for each STRATEGY_EVENT from WAL during startup. Use to
+        rebuild internal state (e.g., P&L tracking, position history).
+        Default implementation does nothing — override if needed.
+
+        Args:
+            event: Strategy event record from WAL.
+        '''
+
+        _ = event
