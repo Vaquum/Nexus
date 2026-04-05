@@ -212,3 +212,27 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 **When to fix**: Before multi-strategy deployments.
 **Migration**: Tighten `StrategySpec.__post_init__` to either (a) strip-and-store the normalized value, or (b) reject strategy_id with leading/trailing whitespace. Validate uniqueness after normalization. Remove this entry when done.
+
+---
+
+## TD-018: Performance bottlenecks in O(N) Python loops and Decimal arithmetic
+
+**Origin**: 10.1 (performance audit)
+**Severity**: Medium (scaling risk)
+**Modules**:
+- `nexus/infrastructure/loss_derivation.py`
+- `nexus/infrastructure/state_store.py`
+- `nexus/infrastructure/wal.py`
+- `nexus/core/validator/intake_stage.py`
+- `nexus/core/capital_controller/capital_controller.py`
+
+Several hot paths and recovery routines use linear O(N) scans and manual dictionary cleanups in pure Python, which will bottleneck as event volume and strategy counts scale. Specifically:
+- `derive_rolling_losses` performs iterative `Decimal` arithmetic over all events in the WAL.
+- `recover` and `read_all` perform record-by-record binary scans.
+- `make_duplicate_order_hook` and `_purge_expired` perform full dictionary scans on every call to find stale entries.
+
+**When to fix**: Before high-frequency trading (HFT) or large-scale multi-strategy deployments.
+**Migration**: 
+- Replace O(N) dictionary/list scans with O(1) or O(log N) structures (e.g., `collections.deque` or `heapq` for expiration tracking).
+- Vectorize numerical aggregations using NumPy if `Decimal` performance becomes a bottleneck.
+- Implement batch processing or incremental updates for rolling loss windows to avoid full re-scans.
