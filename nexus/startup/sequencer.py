@@ -191,6 +191,11 @@ class StartupSequencer:
 
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id.strip()
+
+            if '/' in strategy_id or '\\' in strategy_id or '..' in strategy_id:
+                _log.error('unsafe strategy_id rejected', strategy_id=strategy_id)
+                continue
+
             state_file = self._strategy_state_path / f'{strategy_id}.bin'
 
             if state_file.exists():
@@ -222,7 +227,10 @@ class StartupSequencer:
         if self._manifest is None:
             raise StartupError('replay_strategy_events', 'manifest not loaded')
 
-        events = self._state_store.read_events()
+        try:
+            events = self._state_store.read_events()
+        except Exception as e:
+            raise StartupError('replay_strategy_events', str(e)) from e
 
         if not events:
             return
