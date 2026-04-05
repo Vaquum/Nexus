@@ -228,11 +228,11 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 Several hot paths and recovery routines use linear O(N) scans and manual dictionary cleanups in pure Python, which will bottleneck as event volume and strategy counts scale. Specifically:
 - `derive_rolling_losses` performs iterative `Decimal` arithmetic over all events in the WAL.
-- `recover` and `read_all` perform record-by-record binary scans.
+- `WriteAheadLog.read_all` (called by `StateStore.recover`) performs sequential record-by-record reads over the WAL file.
 - `make_duplicate_order_hook` and `_purge_expired` perform full dictionary scans on every call to find stale entries.
 
 **When to fix**: Before high-frequency trading (HFT) or large-scale multi-strategy deployments.
-**Migration**: 
+**Migration**:
 - Replace O(N) dictionary/list scans with O(1) or O(log N) structures (e.g., `collections.deque` or `heapq` for expiration tracking).
-- Vectorize numerical aggregations using NumPy if `Decimal` performance becomes a bottleneck.
-- Implement batch processing or incremental updates for rolling loss windows to avoid full re-scans.
+- If `Decimal` precision is not required for a hot path, consider switching that path to float-based aggregation and NumPy; otherwise optimize the `Decimal` path by reducing repeated `Decimal` operations and avoiding full re-scans.
+- Implement batch processing or incremental updates for rolling loss windows so recovery and loss derivation update aggregates from prior state instead of recalculating across the full WAL.
