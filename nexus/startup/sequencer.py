@@ -192,7 +192,7 @@ class StartupSequencer:
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id.strip()
 
-            if '/' in strategy_id or '\\' in strategy_id or '..' in strategy_id:
+            if '/' in strategy_id or '\\' in strategy_id:
                 _log.error('unsafe strategy_id rejected', strategy_id=strategy_id)
                 continue
 

@@ -240,4 +240,6 @@
 - Add `StrategyExecutor.dispatch_event_replay()` and `StrategyRunner.dispatch_event_replay()` methods
 - Add `_replay_strategy_events()` dispatching WAL events to strategies for state reconstruction (completes TD-008)
 - Add crash-only verification tests proving same code path for fresh start and crash recovery
-- Add 23 tests covering state restoration, event replay, and crash-only design verification (886 total)
+- Add path traversal validation for strategy_id in state restoration
+- Add StartupError wrapping for read_events() failures
+- Add 28 tests covering state restoration, event replay, crash-only design verification, and validation (891 total)
