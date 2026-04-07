@@ -156,6 +156,37 @@ class WriteAheadLog:
                 f.flush()
                 os.fsync(f.fileno())
 
+    def truncate_keeping_events(self, cutoff: datetime) -> None:
+        '''Truncate WAL but preserve STRATEGY_EVENT entries after cutoff.
+
+        Removes STATE_MUTATION entries and old events, keeping only
+        STRATEGY_EVENT entries with timestamp >= cutoff for rolling
+        loss window derivation.
+
+        Args:
+            cutoff: Keep events with timestamp >= this value.
+        '''
+
+        if not self._path.exists():
+            return
+
+        entries = self.read_all()
+        events_to_keep = [
+            e for e in entries
+            if e.entry_type == WALEntryType.STRATEGY_EVENT and e.timestamp >= cutoff
+        ]
+
+        with self._path.open('wb') as f:
+            f.write(_MAGIC)
+            for entry in events_to_keep:
+                payload = _serialize_entry(entry)
+                crc = zlib.crc32(payload) & 0xFFFFFFFF
+                header = struct.pack(_RECORD_HEADER_FMT, len(payload), crc)
+                f.write(header)
+                f.write(payload)
+            f.flush()
+            os.fsync(f.fileno())
+
 
 def _fsync_directory(dir_path: Path) -> None:
     '''Fsync a directory to make rename/create durable across power loss.'''

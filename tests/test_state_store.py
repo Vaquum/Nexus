@@ -394,7 +394,7 @@ class TestRecoverWithEvents:
         assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('10')
         assert recovered.risk.per_strategy['strat_b'].rolling_loss_24h == Decimal('20')
 
-    def test_checkpoint_truncates_pre_checkpoint_events(self, tmp_path: Path) -> None:
+    def test_checkpoint_preserves_events_for_rolling_windows(self, tmp_path: Path) -> None:
         store = StateStore(tmp_path / 'state')
         state = _make_state_with_risk()
         store.append_mutation(state)
@@ -422,7 +422,7 @@ class TestRecoverWithEvents:
         store2 = StateStore(tmp_path / 'state')
         recovered = store2.recover()
         assert recovered is not None
-        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('25')
+        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('125')
 
 
 class TestReadEvents:
