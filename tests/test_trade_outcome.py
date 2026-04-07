@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -160,12 +160,22 @@ class TestTradeOutcomeTimestampValidation:
             )
 
     def test_naive_timestamp_rejected(self) -> None:
-        with pytest.raises(ValueError, match='timestamp must be timezone-aware'):
+        with pytest.raises(ValueError, match='must be UTC'):
             TradeOutcome(
                 outcome_id='out_001',
                 command_id='cmd_001',
                 outcome_type=TradeOutcomeType.ACK,
                 timestamp=datetime.now(),
+            )
+
+    def test_non_utc_timestamp_rejected(self) -> None:
+        non_utc = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be UTC'):
+            TradeOutcome(
+                outcome_id='out_001',
+                command_id='cmd_001',
+                outcome_type=TradeOutcomeType.ACK,
+                timestamp=non_utc,
             )
 
 

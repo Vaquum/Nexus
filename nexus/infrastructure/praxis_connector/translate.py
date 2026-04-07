@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
@@ -50,8 +50,8 @@ def translate_to_trade_command(
         msg = 'translate_to_trade_command: decision must be allowed'
         raise ValueError(msg)
 
-    if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
-        msg = 'translate_to_trade_command requires timezone-aware datetime'
+    if now.tzinfo is not timezone.utc:
+        msg = 'translate_to_trade_command requires UTC datetime'
         raise ValueError(msg)
 
     if not context.command_id:

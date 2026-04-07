@@ -8,7 +8,7 @@ check-and-reserve attempt.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 __all__ = ['Reservation', 'ReservationResult']
@@ -67,22 +67,16 @@ class Reservation:
             msg = 'Reservation.created_at must be a datetime'
             raise ValueError(msg)
 
-        if (
-            self.created_at.tzinfo is None
-            or self.created_at.tzinfo.utcoffset(self.created_at) is None
-        ):
-            msg = 'Reservation.created_at must be timezone-aware'
+        if self.created_at.tzinfo is not timezone.utc:
+            msg = 'Reservation.created_at must be UTC'
             raise ValueError(msg)
 
         if not isinstance(self.expires_at, datetime):
             msg = 'Reservation.expires_at must be a datetime'
             raise ValueError(msg)
 
-        if (
-            self.expires_at.tzinfo is None
-            or self.expires_at.tzinfo.utcoffset(self.expires_at) is None
-        ):
-            msg = 'Reservation.expires_at must be timezone-aware'
+        if self.expires_at.tzinfo is not timezone.utc:
+            msg = 'Reservation.expires_at must be UTC'
             raise ValueError(msg)
 
         if self.expires_at <= self.created_at:
@@ -102,8 +96,8 @@ class Reservation:
             now: Timezone-aware current time to compare against expires_at.
         '''
 
-        if now.tzinfo is None or now.tzinfo.utcoffset(now) is None:
-            msg = 'Reservation.is_expired requires timezone-aware datetime'
+        if now.tzinfo is not timezone.utc:
+            msg = 'Reservation.is_expired requires UTC datetime'
             raise ValueError(msg)
 
         return now >= self.expires_at

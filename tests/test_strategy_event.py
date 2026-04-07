@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from typing import Any
@@ -74,5 +74,10 @@ class TestValidation:
             _make_event(realized_pnl=Decimal('NaN'))
 
     def test_naive_timestamp_rejected(self) -> None:
-        with pytest.raises(ValueError, match='timezone-aware'):
+        with pytest.raises(ValueError, match='must be UTC'):
             _make_event(timestamp=datetime(2026, 3, 19, 12, 0, 0))
+
+    def test_non_utc_timestamp_rejected(self) -> None:
+        non_utc = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be UTC'):
+            _make_event(timestamp=non_utc)

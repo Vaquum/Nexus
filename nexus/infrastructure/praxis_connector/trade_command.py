@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from nexus.core.domain.enums import OrderSide
@@ -82,11 +82,8 @@ class TradeCommand:
             msg = 'TradeCommand.created_at must be a datetime'
             raise ValueError(msg)
 
-        if (
-            self.created_at.tzinfo is None
-            or self.created_at.tzinfo.utcoffset(self.created_at) is None
-        ):
-            msg = 'TradeCommand.created_at must be timezone-aware'
+        if self.created_at.tzinfo is not timezone.utc:
+            msg = 'TradeCommand.created_at must be UTC'
             raise ValueError(msg)
 
         if self.side is not None and not isinstance(self.side, OrderSide):
