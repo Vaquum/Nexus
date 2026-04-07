@@ -70,9 +70,23 @@ def deserialize_state(data: bytes) -> InstanceState:
         msg = f'Expected dict from WAL payload, got {type(d).__name__}'
         raise ValueError(msg)
     version = d.get('_v', 0)
-    if version != _CODEC_VERSION:
-        msg = f'Unsupported WAL codec version: {version}'
-        raise ValueError(msg)
+
+    if version == 1:
+        return _decode_state_v1(d)
+
+    msg = f'Unsupported WAL codec version: {version}'
+    raise ValueError(msg)
+
+
+def _decode_state_v1(d: dict[str, Any]) -> InstanceState:
+    '''Decode v1 state payload to InstanceState.
+
+    Args:
+        d: Decoded msgpack dict with v1 schema.
+
+    Returns:
+        Reconstructed InstanceState.
+    '''
 
     try:
         return InstanceState(
@@ -396,9 +410,22 @@ def deserialize_event(data: bytes) -> StrategyEvent:
         msg = f'Malformed event codec version: {exc}'
         raise ValueError(msg) from exc
 
-    if version != _EVENT_CODEC_VERSION:
-        msg = f'Unsupported event codec version: {version}'
-        raise ValueError(msg)
+    if version == 1:
+        return _decode_event_v1(d)
+
+    msg = f'Unsupported event codec version: {version}'
+    raise ValueError(msg)
+
+
+def _decode_event_v1(d: dict[str, Any]) -> StrategyEvent:
+    '''Decode v1 event payload to StrategyEvent.
+
+    Args:
+        d: Decoded msgpack dict with v1 schema.
+
+    Returns:
+        Reconstructed StrategyEvent.
+    '''
 
     try:
         return StrategyEvent(
