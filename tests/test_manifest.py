@@ -64,6 +64,45 @@ class TestStrategySpec:
                 capital_pct=Decimal('10'),
             )
 
+    def test_padded_whitespace_strategy_id_raises(self) -> None:
+        '''Strategy_id with surrounding whitespace raises ValueError.'''
+
+        with pytest.raises(
+            ValueError, match='strategy_id must be a non-empty string without surrounding whitespace'
+        ):
+            StrategySpec(
+                strategy_id=' s1 ',
+                file='test.py',
+                permutation_ids=('pred1',),
+                capital_pct=Decimal('10'),
+            )
+
+    def test_leading_whitespace_strategy_id_raises(self) -> None:
+        '''Strategy_id with leading whitespace raises ValueError.'''
+
+        with pytest.raises(
+            ValueError, match='strategy_id must be a non-empty string without surrounding whitespace'
+        ):
+            StrategySpec(
+                strategy_id=' s1',
+                file='test.py',
+                permutation_ids=('pred1',),
+                capital_pct=Decimal('10'),
+            )
+
+    def test_trailing_whitespace_strategy_id_raises(self) -> None:
+        '''Strategy_id with trailing whitespace raises ValueError.'''
+
+        with pytest.raises(
+            ValueError, match='strategy_id must be a non-empty string without surrounding whitespace'
+        ):
+            StrategySpec(
+                strategy_id='s1 ',
+                file='test.py',
+                permutation_ids=('pred1',),
+                capital_pct=Decimal('10'),
+            )
+
     def test_empty_file_raises(self) -> None:
         '''Empty file raises ValueError.'''
 

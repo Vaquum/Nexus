@@ -40,8 +40,12 @@ class StrategySpec:
     def __post_init__(self) -> None:
         '''Validate strategy specification invariants.'''
 
-        if not isinstance(self.strategy_id, str) or not self.strategy_id.strip():
-            msg = 'StrategySpec.strategy_id must be a non-empty string'
+        if (
+            not isinstance(self.strategy_id, str)
+            or not self.strategy_id.strip()
+            or self.strategy_id != self.strategy_id.strip()
+        ):
+            msg = 'StrategySpec.strategy_id must be a non-empty string without surrounding whitespace'
             raise ValueError(msg)
 
         if not isinstance(self.file, str) or not self.file.strip() or self.file != self.file.strip():
