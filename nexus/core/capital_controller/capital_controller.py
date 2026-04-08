@@ -12,6 +12,10 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+from nexus.core.capital_controller.lifecycle_result import (
+    FailureCategory,
+    LifecycleResult,
+)
 from nexus.core.capital_controller.reservation import (
     Reservation,
     ReservationResult,
@@ -268,30 +272,34 @@ class CapitalController:
                 held_seconds,
             )
 
-    def release_reservation(self, reservation_id: str) -> bool:
+    def release_reservation(self, reservation_id: str) -> LifecycleResult:
         '''Release a reservation and return its capital to the available pool.
 
         Args:
             reservation_id: ID of the reservation to release.
 
         Returns:
-            True if the reservation was found and released.
+            LifecycleResult with reason on failure.
         '''
 
         with self._lock:
             reservation = self._reservations.pop(reservation_id, None)
 
             if reservation is None:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'reservation {reservation_id!r} not found (expired or already released)',
+                    category=FailureCategory.EXPECTED_MISS,
+                )
 
             self._state.reservation_notional -= reservation.total
             self._adjust_strategy_deployed(
                 reservation.strategy_id,
                 -reservation.total,
             )
-            return True
+            return LifecycleResult(success=True)
 
-    def send_order(self, reservation_id: str, order_id: str) -> bool:
+    def send_order(self, reservation_id: str, order_id: str) -> LifecycleResult:
         '''Convert a reservation into an in-flight order.
 
         Consumes the reservation and creates a TrackedOrder in IN_FLIGHT state.
@@ -302,7 +310,7 @@ class CapitalController:
             order_id: Venue order ID for tracking.
 
         Returns:
-            True if successful, False if reservation not found or expired.
+            LifecycleResult with reason on failure.
         '''
 
         if not order_id or not order_id.strip():
@@ -320,7 +328,11 @@ class CapitalController:
             reservation = self._reservations.pop(reservation_id, None)
 
             if reservation is None:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'reservation {reservation_id!r} not found (expired or already consumed)',
+                    category=FailureCategory.EXPECTED_MISS,
+                )
 
             order = TrackedOrder(
                 order_id=order_id,
@@ -337,9 +349,9 @@ class CapitalController:
             self._state.reservation_notional -= reservation.total
             self._state.in_flight_order_notional += reservation.total
 
-            return True
+            return LifecycleResult(success=True)
 
-    def order_ack(self, order_id: str) -> bool:
+    def order_ack(self, order_id: str) -> LifecycleResult:
         '''Acknowledge an in-flight order as working on venue.
 
         Transitions the order from IN_FLIGHT to WORKING state.
@@ -349,17 +361,25 @@ class CapitalController:
             order_id: ID of the order to acknowledge.
 
         Returns:
-            True if successful, False if order not found or not IN_FLIGHT.
+            LifecycleResult with reason on failure.
         '''
 
         with self._lock:
             order = self._orders.get(order_id)
 
             if order is None:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} not found',
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             if order.state != OrderLifecycleState.IN_FLIGHT:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} in {order.state.value}, expected IN_FLIGHT',
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             updated = TrackedOrder(
                 order_id=order.order_id,
@@ -376,9 +396,9 @@ class CapitalController:
             self._state.in_flight_order_notional -= order.total
             self._state.working_order_notional += order.total
 
-            return True
+            return LifecycleResult(success=True)
 
-    def order_reject(self, order_id: str) -> bool:
+    def order_reject(self, order_id: str) -> LifecycleResult:
         '''Handle venue rejection of an in-flight order.
 
         Removes the order and releases capital back to available.
@@ -387,30 +407,38 @@ class CapitalController:
             order_id: ID of the rejected order.
 
         Returns:
-            True if successful, False if order not found or not IN_FLIGHT.
+            LifecycleResult with reason on failure.
         '''
 
         with self._lock:
             order = self._orders.get(order_id)
 
             if order is None:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} not found',
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             if order.state != OrderLifecycleState.IN_FLIGHT:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} in {order.state.value}, expected IN_FLIGHT',
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             self._orders.pop(order_id)
             self._state.in_flight_order_notional -= order.total
             self._adjust_strategy_deployed(order.strategy_id, -order.total)
 
-            return True
+            return LifecycleResult(success=True)
 
     def order_fill(
         self,
         order_id: str,
         fill_notional: Decimal,
         actual_fees: Decimal,
-    ) -> bool:
+    ) -> LifecycleResult:
         '''Handle a fill (partial or full) on a working order.
 
         Moves capital from working_order_notional to position_notional.
@@ -424,8 +452,7 @@ class CapitalController:
             actual_fees: Actual fees charged by venue for this fill.
 
         Returns:
-            True if successful, False if order not found, wrong state,
-            fill_notional exceeds remaining, or insufficient fee_reserve.
+            LifecycleResult with reason on failure.
         '''
 
         if not isinstance(fill_notional, Decimal) or not fill_notional.is_finite():
@@ -448,13 +475,28 @@ class CapitalController:
             order = self._orders.get(order_id)
 
             if order is None:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} not found',
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             if order.state != OrderLifecycleState.WORKING:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} in {order.state.value}, expected WORKING',
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             if fill_notional > order.remaining_notional:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'order {order_id!r} fill_notional {fill_notional} '
+                        f'exceeds remaining {order.remaining_notional}'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
 
             pre_fill_remaining = order.remaining_total
             new_remaining = order.remaining_notional - fill_notional
@@ -479,7 +521,14 @@ class CapitalController:
             fee_delta = proportional_estimated - actual_fees
 
             if fee_delta < _ZERO and abs(fee_delta) > self._state.fee_reserve:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'order {order_id!r} fee deficit {abs(fee_delta)} '
+                        f'exceeds fee_reserve {self._state.fee_reserve}'
+                    ),
+                    category=FailureCategory.EXPECTED_MISS,
+                )
 
             if new_remaining == _ZERO:
                 self._orders.pop(order_id)
@@ -493,9 +542,9 @@ class CapitalController:
             if fee_delta != _ZERO:
                 self._adjust_strategy_deployed(order.strategy_id, -fee_delta)
 
-            return True
+            return LifecycleResult(success=True)
 
-    def order_cancel(self, order_id: str) -> bool:
+    def order_cancel(self, order_id: str) -> LifecycleResult:
         '''Handle cancellation of a working order.
 
         Removes the order and releases remaining capital back to available.
@@ -504,23 +553,31 @@ class CapitalController:
             order_id: ID of the canceled order.
 
         Returns:
-            True if successful, False if order not found or not WORKING.
+            LifecycleResult with reason on failure.
         '''
 
         with self._lock:
             order = self._orders.get(order_id)
 
             if order is None:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} not found (completed or unknown)',
+                    category=FailureCategory.EXPECTED_MISS,
+                )
 
             if order.state != OrderLifecycleState.WORKING:
-                return False
+                return LifecycleResult(
+                    success=False,
+                    reason=f'order {order_id!r} in {order.state.value}, expected WORKING',
+                    category=FailureCategory.EXPECTED_MISS,
+                )
 
             self._orders.pop(order_id)
             self._state.working_order_notional -= order.remaining_total
             self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
-            return True
+            return LifecycleResult(success=True)
 
     def _adjust_strategy_deployed(self, strategy_id: str, delta: Decimal) -> None:
         current = self._state.per_strategy_deployed.get(strategy_id, _ZERO)

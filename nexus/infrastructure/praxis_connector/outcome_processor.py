@@ -80,13 +80,13 @@ class OutcomeProcessor:
         return self._handle_cancel(outcome, context)
 
     def _handle_ack(self, outcome: TradeOutcome) -> ProcessResult:
-        success = self._capital.order_ack(outcome.command_id)
+        result = self._capital.order_ack(outcome.command_id)
 
-        if not success:
+        if not result.success:
             return ProcessResult(
                 success=False,
                 outcome_type=outcome.outcome_type,
-                error_reason='order_ack failed: order not found or wrong state',
+                error_reason=f'order_ack failed: {result.reason}',
             )
 
         return ProcessResult(
@@ -108,17 +108,17 @@ class OutcomeProcessor:
         capital_updated = False
 
         if context.is_entry:
-            success = self._capital.order_fill(
+            result = self._capital.order_fill(
                 outcome.command_id,
                 outcome.fill_notional,
                 outcome.actual_fees,
             )
 
-            if not success:
+            if not result.success:
                 return ProcessResult(
                     success=False,
                     outcome_type=outcome.outcome_type,
-                    error_reason='order_fill failed: order not found, wrong state, fill_notional exceeds remaining, or insufficient fee_reserve',
+                    error_reason=f'order_fill failed: {result.reason}',
                 )
 
             capital_updated = True
@@ -148,13 +148,13 @@ class OutcomeProcessor:
         outcome: TradeOutcome,
         context: OrderContext,
     ) -> ProcessResult:
-        success = self._capital.order_reject(outcome.command_id)
+        result = self._capital.order_reject(outcome.command_id)
 
-        if not success:
+        if not result.success:
             return ProcessResult(
                 success=False,
                 outcome_type=outcome.outcome_type,
-                error_reason='order_reject failed: order not found or wrong state',
+                error_reason=f'order_reject failed: {result.reason}',
             )
 
         position_updated = False
@@ -174,13 +174,13 @@ class OutcomeProcessor:
         outcome: TradeOutcome,
         context: OrderContext,
     ) -> ProcessResult:
-        success = self._capital.order_cancel(outcome.command_id)
+        result = self._capital.order_cancel(outcome.command_id)
 
-        if not success:
+        if not result.success:
             return ProcessResult(
                 success=False,
                 outcome_type=outcome.outcome_type,
-                error_reason='order_cancel failed: order not found or wrong state',
+                error_reason=f'order_cancel failed: {result.reason}',
             )
 
         position_updated = False
@@ -223,12 +223,14 @@ class OutcomeProcessor:
         assert outcome.fill_price is not None
 
         if context.trade_id is None:
-            return False
+            msg = f'entry fill without trade_id: command_id={outcome.command_id!r}'
+            raise RuntimeError(msg)
 
         position = self._state.positions.get(context.trade_id)
 
         if position is None:
-            return False
+            msg = f'entry fill for missing position: trade_id={context.trade_id!r}'
+            raise RuntimeError(msg)
 
         old_size = position.size
         fill_size = outcome.fill_size
@@ -253,18 +255,24 @@ class OutcomeProcessor:
         assert outcome.fill_price is not None
 
         if context.trade_id is None:
-            return False, None
+            msg = f'exit fill without trade_id: command_id={outcome.command_id!r}'
+            raise RuntimeError(msg)
 
         position = self._state.positions.get(context.trade_id)
 
         if position is None:
-            return False, None
+            msg = f'exit fill for missing position: trade_id={context.trade_id!r}'
+            raise RuntimeError(msg)
 
         fill_size = outcome.fill_size
         fill_price = outcome.fill_price
 
         if fill_size > position.size:
-            return False, None
+            msg = (
+                f'exit fill_size {fill_size} exceeds position size '
+                f'{position.size}: trade_id={context.trade_id!r}'
+            )
+            raise RuntimeError(msg)
 
         entry_price = position.entry_price
         side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
@@ -280,7 +288,8 @@ class OutcomeProcessor:
 
     def _clear_pending_exit(self, context: OrderContext, size: Decimal) -> bool:
         if context.trade_id is None:
-            return False
+            msg = f'clear pending exit without trade_id: command_id={context.command_id!r}'
+            raise RuntimeError(msg)
 
         position = self._state.positions.get(context.trade_id)
 
