@@ -251,3 +251,16 @@ When Cohort becomes available, Nexus must support a second path in the manifest 
 
 **When to fix**: When Limen Cohort is production-ready.
 **Migration**: Add `cohort` as an alternative to `experiment` + `permutation_ids` in the manifest `predictor_fns` schema. Implement Cohort instantiation path in StartupSequencer alongside the existing Trainer path.
+
+---
+
+## TD-020: No experiment directory sandboxing per account
+
+**Origin**: MMVP-X.1 manifest schema (X.1.2.1)
+**Severity**: High (access control gap)
+**Module**: `nexus/infrastructure/manifest.py`
+
+`SensorSpec.experiment_dir` accepts any path on disk. A manifest can reference any experiment directory, regardless of which account ran that experiment. In a multi-account process, account A's manifest could point to account B's experiments, or to experiments the account owner never ran. There is no validation that an account is authorized to use a given experiment.
+
+**When to fix**: Before multi-tenant or multi-account production deployment.
+**Migration**: Introduce per-account experiment directory allowlists or a scoped base path per account (e.g. `{base}/{account_id}/experiments/`). Validate during manifest load that all `experiment_dir` paths fall within the account's allowed scope. Reject manifests that reference experiments outside the account's sandbox.
