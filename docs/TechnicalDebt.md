@@ -236,3 +236,18 @@ Several hot paths and recovery routines use linear O(N) scans and manual diction
 - Replace O(N) dictionary/list scans with O(1) or O(log N) structures (e.g., `collections.deque` or `heapq` for expiration tracking).
 - If `Decimal` precision is not required for a hot path, consider switching that path to float-based aggregation and NumPy; otherwise optimize the `Decimal` path by reducing repeated `Decimal` operations and avoiding full re-scans.
 - Implement batch processing or incremental updates for rolling loss windows so recovery and loss derivation update aggregates from prior state instead of recalculating across the full WAL.
+
+---
+
+## TD-019: Cohort (multi-decoder aggregation) not supported
+
+**Origin**: MMVP-X.1 signal flow design (X.1.2.1)
+**Severity**: Medium (single-decoder Trainer path works, Cohort deferred)
+**Module**: `nexus/startup/sequencer.py`
+
+Nexus trains Sensors via `Trainer(experiment_dir).train(permutation_ids)` — this produces one Sensor per permutation ID from a single SFD experiment. Limen's Cohort system (RegimeDiversifiedOpinionPools) aggregates predictions across multiple decoders/regimes into a single callable, but Cohort is not yet ready in Limen.
+
+When Cohort becomes available, Nexus must support a second path in the manifest where a strategy references a Cohort rather than individual Trainer permutations. The Cohort callable exposes the same `predict()` interface as Sensor, so the downstream dispatch (Signal → strategy) is unchanged.
+
+**When to fix**: When Limen Cohort is production-ready.
+**Migration**: Add `cohort` as an alternative to `experiment` + `permutation_ids` in the manifest `predictor_fns` schema. Implement Cohort instantiation path in StartupSequencer alongside the existing Trainer path.
