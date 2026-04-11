@@ -98,16 +98,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-009: StartupSequencer._wire_predictor_fns is a stub
+## TD-009: StartupSequencer._wire_sensors is a stub
 
 **Origin**: 9.1.6 (runtime setup stubs)
-**Severity**: High (no signal subscription)
+**Severity**: High (no signal generation)
 **Module**: `nexus/startup/sequencer.py`
 
-`_wire_predictor_fns()` logs a warning and does nothing. Strategies are not subscribed to predictor functions, meaning no signals will be received.
+`_wire_sensors()` logs a warning and does nothing. Limen Sensors are not trained or wired, meaning no signals will be generated.
 
-**When to fix**: When predictor_fn subscription system is built.
-**Migration**: Implement signal subscription wiring. Remove this entry when done.
+**When to fix**: When Sensor training and signal generation are built (X.1.2.2+).
+**Migration**: Implement Sensor training and timer-based predict loop. Remove this entry when done.
 
 ---
 
@@ -156,9 +156,9 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 **Severity**: High (signals continue during shutdown)
 **Module**: `nexus/startup/shutdown_sequencer.py`
 
-`_stop_signals()` logs a warning and does nothing. Without unsubscribing from predictor_fns, new signals can arrive and trigger strategy callbacks during shutdown, causing race conditions. Blocked by TD-009 — cannot stop what was never wired.
+`_stop_signals()` logs a warning and does nothing. Without stopping Sensor timers, new signals can arrive and trigger strategy callbacks during shutdown, causing race conditions. Blocked by TD-009 — cannot stop what was never wired.
 
-**When to fix**: When predictor_fn subscription system is built (after TD-009).
+**When to fix**: When Sensor wiring is built (after TD-009).
 **Migration**: Implement signal unsubscription. Remove this entry when done.
 
 ---
@@ -250,7 +250,7 @@ Nexus trains Sensors via `Trainer(experiment_dir).train(permutation_ids)` — th
 When Cohort becomes available, Nexus must support a second path in the manifest where a strategy references a Cohort rather than individual Trainer permutations. The Cohort callable exposes the same `predict()` interface as Sensor, so the downstream dispatch (Signal → strategy) is unchanged.
 
 **When to fix**: When Limen Cohort is production-ready.
-**Migration**: Add `cohort` as an alternative to `experiment` + `permutation_ids` in the manifest `predictor_fns` schema. Implement Cohort instantiation path in StartupSequencer alongside the existing Trainer path.
+**Migration**: Add `cohort` as an alternative to `experiment` + `permutation_ids` in the manifest `sensors` schema. Implement Cohort instantiation path in StartupSequencer alongside the existing Trainer path.
 
 ---
 

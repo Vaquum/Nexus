@@ -15,10 +15,53 @@ from typing import Any
 
 import yaml
 
-__all__ = ['Manifest', 'StrategySpec', 'load_manifest']
+__all__ = ['Manifest', 'SensorSpec', 'StrategySpec', 'load_manifest']
 
 _ZERO = Decimal('0')
 _ONE_HUNDRED = Decimal('100')
+
+
+@dataclass(frozen=True)
+class SensorSpec:
+    '''Specification for making a Limen Sensor into a signal source.
+
+    Args:
+        experiment_dir: Path to completed Limen experiment directory.
+        permutation_ids: Round IDs from experiment to train as Sensors.
+        interval_seconds: How often to call predict() in seconds.
+    '''
+
+    experiment_dir: Path
+    permutation_ids: tuple[int, ...]
+    interval_seconds: int
+
+    def __post_init__(self) -> None:
+        '''Validate predictor function specification invariants.'''
+
+        if not isinstance(self.experiment_dir, Path):
+            msg = 'SensorSpec.experiment_dir must be a Path'
+            raise ValueError(msg)
+
+        if not self.experiment_dir.is_dir():
+            msg = f'SensorSpec.experiment_dir not found: {self.experiment_dir}'
+            raise ValueError(msg)
+
+        if not isinstance(self.permutation_ids, tuple) or not self.permutation_ids:
+            msg = 'SensorSpec.permutation_ids must be a non-empty tuple'
+            raise ValueError(msg)
+
+        for pid in self.permutation_ids:
+            if not isinstance(pid, int) or isinstance(pid, bool):
+                msg = f'SensorSpec.permutation_ids must contain ints, got {pid!r}'
+                raise ValueError(msg)
+
+        if not isinstance(self.interval_seconds, int) or isinstance(self.interval_seconds, bool):
+            msg = 'SensorSpec.interval_seconds must be an int'
+            raise ValueError(msg)
+
+        if self.interval_seconds <= 0:
+            msg = f'SensorSpec.interval_seconds must be positive: {self.interval_seconds}'
+            raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -28,13 +71,13 @@ class StrategySpec:
     Args:
         strategy_id: Unique identifier for this strategy.
         file: Relative path string to the Python strategy implementation.
-        permutation_ids: Limen permutation IDs for Trainer/Cohort signal sources.
+        sensors: Sensor specifications for signal sources.
         capital_pct: Capital allocation percentage for this strategy.
     '''
 
     strategy_id: str
     file: str
-    permutation_ids: tuple[str, ...]
+    sensors: tuple[SensorSpec, ...]
     capital_pct: Decimal
 
     def __post_init__(self) -> None:
@@ -52,13 +95,13 @@ class StrategySpec:
             msg = 'StrategySpec.file must be a non-empty string without surrounding whitespace'
             raise ValueError(msg)
 
-        if not isinstance(self.permutation_ids, tuple) or not self.permutation_ids:
-            msg = 'StrategySpec.permutation_ids must be a non-empty tuple'
+        if not isinstance(self.sensors, tuple) or not self.sensors:
+            msg = 'StrategySpec.sensors must be a non-empty tuple'
             raise ValueError(msg)
 
-        for perm_id in self.permutation_ids:
-            if not isinstance(perm_id, str) or not perm_id.strip():
-                msg = 'StrategySpec.permutation_ids must contain non-empty strings'
+        for pfn in self.sensors:
+            if not isinstance(pfn, SensorSpec):
+                msg = 'StrategySpec.sensors must contain SensorSpec instances'
                 raise ValueError(msg)
 
         if (
@@ -201,12 +244,40 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
             msg = f'Strategy {strategy_id!r} missing required field: file'
             raise ValueError(msg)
 
-        raw_permutation_ids = raw_spec.get('permutation_ids')
-        if not isinstance(raw_permutation_ids, list) or not raw_permutation_ids:
-            msg = f'Strategy {strategy_id!r} missing or empty permutation_ids'
+        raw_sensors = raw_spec.get('sensors')
+        if not isinstance(raw_sensors, list) or not raw_sensors:
+            msg = f'Strategy {strategy_id!r} missing or empty sensors'
             raise ValueError(msg)
 
-        permutation_ids = tuple(raw_permutation_ids)
+        sensor_specs: list[SensorSpec] = []
+
+        for raw_sensor in raw_sensors:
+            if not isinstance(raw_sensor, dict):
+                msg = f'Strategy {strategy_id!r} sensors entries must be mappings'
+                raise ValueError(msg)
+
+            raw_experiment = raw_sensor.get('experiment')
+            if raw_experiment is None:
+                msg = f'Strategy {strategy_id!r} sensor missing required field: experiment'
+                raise ValueError(msg)
+
+            raw_pids = raw_sensor.get('permutation_ids')
+            if not isinstance(raw_pids, list) or not raw_pids:
+                msg = f'Strategy {strategy_id!r} sensor missing or empty permutation_ids'
+                raise ValueError(msg)
+
+            raw_interval = raw_sensor.get('interval_seconds')
+            if raw_interval is None:
+                msg = f'Strategy {strategy_id!r} sensor missing required field: interval_seconds'
+                raise ValueError(msg)
+
+            sensor_specs.append(
+                SensorSpec(
+                    experiment_dir=Path(str(raw_experiment)),
+                    permutation_ids=tuple(int(pid) for pid in raw_pids),
+                    interval_seconds=int(raw_interval),
+                )
+            )
 
         raw_capital_pct = raw_spec.get('capital_pct')
         if raw_capital_pct is None:
@@ -223,7 +294,7 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
             StrategySpec(
                 strategy_id=strategy_id,
                 file=file,
-                permutation_ids=permutation_ids,
+                sensors=tuple(sensor_specs),
                 capital_pct=capital_pct,
             )
         )

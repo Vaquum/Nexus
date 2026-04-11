@@ -95,7 +95,7 @@ class ShutdownSequencer:
         self._deregister()
 
     def _stop_signals(self) -> None:
-        '''Stop predictor_fn signal subscriptions.
+        '''Stop Sensor signal generation.
 
         Stub: logs warning, does nothing. See TD-013.
         '''

@@ -30,7 +30,7 @@ class StartupSequencer:
 
     Executes steps in order: recover state (snapshot + WAL) → register with Trading →
     reconcile capital → load manifest → instantiate strategies → restore strategy state →
-    replay strategy events → wire predictor_fns → register timers →
+    replay strategy events → wire sensors → register timers →
     determine mode → dispatch on_startup.
 
     Args:
@@ -101,7 +101,7 @@ class StartupSequencer:
         self._instantiate_strategies()
         self._restore_strategy_state()
         self._replay_strategy_events()
-        self._wire_predictor_fns()
+        self._wire_sensors()
         self._register_timers()
         self._determine_mode()
         self._dispatch_startup()
@@ -249,14 +249,13 @@ class StartupSequencer:
             except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
                 _log.exception('on_event_replay failed', strategy_id=strategy_id)
 
-    def _wire_predictor_fns(self) -> None:
-        '''Wire predictor_fn subscriptions.
+    def _wire_sensors(self) -> None:
+        '''Wire Limen Sensors for signal generation.
 
         Stub: logs warning, does nothing. See TD-009.
-        Predictor function wiring not implemented yet.
         '''
 
-        _log.warning('wire_predictor_fns not implemented')
+        _log.warning('wire_sensors not implemented')
 
     def _register_timers(self) -> None:
         '''Register strategy timers.

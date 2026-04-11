@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -10,13 +11,14 @@ import pytest
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
-from nexus.infrastructure.manifest import Manifest, StrategySpec
+from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
+_EXP_DIR = Path(tempfile.mkdtemp())
 
 
 def _make_mock_runner() -> MagicMock:
@@ -32,10 +34,15 @@ def _make_instance_state() -> InstanceState:
 
 
 def _make_strategy_spec(strategy_id: str = 'test_strategy') -> StrategySpec:
+    pfn = SensorSpec(
+        experiment_dir=_EXP_DIR,
+        permutation_ids=(1,),
+        interval_seconds=60,
+    )
     return StrategySpec(
         strategy_id=strategy_id,
         file='test.py',
-        permutation_ids=('perm1',),
+        sensors=(pfn,),
         capital_pct=Decimal('50'),
     )
 
