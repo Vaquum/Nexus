@@ -264,3 +264,18 @@ When Cohort becomes available, Nexus must support a second path in the manifest 
 
 **When to fix**: Before multi-tenant or multi-account production deployment.
 **Migration**: Introduce per-account experiment directory allowlists or a scoped base path per account (e.g. `{base}/{account_id}/experiments/`). Validate during manifest load that all `experiment_dir` paths fall within the account's allowed scope. Reject manifests that reference experiments outside the account's sandbox.
+
+---
+
+## TD-021: PredictLoop uses stub market data provider
+
+**Origin**: MMVP-X.1 predict loop (X.1.2.4)
+**Severity**: High (no real market data flows to Sensors)
+**Module**: `nexus/strategy/predict_loop.py`
+
+`PredictLoop` accepts a `market_data_provider: Callable[[int], pl.DataFrame]` that returns a rolling DataFrame of bars for a given kline_size. No concrete provider exists — the predict loop works but has nothing to call in production.
+
+The concrete provider depends on Praxis TD-016 #3 (shared market data poller) which fetches klines per unique kline_size using `binancial.compute.get_spot_klines`. The kline_size for each sensor is in the Limen manifest's `data_source_config.params['kline_size']` — already extracted by `PredictLoop._extract_kline_size()`.
+
+**When to fix**: When Praxis TD-016 #3 (shared market data poller) is built.
+**Migration**: Implement the concrete market data provider that wraps the shared poller's rolling DataFrames. Wire it into PredictLoop construction during Nexus instance startup.
