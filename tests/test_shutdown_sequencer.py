@@ -295,3 +295,53 @@ class TestShutdownSequence:
         assert runner.dispatch_shutdown.call_count == 2
         assert runner.dispatch_save.call_count == 2
         assert state_store.checkpoint.call_count == 2
+
+
+class TestStopSignals:
+
+    def test_stop_signals_calls_predict_loop_stop(self) -> None:
+        '''_stop_signals calls predict_loop.stop().'''
+
+        mock_loop = MagicMock()
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            predict_loop=mock_loop,
+        )
+
+        sequencer._stop_signals()
+
+        mock_loop.stop.assert_called_once()
+
+    def test_stop_signals_without_predict_loop(self) -> None:
+        '''_stop_signals completes without error when predict_loop is None.'''
+
+        sequencer = _make_sequencer()
+        sequencer._stop_signals()
+
+    def test_shutdown_stops_signals_before_dispatch(self) -> None:
+        '''Full shutdown calls predict_loop.stop() before dispatching on_shutdown.'''
+
+        call_order: list[str] = []
+
+        mock_loop = MagicMock()
+        mock_loop.stop.side_effect = lambda: call_order.append('stop_signals')
+
+        runner = _make_mock_runner()
+        runner.dispatch_shutdown.side_effect = lambda *_a, **_kw: call_order.append('dispatch_shutdown')
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            predict_loop=mock_loop,
+        )
+
+        sequencer.shutdown()
+
+        assert call_order.index('stop_signals') < call_order.index('dispatch_shutdown')

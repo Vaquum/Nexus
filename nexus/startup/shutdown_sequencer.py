@@ -14,6 +14,7 @@ from nexus.infrastructure.state_store import StateStore
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
+from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
 
 __all__ = ['ShutdownSequencer']
@@ -35,6 +36,7 @@ class ShutdownSequencer:
         state_store: Persistence facade for checkpointing.
         state: Current instance state.
         strategy_state_path: Directory for strategy state blobs.
+        predict_loop: Running PredictLoop to stop during shutdown.
     '''
 
     def __init__(
@@ -44,6 +46,7 @@ class ShutdownSequencer:
         state_store: StateStore,
         state: InstanceState,
         strategy_state_path: Path,
+        predict_loop: PredictLoop | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -70,6 +73,7 @@ class ShutdownSequencer:
         self._state_store = state_store
         self._state = state
         self._strategy_state_path = strategy_state_path
+        self._predict_loop = predict_loop
         self._shutdown_actions: dict[str, list[Action]] = {}
         self._submitted_command_ids: list[str] = []
         self._save_blobs: dict[str, bytes] = {}
@@ -97,10 +101,16 @@ class ShutdownSequencer:
     def _stop_signals(self) -> None:
         '''Stop Sensor signal generation.
 
-        Stub: logs warning, does nothing. See TD-013.
+        Stops the PredictLoop, preventing further predict cycles
+        and signal dispatch during shutdown.
         '''
 
-        _log.warning('stop_signals not implemented')
+        if self._predict_loop is None:
+            _log.warning('predict_loop not configured, skipping signal stop')
+            return
+
+        self._predict_loop.stop()
+        _log.info('predict loop stopped')
 
     def _stop_timers(self) -> None:
         '''Cancel all registered strategy timers.
