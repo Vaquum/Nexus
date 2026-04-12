@@ -279,3 +279,16 @@ The concrete provider depends on Praxis TD-016 #3 (shared market data poller) wh
 
 **When to fix**: When Praxis TD-016 #3 (shared market data poller) is built.
 **Migration**: Implement the concrete market data provider that wraps the shared poller's rolling DataFrames. Wire it into PredictLoop construction during Nexus instance startup.
+
+---
+
+## TD-022: Sensor hot reload not implemented
+
+**Origin**: MMVP-X.1 signal flow (X.1.2.6)
+**Severity**: Medium (requires process restart to change sensors)
+**Modules**: `nexus/startup/sequencer.py`, `nexus/strategy/predict_loop.py`
+
+When the manifest changes experiment directories or permutation IDs, Sensors should be re-trained and the predict loop restarted without process restart. This requires: manifest file watching, diffing old vs new SensorSpecs, stopping the predict loop, re-running `_wire_sensors` with updated specs, restarting the loop with new WiredSensors. The RFC describes a full hot reload system with tier-1/tier-2/tier-3 change classification — none of this infrastructure exists yet.
+
+**When to fix**: When manifest hot reload infrastructure is built.
+**Migration**: Implement manifest file watcher, change diffing, and Sensor re-training via `importlib` reload. Integrate with PredictLoop start/stop lifecycle.
