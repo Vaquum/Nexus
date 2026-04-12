@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import structlog
+
+from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
@@ -22,7 +26,28 @@ from nexus.strategy.runner import StrategyRunner
 _HUNDRED = Decimal('100')
 _log = structlog.get_logger()
 
-__all__ = ['StartupSequencer']
+__all__ = ['StartupSequencer', 'WiredSensor']
+
+
+@dataclass(frozen=True)
+class WiredSensor:
+    '''A trained Sensor ready for signal generation.
+
+    Args:
+        sensor_id: Unique identifier ({experiment_name}:{permutation_id}).
+        sensor: Limen Sensor callable (predict(data) -> dict).
+        limen_manifest: Limen Manifest for feature preparation.
+        round_params: Hyperparameters used to train this Sensor.
+        strategy_id: Strategy this Sensor feeds signals to.
+        interval_seconds: How often to call predict().
+    '''
+
+    sensor_id: str
+    sensor: Any
+    limen_manifest: Any
+    round_params: dict[str, Any]
+    strategy_id: str
+    interval_seconds: int
 
 
 class StartupSequencer:
@@ -83,6 +108,13 @@ class StartupSequencer:
         self._manifest: Manifest | None = None
         self._runner: StrategyRunner | None = None
         self._mode: OperationalMode | None = None
+        self._wired_sensors: list[WiredSensor] = []
+
+    @property
+    def wired_sensors(self) -> list[WiredSensor]:
+        '''Return trained Sensors wired during startup.'''
+
+        return list(self._wired_sensors)
 
     def start(self) -> StrategyRunner:
         '''Execute the full startup sequence.
@@ -250,12 +282,48 @@ class StartupSequencer:
                 _log.exception('on_event_replay failed', strategy_id=strategy_id)
 
     def _wire_sensors(self) -> None:
-        '''Wire Limen Sensors for signal generation.
+        '''Train Limen Sensors and wire them for signal generation.
 
-        Stub: logs warning, does nothing. See TD-009.
+        For each SensorSpec in the manifest, calls Trainer(experiment_dir).train(permutation_ids)
+        to produce Sensor callables. Stores WiredSensor entries for later use by the predict loop.
         '''
 
-        _log.warning('wire_sensors not implemented')
+        if self._manifest is None:
+            raise StartupError('wire_sensors', 'manifest not loaded')
+
+        for spec in self._manifest.strategies:
+            strategy_id = spec.strategy_id
+
+            for sensor_spec in spec.sensors:
+                experiment_name = sensor_spec.experiment_dir.name
+
+                try:
+                    trainer = Trainer(sensor_spec.experiment_dir)
+                    sensors = trainer.train(list(sensor_spec.permutation_ids))
+                except Exception as e:
+                    raise StartupError(
+                        'wire_sensors',
+                        f'strategy {strategy_id!r} experiment '
+                        f'{sensor_spec.experiment_dir}: {e}',
+                    ) from e
+
+                for sensor in sensors:
+                    sensor_id = f'{experiment_name}:{sensor.permutation_id}'
+                    wired = WiredSensor(
+                        sensor_id=sensor_id,
+                        sensor=sensor,
+                        limen_manifest=trainer._manifest,
+                        round_params=sensor.round_params,
+                        strategy_id=strategy_id,
+                        interval_seconds=sensor_spec.interval_seconds,
+                    )
+                    self._wired_sensors.append(wired)
+                    _log.info(
+                        'wired sensor',
+                        sensor_id=sensor_id,
+                        strategy_id=strategy_id,
+                        interval_seconds=sensor_spec.interval_seconds,
+                    )
 
     def _register_timers(self) -> None:
         '''Register strategy timers.

@@ -4,12 +4,28 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup import StartupError, StartupSequencer
+
+
+@pytest.fixture(autouse=True)
+def _mock_trainer() -> None:
+    '''Patch Limen Trainer so startup tests skip real training.'''
+
+    mock_sensor = MagicMock()
+    mock_sensor.permutation_id = 1
+    mock_sensor.round_params = {}
+
+    mock_trainer = MagicMock()
+    mock_trainer.return_value.train.return_value = [mock_sensor]
+    mock_trainer.return_value._manifest = MagicMock()
+
+    with patch('nexus.startup.sequencer.Trainer', mock_trainer):
+        yield
 
 
 def _make_mock_state_store() -> MagicMock:
@@ -295,10 +311,11 @@ class TestExternalIntegrationStubs:
         with pytest.raises(StartupError, match='replay_strategy_events'):
             sequencer._replay_strategy_events()
 
-    def test_wire_sensors_does_not_raise(self) -> None:
+    def test_wire_sensors_without_manifest_raises(self) -> None:
         sequencer = _make_sequencer()
 
-        sequencer._wire_sensors()
+        with pytest.raises(StartupError, match='manifest not loaded'):
+            sequencer._wire_sensors()
 
     def test_register_timers_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
