@@ -1,6 +1,6 @@
 '''Concrete outbound connector bridging sync Nexus to async Praxis.
 
-Uses asyncio.run_coroutine_threadsafe to call Praxis Trading.submit_command()
+Uses asyncio.run_coroutine_threadsafe to call Praxis async methods
 from a sync Nexus thread.
 '''
 
@@ -20,22 +20,28 @@ _DEFAULT_TIMEOUT = 30.0
 
 
 class PraxisOutbound:
-    '''Sync-to-async bridge for submitting commands to Praxis.
+    '''Sync-to-async bridge for Praxis Trading operations.
 
     Args:
         submit_fn: Async callable matching Praxis Trading.submit_command signature.
+        register_fn: Sync callable matching Praxis Trading.register_account.
+        unregister_fn: Async callable matching Praxis Trading.unregister_account.
         loop: Asyncio event loop running in the Praxis thread.
-        timeout: Seconds to wait for the async call to complete.
+        timeout: Seconds to wait for async calls to complete.
     '''
 
     def __init__(
         self,
         submit_fn: Callable[..., Awaitable[str]],
         loop: asyncio.AbstractEventLoop,
+        register_fn: Callable[[str], None] | None = None,
+        unregister_fn: Callable[[str], Awaitable[None]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
         self._loop = loop
+        self._register_fn = register_fn
+        self._unregister_fn = unregister_fn
         self._timeout = timeout
 
     def send_command(self, command: TradeCommand) -> str:
@@ -89,3 +95,49 @@ class PraxisOutbound:
         )
 
         return command_id
+
+    def register_account(self, account_id: str) -> None:
+        '''Register account with Praxis Trading.
+
+        Args:
+            account_id: Account identifier to register.
+
+        Raises:
+            RuntimeError: If register_fn is not configured.
+            ValueError: If Praxis rejects the registration.
+        '''
+
+        if self._register_fn is None:
+            msg = 'register_fn not configured'
+            raise RuntimeError(msg)
+
+        self._register_fn(account_id)
+        _log.info('account registered', extra={'account_id': account_id})
+
+    def deregister_account(self, account_id: str) -> None:
+        '''Deregister account from Praxis Trading via async bridge.
+
+        Args:
+            account_id: Account identifier to deregister.
+
+        Raises:
+            RuntimeError: If unregister_fn is not configured.
+            TimeoutError: If Praxis does not respond within timeout.
+        '''
+
+        if self._unregister_fn is None:
+            msg = 'unregister_fn not configured'
+            raise RuntimeError(msg)
+
+        future = asyncio.run_coroutine_threadsafe(
+            self._unregister_fn(account_id),
+            self._loop,
+        )
+
+        try:
+            future.result(timeout=self._timeout)
+        except TimeoutError:
+            _log.error('deregister timed out: account_id=%s', account_id)
+            raise
+
+        _log.info('account deregistered', extra={'account_id': account_id})

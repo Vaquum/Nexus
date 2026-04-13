@@ -64,6 +64,8 @@ class StartupSequencer:
         strategies_base_path: Base path for resolving strategy file paths.
         allocated_capital: Hard ceiling for manifest capital_pool validation.
         strategy_state_path: Directory for strategy state blob files.
+        praxis_outbound: Outbound connector for Praxis Trading operations.
+        account_id: Account identifier for Praxis registration.
     '''
 
     def __init__(
@@ -73,6 +75,8 @@ class StartupSequencer:
         strategies_base_path: Path,
         allocated_capital: Decimal,
         strategy_state_path: Path | None = None,
+        praxis_outbound: object | None = None,
+        account_id: str | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
             msg = 'state_store must be a StateStore instance'
@@ -103,6 +107,8 @@ class StartupSequencer:
         self._strategies_base_path = strategies_base_path
         self._allocated_capital = allocated_capital
         self._strategy_state_path = strategy_state_path
+        self._praxis_outbound = praxis_outbound
+        self._account_id = account_id
 
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
@@ -162,12 +168,16 @@ class StartupSequencer:
             raise StartupError('recover_state', str(e)) from e
 
     def _register_with_trading(self) -> None:
-        '''Register with Trading sub-system.
+        '''Register this account with Trading sub-system via PraxisOutbound.'''
 
-        Stub: logs warning, does nothing. See TD-005.
-        '''
+        if self._praxis_outbound is None or self._account_id is None:
+            _log.warning('praxis_outbound or account_id not configured, skipping registration')
+            return
 
-        _log.warning('register_with_trading not implemented')
+        try:
+            self._praxis_outbound.register_account(self._account_id)
+        except Exception as e:
+            raise StartupError('register_with_trading', str(e)) from e
 
     def _reconcile_capital(self) -> None:
         '''Reconcile capital state against Trading positions.

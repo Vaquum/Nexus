@@ -37,6 +37,8 @@ class ShutdownSequencer:
         state: Current instance state.
         strategy_state_path: Directory for strategy state blobs.
         predict_loop: Running PredictLoop to stop during shutdown.
+        praxis_outbound: Outbound connector for deregistration.
+        account_id: Account identifier for Praxis deregistration.
     '''
 
     def __init__(
@@ -47,6 +49,8 @@ class ShutdownSequencer:
         state: InstanceState,
         strategy_state_path: Path,
         predict_loop: PredictLoop | None = None,
+        praxis_outbound: object | None = None,
+        account_id: str | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -74,6 +78,8 @@ class ShutdownSequencer:
         self._state = state
         self._strategy_state_path = strategy_state_path
         self._predict_loop = predict_loop
+        self._praxis_outbound = praxis_outbound
+        self._account_id = account_id
         self._shutdown_actions: dict[str, list[Action]] = {}
         self._submitted_command_ids: list[str] = []
         self._save_blobs: dict[str, bytes] = {}
@@ -283,9 +289,13 @@ class ShutdownSequencer:
         self._state_store.checkpoint(self._state)
 
     def _deregister(self) -> None:
-        '''Deregister from Trading sub-system.
+        '''Deregister this account from Trading sub-system via PraxisOutbound.'''
 
-        Stub: logs warning, does nothing. See TD-012.
-        '''
+        if self._praxis_outbound is None or self._account_id is None:
+            _log.warning('praxis_outbound or account_id not configured, skipping deregistration')
+            return
 
-        _log.warning('deregister not implemented')
+        try:
+            self._praxis_outbound.deregister_account(self._account_id)
+        except Exception:  # noqa: BLE001 - deregister failure must not prevent shutdown completion
+            _log.exception('deregister failed for account %s', self._account_id)
