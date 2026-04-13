@@ -184,7 +184,7 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 `_submit_actions()` filters actions to EXIT/ABORT but cannot validate or submit them. No ValidationPipeline or OutboundConnector is wired in. EXIT actions from on_shutdown are logged but not executed.
 
-**When to fix**: When shutdown integration is built.
+**When to fix**: When Action dataclass has full fields (TD-023) and shutdown integration is built.
 **Migration**: Add validator and connector parameters to ShutdownSequencer. Validate filtered actions through pipeline, submit valid ones via connector. Remove this entry when done.
 
 ---
@@ -292,3 +292,16 @@ When the manifest changes experiment directories or permutation IDs, Sensors sho
 
 **When to fix**: When manifest hot reload infrastructure is built.
 **Migration**: Implement manifest file watcher, change diffing, and Sensor re-training via `importlib` reload. Integrate with PredictLoop start/stop lifecycle.
+
+---
+
+## TD-023: Action dataclass lacks trade fields
+
+**Origin**: MMVP-X.1 command flow (X.1.3.3)
+**Severity**: High (strategies cannot express tradeable decisions)
+**Module**: `nexus/strategy/action.py`
+
+`Action` only has `action_type` (ENTER, EXIT, MODIFY, ABORT). The RFC specifies additional fields required for trade execution: `direction` (BUY/SELL), `size` (base asset quantity), `execution_mode` (SingleShot, Bracket, TWAP, etc.), `order_type` (Market, Limit, etc.), `execution_params` (mode-specific), `deadline` (timeout seconds), `trade_id` (for EXIT/MODIFY/ABORT), `maker_preference`, `reference_price`. Without these fields, the Action → ValidationPipeline → TradeCommand → Praxis submission chain cannot function. The shutdown action submission (TD-015) and the live strategy action flow both depend on this.
+
+**When to fix**: Before end-to-end strategy → trade execution.
+**Migration**: Add RFC-specified fields to Action dataclass. Update ValidationPipeline to validate the new fields. Update `translate_to_trade_command` to map from the enriched Action.

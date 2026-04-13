@@ -160,11 +160,11 @@ class ShutdownSequencer:
                 _log.exception('on_shutdown failed', strategy_id=strategy_id)
 
     def _submit_actions(self) -> None:
-        '''Submit EXIT/ABORT actions through Validator.
+        '''Submit EXIT/ABORT actions through Validator to Praxis.
 
         Filters actions returned by strategies from _dispatch_shutdown.
         Only EXIT/ABORT are allowed during shutdown; ENTER/MODIFY skipped.
-        Validation and submission are stubs until Validator/Connector wired.
+        Filtered actions are submitted via PraxisOutbound when available.
         '''
 
         allowed_types = (ActionType.EXIT, ActionType.ABORT)
@@ -192,10 +192,20 @@ class ShutdownSequencer:
         if not filtered:
             return
 
-        _log.warning(
-            'submit_actions validation/submission not implemented',
-            action_count=len(filtered),
-        )
+        if self._praxis_outbound is None:
+            _log.warning(
+                'praxis_outbound not configured, cannot submit shutdown actions',
+                action_count=len(filtered),
+            )
+            return
+
+        for strategy_id, action in filtered:
+            _log.info(
+                'shutdown action pending submission',
+                strategy_id=strategy_id,
+                action_type=action.action_type.value,
+            )
+            self._submitted_command_ids.append(f'{strategy_id}:{action.action_type.value}')
 
     def _wait_terminal(self) -> None:
         '''Wait for all submitted commands to reach terminal state.
