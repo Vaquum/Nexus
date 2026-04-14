@@ -341,4 +341,4 @@ class ShutdownSequencer:
         try:
             self._praxis_outbound.deregister_account(self._account_id)
         except Exception:  # noqa: BLE001 - deregister failure must not prevent shutdown completion
-            _log.exception('deregister failed for account %s', self._account_id)
+            _log.exception('deregister failed', account_id=self._account_id)

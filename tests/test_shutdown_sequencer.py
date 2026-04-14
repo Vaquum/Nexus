@@ -24,7 +24,8 @@ from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
-_EXP_DIR = Path(tempfile.mkdtemp())
+_EXP_DIR_HANDLE = tempfile.TemporaryDirectory()
+_EXP_DIR = Path(_EXP_DIR_HANDLE.name)
 
 
 def _make_mock_runner() -> MagicMock:

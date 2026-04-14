@@ -32,13 +32,13 @@ def _find_limen_root() -> Path | None:
 _LIMEN_ROOT = _find_limen_root()
 _HAS_LIMEN_DATA = _LIMEN_ROOT is not None
 
-pytestmark = pytest.mark.skipif(
+_needs_limen = pytest.mark.skipif(
     not _HAS_LIMEN_DATA,
     reason='Limen datasets not found adjacent to installed limen package',
 )
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture()
 def _limen_cwd() -> None:
     '''Run tests from Limen root so Trainer can find datasets.'''
 
@@ -90,9 +90,10 @@ def _make_wired_sensor(tmp_path: Path) -> tuple[WiredSensor, pl.DataFrame]:
     return wired, trainer._data
 
 
+@_needs_limen
 class TestProduceSignal:
 
-    def test_produces_valid_signal(self, tmp_path: Path) -> None:
+    def test_produces_valid_signal(self, tmp_path: Path, _limen_cwd: None) -> None:
         '''produce_signal returns a Signal with correct fields.'''
 
         wired, market_data = _make_wired_sensor(tmp_path)
@@ -103,7 +104,7 @@ class TestProduceSignal:
         assert '_preds' in signal.values
         assert '_probs' in signal.values
 
-    def test_signal_values_are_scalars(self, tmp_path: Path) -> None:
+    def test_signal_values_are_scalars(self, tmp_path: Path, _limen_cwd: None) -> None:
         '''Signal values are Python scalars, not numpy types.'''
 
         wired, market_data = _make_wired_sensor(tmp_path)
@@ -112,7 +113,7 @@ class TestProduceSignal:
         for val in signal.values.values():
             assert isinstance(val, (int, float))
 
-    def test_empty_market_data_raises(self, tmp_path: Path) -> None:
+    def test_empty_market_data_raises(self, tmp_path: Path, _limen_cwd: None) -> None:
         '''Empty market data raises ValueError.'''
 
         wired, _ = _make_wired_sensor(tmp_path)

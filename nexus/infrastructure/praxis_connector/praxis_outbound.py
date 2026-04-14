@@ -59,7 +59,7 @@ class PraxisOutbound:
 
         Raises:
             TimeoutError: If Praxis does not respond within timeout.
-            RuntimeError: If the async call fails.
+            Exception: Propagates the original exception raised by submit_fn.
         '''
 
         # NOTE: execution_mode and execution_params require Action fields (TD-023).

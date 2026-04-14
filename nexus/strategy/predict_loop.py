@@ -91,7 +91,8 @@ class PredictLoop:
             args=(wired,),
         )
         timer.daemon = True
-        self._active_timers[wired.sensor_id] = timer
+        timer_key = f'{wired.strategy_id}:{wired.sensor_id}'
+        self._active_timers[timer_key] = timer
         timer.start()
 
     def _tick(self, wired: WiredSensor) -> None:

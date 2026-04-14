@@ -237,7 +237,8 @@ class TestLoadStrategyClass:
                 load_strategy_class(Path('bad.py'), tmp_path)
 
 
-_EXP_DIR = Path(tempfile.mkdtemp())
+_EXP_DIR_HANDLE = tempfile.TemporaryDirectory()
+_EXP_DIR = Path(_EXP_DIR_HANDLE.name)
 
 
 def _make_spec(

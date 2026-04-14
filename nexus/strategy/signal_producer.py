@@ -44,7 +44,7 @@ def produce_signal(wired: WiredSensor, market_data: pl.DataFrame) -> Signal:
         msg = f'prepare_data returned no x_train for sensor {wired.sensor_id}'
         raise ValueError(msg)
 
-    last_row = x_train[-1].to_numpy()
+    last_row = x_train.tail(1).to_numpy()
 
     result = wired.sensor.predict({'x_test': last_row})
 
