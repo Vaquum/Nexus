@@ -271,11 +271,25 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
                 msg = f'Strategy {strategy_id!r} sensor missing required field: interval_seconds'
                 raise ValueError(msg)
 
+            for pid in raw_pids:
+                if isinstance(pid, bool) or not isinstance(pid, int):
+                    msg = f'Strategy {strategy_id!r} sensor permutation_ids must be ints, got {pid!r}'
+                    raise ValueError(msg)
+
+            if isinstance(raw_interval, bool) or not isinstance(raw_interval, int):
+                msg = f'Strategy {strategy_id!r} sensor interval_seconds must be an int, got {raw_interval!r}'
+                raise ValueError(msg)
+
+            experiment_path = Path(str(raw_experiment))
+
+            if not experiment_path.is_absolute():
+                experiment_path = (path.parent / experiment_path).resolve()
+
             sensor_specs.append(
                 SensorSpec(
-                    experiment_dir=Path(str(raw_experiment)),
-                    permutation_ids=tuple(int(pid) for pid in raw_pids),
-                    interval_seconds=int(raw_interval),
+                    experiment_dir=experiment_path,
+                    permutation_ids=tuple(raw_pids),
+                    interval_seconds=raw_interval,
                 )
             )
 

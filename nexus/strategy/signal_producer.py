@@ -25,7 +25,8 @@ def produce_signal(wired: WiredSensor, market_data: pl.DataFrame) -> Signal:
         Signal with predict output as values.
 
     Raises:
-        ValueError: If market_data is empty or predict fails.
+        ValueError: If market_data is empty or x_train is missing.
+        Exception: Arbitrary exceptions from Limen prepare_data or predict.
     '''
 
     if market_data.is_empty():

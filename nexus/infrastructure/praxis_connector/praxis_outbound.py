@@ -7,6 +7,7 @@ from a sync Nexus thread.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 from collections.abc import Awaitable, Callable
 
@@ -84,7 +85,7 @@ class PraxisOutbound:
 
         try:
             command_id = future.result(timeout=self._timeout)
-        except TimeoutError:
+        except (TimeoutError, concurrent.futures.TimeoutError):
             _log.error(
                 'submit_command timed out: command_id=%s',
                 command.command_id,
@@ -141,7 +142,7 @@ class PraxisOutbound:
 
         try:
             future.result(timeout=self._timeout)
-        except TimeoutError:
+        except (TimeoutError, concurrent.futures.TimeoutError):
             _log.error('deregister timed out: account_id=%s', account_id)
             raise
 
