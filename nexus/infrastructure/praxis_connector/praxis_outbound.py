@@ -38,7 +38,7 @@ class PraxisOutbound:
         loop: asyncio.AbstractEventLoop,
         register_fn: Callable[[str], None] | None = None,
         unregister_fn: Callable[[str], Awaitable[None]] | None = None,
-        pull_positions_fn: Callable[[str], dict] | None = None,
+        pull_positions_fn: Callable[[str], dict[tuple[str, str], object]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
@@ -150,14 +150,14 @@ class PraxisOutbound:
 
         _log.info('account deregistered', extra={'account_id': account_id})
 
-    def pull_positions(self, account_id: str) -> dict:
+    def pull_positions(self, account_id: str) -> dict[tuple[str, str], object]:
         '''Pull positions snapshot from Praxis Trading.
 
         Args:
             account_id: Account identifier to query.
 
         Returns:
-            Detached positions snapshot from Praxis.
+            Positions keyed by (account_id, trade_id) tuples.
 
         Raises:
             RuntimeError: If pull_positions_fn is not configured.

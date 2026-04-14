@@ -229,12 +229,12 @@ class StartupSequencer:
                 )
                 continue
 
-            if nexus_pos.size != praxis_pos.qty:
+            if nexus_pos.size != qty:
                 _log.warning(
                     'position size mismatch',
                     trade_id=trade_id,
                     nexus_size=str(nexus_pos.size),
-                    praxis_qty=str(praxis_pos.qty),
+                    praxis_qty=str(qty),
                 )
 
         for trade_id in self._state.positions:
