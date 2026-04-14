@@ -74,7 +74,7 @@ class PraxisOutbound:
                 order_type=command.command_type,
                 execution_mode=None,
                 execution_params=None,
-                timeout=max(1, round(self._timeout)),
+                timeout=round(self._timeout),
                 reference_price=None,
                 maker_preference=None,
                 stp_mode=command.stp_mode,

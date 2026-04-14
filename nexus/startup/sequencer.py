@@ -380,11 +380,13 @@ class StartupSequencer:
         if self._manifest is None:
             raise StartupError('wire_sensors', 'manifest not loaded')
 
+        self._wired_sensors.clear()
+
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id
 
             for sensor_spec in spec.sensors:
-                experiment_name = sensor_spec.experiment_dir.name
+                experiment_name = str(sensor_spec.experiment_dir.resolve())
 
                 try:
                     trainer = Trainer(sensor_spec.experiment_dir)
