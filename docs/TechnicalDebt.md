@@ -189,16 +189,16 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-016: ShutdownSequencer._wait_terminal is a stub
+## TD-016: _wait_terminal lacks ABORT escalation
 
-**Origin**: 9.2.5 (shutdown sequence)
-**Severity**: High (no graceful position closure)
+**Origin**: 9.2.5 (shutdown sequence), updated X.1.4.2
+**Severity**: Medium (timeout logs warning but does not force-close)
 **Module**: `nexus/startup/shutdown_sequencer.py`
 
-`_wait_terminal()` logs a warning and returns immediately. Submitted EXIT commands are not tracked to completion. Shutdown proceeds without confirming positions are closed.
+`_wait_terminal()` now polls PraxisInbound for terminal outcomes with a configurable timeout. However, when timeout expires with commands still pending, it only logs a warning. The RFC specifies ABORT escalation: remaining in-flight commands should be force-aborted via PraxisOutbound, then wait again with a shorter timeout. This requires Action fields (TD-023) to construct ABORT TradeCommands.
 
-**When to fix**: When TradeOutcome inbound integration is built.
-**Migration**: Subscribe/poll for TradeOutcome until all commands reach terminal state. Implement timeout with ABORT escalation. Remove this entry when done.
+**When to fix**: When TD-023 (Action fields) is resolved.
+**Migration**: On timeout, submit ABORT for each pending command via PraxisOutbound, then re-enter wait loop with shorter deadline.
 
 ---
 
