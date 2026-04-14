@@ -61,6 +61,8 @@ class PraxisOutbound:
             RuntimeError: If the async call fails.
         '''
 
+        # NOTE: execution_mode and execution_params require Action fields (TD-023).
+        # Placeholder values used until full Action → TradeCommand translation is built.
         future = asyncio.run_coroutine_threadsafe(
             self._submit_fn(
                 trade_id=command.trade_id or command.command_id,
@@ -69,9 +71,9 @@ class PraxisOutbound:
                 side=command.side,
                 qty=command.size,
                 order_type=command.command_type,
-                execution_mode=command.command_type,
+                execution_mode=None,
                 execution_params=None,
-                timeout=int(self._timeout),
+                timeout=max(1, round(self._timeout)),
                 reference_price=None,
                 maker_preference=None,
                 stp_mode=command.stp_mode,

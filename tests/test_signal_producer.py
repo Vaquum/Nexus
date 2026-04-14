@@ -34,7 +34,7 @@ _HAS_LIMEN_DATA = _LIMEN_ROOT is not None
 
 pytestmark = pytest.mark.skipif(
     not _HAS_LIMEN_DATA,
-    reason='Limen datasets not available',
+    reason='Limen datasets not found adjacent to installed limen package',
 )
 
 

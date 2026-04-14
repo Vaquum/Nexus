@@ -29,7 +29,7 @@ _HAS_LIMEN_DATA = _LIMEN_ROOT is not None
 
 pytestmark = pytest.mark.skipif(
     not _HAS_LIMEN_DATA,
-    reason='Limen datasets not available at ~/Limen/datasets',
+    reason='Limen datasets not found adjacent to installed limen package',
 )
 
 
@@ -186,10 +186,10 @@ class TestWireSensors:
 
         assert '_preds' in result
 
-    def test_missing_experiment_dir_raises(self, tmp_path: Path) -> None:
-        '''Missing experiment directory raises StartupError.'''
+    def test_invalid_experiment_dir_raises(self, tmp_path: Path) -> None:
+        '''Experiment directory without Limen artifacts raises StartupError.'''
 
-        fake_dir = tmp_path / 'nonexistent'
+        fake_dir = tmp_path / 'empty_experiment'
         fake_dir.mkdir()
 
         manifest_path = _make_manifest_yaml(tmp_path, fake_dir)

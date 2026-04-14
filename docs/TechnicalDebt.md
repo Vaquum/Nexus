@@ -98,16 +98,9 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-009: StartupSequencer._wire_sensors is a stub
+## TD-009: ~~StartupSequencer._wire_sensors is a stub~~ RESOLVED
 
-**Origin**: 9.1.6 (runtime setup stubs)
-**Severity**: High (no signal generation)
-**Module**: `nexus/startup/sequencer.py`
-
-`_wire_sensors()` logs a warning and does nothing. Limen Sensors are not trained or wired, meaning no signals will be generated.
-
-**When to fix**: When Sensor training and signal generation are built (X.1.2.2+).
-**Migration**: Implement Sensor training and timer-based predict loop. Remove this entry when done.
+**Status**: Implemented in v0.25.0 (X.1.2.2). `_wire_sensors()` trains Limen Sensors via `Trainer(experiment_dir).train(permutation_ids)` and stores `WiredSensor` entries.
 
 ---
 
@@ -156,9 +149,9 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 **Severity**: High (signals continue during shutdown)
 **Module**: `nexus/startup/shutdown_sequencer.py`
 
-`_stop_signals()` logs a warning and does nothing. Without stopping Sensor timers, new signals can arrive and trigger strategy callbacks during shutdown, causing race conditions. Blocked by TD-009 — cannot stop what was never wired.
+~~`_stop_signals()` logs a warning and does nothing.~~ RESOLVED
 
-**When to fix**: When Sensor wiring is built (after TD-009).
+**Status**: Implemented in v0.25.0 (X.1.2.5). `_stop_signals()` calls `PredictLoop.stop()` to cancel all sensor timers before shutdown proceeds.
 **Migration**: Implement signal unsubscription. Remove this entry when done.
 
 ---

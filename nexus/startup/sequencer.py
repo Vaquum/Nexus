@@ -252,7 +252,6 @@ class StartupSequencer:
             )
             self._state.capital.position_notional = praxis_total_notional
 
-        if old_notional != praxis_total_notional:
             try:
                 self._state_store.checkpoint(self._state)
             except Exception as e:

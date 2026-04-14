@@ -208,13 +208,11 @@ class ShutdownSequencer:
             )
             return
 
-        for strategy_id, action in filtered:
-            _log.info(
-                'shutdown action pending submission',
-                strategy_id=strategy_id,
-                action_type=action.action_type.value,
-            )
-            self._submitted_command_ids.append(f'{strategy_id}:{action.action_type.value}')
+        _log.warning(
+            'shutdown action submission not yet functional — '
+            'Action fields (TD-023) required for TradeCommand translation',
+            action_count=len(filtered),
+        )
 
     def _wait_terminal(self) -> None:
         '''Wait for all submitted commands to reach terminal state.

@@ -112,6 +112,10 @@ class PredictLoop:
                     self._schedule_locked(wired)
                 return
 
+            with self._lock:
+                if not self._running:
+                    return
+
             signal = produce_signal(wired, market_data)
             context = self._context_provider(wired.strategy_id)
 
