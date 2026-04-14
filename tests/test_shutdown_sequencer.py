@@ -9,15 +9,14 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
-from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
-from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
-
 import pytest
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
+from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType

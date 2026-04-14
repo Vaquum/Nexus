@@ -38,7 +38,7 @@ class WiredSensor:
     '''A trained Sensor ready for signal generation.
 
     Args:
-        sensor_id: Unique identifier ({experiment_name}:{permutation_id}).
+        sensor_id: Unique identifier ({path_hash_12}:{permutation_id}).
         sensor: Limen Sensor callable (predict(data) -> dict).
         limen_manifest: Limen Manifest for feature preparation.
         round_params: Hyperparameters used to train this Sensor.
