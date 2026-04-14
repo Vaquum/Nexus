@@ -243,3 +243,29 @@
 - Add path traversal validation for strategy_id in state restoration
 - Add StartupError wrapping for read_events() failures
 - Add 28 tests covering state restoration, event replay, crash-only design verification, and validation (891 total)
+
+## v0.25.0 on 14th of April, 2026
+
+- Add [`lifecycle_result.py`](nexus/core/capital_controller/lifecycle_result.py) with `LifecycleResult` dataclass and `FailureCategory` enum (EXPECTED_MISS, INVARIANT_BREACH) replacing bare bool returns in capital lifecycle methods (TD-003)
+- Refactor `CapitalController` lifecycle methods (`release_reservation`, `send_order`, `order_ack`, `order_reject`, `order_fill`, `order_cancel`) to return `LifecycleResult` with classified reason codes
+- Convert `OutcomeProcessor` invariant breach paths to raise `RuntimeError` for entry/exit fills on missing positions or overfills
+- Enforce UTC-only timestamps across all domain types: `Signal`, `TradeOutcome`, `StrategyEvent`, `Reservation`, `TrackedOrder`, `TradeCommand` (TD-004)
+- Reject whitespace-padded `strategy_id` in `StrategySpec.__post_init__` (TD-017)
+- Add version-dispatched deserialization to WAL codec with `_decode_state_v1` routing on embedded `_v` field (TD-001)
+- Preserve `STRATEGY_EVENT` WAL entries across checkpoint for rolling loss window recovery (TD-002)
+- Add [`SensorSpec`](nexus/infrastructure/manifest.py) frozen dataclass for Limen Sensor configuration (experiment_dir, permutation_ids, interval_seconds)
+- Replace `StrategySpec.permutation_ids` with `StrategySpec.sensors: tuple[SensorSpec, ...]` and update `load_manifest` YAML parsing
+- Add `vaquum_limen>=1.52.0` as runtime dependency
+- Add `WiredSensor` dataclass and implement `_wire_sensors()` in `StartupSequencer` — calls `Trainer(experiment_dir).train(permutation_ids)` to produce Sensors during startup (TD-009)
+- Add [`signal_producer.py`](nexus/strategy/signal_producer.py) with `produce_signal()` for live feature preparation via `limen_manifest.prepare_data()` and predict-to-Signal translation
+- Add [`predict_loop.py`](nexus/strategy/predict_loop.py) with `PredictLoop` timer-based signal generation — per-sensor `threading.Timer` at `interval_seconds` calling `produce_signal` → `dispatch_signal`
+- Implement `_stop_signals()` in `ShutdownSequencer` via `PredictLoop.stop()` (TD-013)
+- Add [`praxis_outbound.py`](nexus/infrastructure/praxis_connector/praxis_outbound.py) with `PraxisOutbound` sync-to-async bridge — `asyncio.run_coroutine_threadsafe` for `submit_command`, `register_account`, `deregister_account`, `pull_positions`
+- Add [`praxis_inbound.py`](nexus/infrastructure/praxis_connector/praxis_inbound.py) with `PraxisInbound` queue-based `receive_outcome()` consuming from `queue.Queue[TradeOutcome]`
+- Implement `_register_with_trading()` and `_deregister()` via `PraxisOutbound` (TD-005, TD-012)
+- Wire `PraxisOutbound` into `_submit_actions()` for shutdown EXIT/ABORT submission (TD-015)
+- Implement `_wait_terminal()` polling `PraxisInbound` for terminal outcomes with configurable `shutdown_timeout` (TD-016)
+- Implement `_reconcile_capital()` pulling Praxis positions, comparing by trade_id, updating `position_notional` (TD-006)
+- Split `test_manifest.py` into `test_sensor_spec.py`, `test_strategy_spec.py`, `test_manifest.py`
+- Add `docs/TechnicalDebt.md` entries TD-019 through TD-024 for deferred work
+- Add 53 tests across new modules (944 total)
