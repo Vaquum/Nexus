@@ -86,6 +86,7 @@ class PraxisOutbound:
         try:
             command_id = future.result(timeout=self._timeout)
         except (TimeoutError, concurrent.futures.TimeoutError):
+            future.cancel()
             _log.error(
                 'submit_command timed out: command_id=%s',
                 command.command_id,
@@ -143,6 +144,7 @@ class PraxisOutbound:
         try:
             future.result(timeout=self._timeout)
         except (TimeoutError, concurrent.futures.TimeoutError):
+            future.cancel()
             _log.error('deregister timed out: account_id=%s', account_id)
             raise
 

@@ -273,14 +273,23 @@ class TestCodecVersioning:
         with pytest.raises(ValueError, match='Unsupported WAL codec version'):
             deserialize_state(bad_data)
 
-    def test_missing_version_rejected(self) -> None:
-        '''Verify deserialize rejects payload with no version field.'''
+    def test_missing_version_defaults_to_v1(self) -> None:
+        '''Verify deserialize treats missing _v as v1 for backward compatibility.'''
 
         import msgpack
 
-        bad_data = cast(bytes, msgpack.packb({'capital': {}}))
-        with pytest.raises(ValueError, match='Unsupported WAL codec version'):
-            deserialize_state(bad_data)
+        from nexus.core.domain.capital_state import CapitalState
+        from nexus.core.domain.instance_state import InstanceState
+
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        v1_data = cast(bytes, serialize_state(state))
+
+        d = msgpack.unpackb(v1_data, raw=False)
+        del d['_v']
+        no_version_data = cast(bytes, msgpack.packb(d))
+
+        recovered = deserialize_state(no_version_data)
+        assert recovered.capital.capital_pool == Decimal('10000')
 
 
 class TestRiskDecodeDefaults:

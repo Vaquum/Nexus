@@ -69,7 +69,7 @@ def deserialize_state(data: bytes) -> InstanceState:
     if not isinstance(d, dict):
         msg = f'Expected dict from WAL payload, got {type(d).__name__}'
         raise ValueError(msg)
-    version = d.get('_v', 0)
+    version = d.get('_v', 1)
 
     if version == 1:
         return _decode_state_v1(d)
@@ -405,7 +405,7 @@ def deserialize_event(data: bytes) -> StrategyEvent:
         msg = f'Expected dict from event payload, got {type(d).__name__}'
         raise ValueError(msg)
     try:
-        version = int(d.get('_v', 0))
+        version = int(d.get('_v', 1))
     except (ValueError, TypeError) as exc:
         msg = f'Malformed event codec version: {exc}'
         raise ValueError(msg) from exc
