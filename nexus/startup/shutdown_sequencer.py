@@ -12,6 +12,8 @@ import structlog
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
+from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
@@ -52,8 +54,8 @@ class ShutdownSequencer:
         state: InstanceState,
         strategy_state_path: Path,
         predict_loop: PredictLoop | None = None,
-        praxis_outbound: object | None = None,
-        praxis_inbound: object | None = None,
+        praxis_outbound: PraxisOutbound | None = None,
+        praxis_inbound: PraxisInbound | None = None,
         account_id: str | None = None,
         shutdown_timeout: float = 120.0,
     ) -> None:
@@ -225,7 +227,7 @@ class ShutdownSequencer:
         if not self._submitted_command_ids:
             return
 
-        if not hasattr(self, '_praxis_inbound') or self._praxis_inbound is None:
+        if self._praxis_inbound is None:
             _log.warning(
                 'praxis_inbound not configured, cannot wait for terminal outcomes',
                 command_count=len(self._submitted_command_ids),

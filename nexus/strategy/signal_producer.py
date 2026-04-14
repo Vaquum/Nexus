@@ -36,7 +36,14 @@ def produce_signal(wired: WiredSensor, market_data: pl.DataFrame) -> Signal:
         split_config=(1, 0, 0),
     )
     data_dict = manifest_full.prepare_data(market_data, wired.round_params)
-    last_row = data_dict['x_train'][-1].to_numpy()
+
+    x_train = data_dict.get('x_train')
+
+    if x_train is None or x_train.is_empty():
+        msg = f'prepare_data returned no x_train for sensor {wired.sensor_id}'
+        raise ValueError(msg)
+
+    last_row = x_train[-1].to_numpy()
 
     result = wired.sensor.predict({'x_test': last_row})
 

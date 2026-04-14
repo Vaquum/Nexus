@@ -12,6 +12,7 @@ import structlog
 from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest, load_manifest
@@ -76,7 +77,7 @@ class StartupSequencer:
         strategies_base_path: Path,
         allocated_capital: Decimal,
         strategy_state_path: Path | None = None,
-        praxis_outbound: object | None = None,
+        praxis_outbound: PraxisOutbound | None = None,
         account_id: str | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
@@ -199,11 +200,16 @@ class StartupSequencer:
         except Exception as e:
             raise StartupError('reconcile_capital', str(e)) from e
 
-        praxis_by_trade_id = {
-            trade_id: pos
-            for (_, trade_id), pos in praxis_positions.items()
-            if isinstance(trade_id, str)
-        }
+        praxis_by_trade_id: dict[str, object] = {}
+
+        for (_, trade_id), pos in praxis_positions.items():
+            if isinstance(trade_id, str):
+                praxis_by_trade_id[trade_id] = pos
+            else:
+                _log.warning(
+                    'skipping Praxis position with non-string trade_id',
+                    trade_id=repr(trade_id),
+                )
 
         praxis_total_notional = _ZERO
 
@@ -245,6 +251,12 @@ class StartupSequencer:
                 new=str(praxis_total_notional),
             )
             self._state.capital.position_notional = praxis_total_notional
+
+        if old_notional != praxis_total_notional:
+            try:
+                self._state_store.checkpoint(self._state)
+            except Exception as e:
+                raise StartupError('reconcile_capital', f'checkpoint after reconciliation failed: {e}') from e
 
         _log.info(
             'capital reconciliation complete',
@@ -385,6 +397,8 @@ class StartupSequencer:
 
                 for sensor in sensors:
                     sensor_id = f'{experiment_name}:{sensor.permutation_id}'
+                    # NOTE: trainer._manifest is a private attribute on Limen Trainer.
+                    # No public accessor exists as of vaquum_limen 1.52.0.
                     wired = WiredSensor(
                         sensor_id=sensor_id,
                         sensor=sensor,

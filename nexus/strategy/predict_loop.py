@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+
 import polars as pl
 
 from nexus.startup.sequencer import WiredSensor
@@ -45,7 +46,7 @@ class PredictLoop:
         self._wired_sensors = list(wired_sensors)
         self._market_data_provider = market_data_provider
         self._context_provider = context_provider
-        self._timers: list[threading.Timer] = []
+        self._active_timers: dict[str, threading.Timer] = {}
         self._running = False
         self._lock = threading.Lock()
 
@@ -65,7 +66,7 @@ class PredictLoop:
             self._running = True
 
             for wired in self._wired_sensors:
-                self._schedule(wired)
+                self._schedule_locked(wired)
 
     def stop(self) -> None:
         '''Stop all predict timers.'''
@@ -73,12 +74,14 @@ class PredictLoop:
         with self._lock:
             self._running = False
 
-            for timer in self._timers:
+            for timer in self._active_timers.values():
                 timer.cancel()
 
-            self._timers.clear()
+            self._active_timers.clear()
 
-    def _schedule(self, wired: WiredSensor) -> None:
+    def _schedule_locked(self, wired: WiredSensor) -> None:
+        '''Schedule next timer for a sensor. Must be called with lock held.'''
+
         if not self._running:
             return
 
@@ -88,12 +91,13 @@ class PredictLoop:
             args=(wired,),
         )
         timer.daemon = True
+        self._active_timers[wired.sensor_id] = timer
         timer.start()
-        self._timers.append(timer)
 
     def _tick(self, wired: WiredSensor) -> None:
-        if not self._running:
-            return
+        with self._lock:
+            if not self._running:
+                return
 
         try:
             kline_size = _extract_kline_size(wired)
@@ -104,7 +108,8 @@ class PredictLoop:
                     'no market data for sensor %s, skipping',
                     wired.sensor_id,
                 )
-                self._schedule(wired)
+                with self._lock:
+                    self._schedule_locked(wired)
                 return
 
             signal = produce_signal(wired, market_data)
@@ -122,7 +127,8 @@ class PredictLoop:
                 wired.sensor_id,
             )
 
-        self._schedule(wired)
+        with self._lock:
+            self._schedule_locked(wired)
 
 
 def _extract_kline_size(wired: WiredSensor) -> int:
