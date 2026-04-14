@@ -159,7 +159,8 @@ class TestWireSensors:
         assert wired.strategy_id == 'test_strat'
         assert wired.interval_seconds == 60
         assert wired.sensor is not None
-        assert 'experiment:1' in wired.sensor_id
+        assert ':1' in wired.sensor_id
+        assert len(wired.sensor_id.split(':')[0]) == 12
 
     def test_sensor_is_callable(self, tmp_path: Path) -> None:
         '''Trained Sensor can call predict().'''

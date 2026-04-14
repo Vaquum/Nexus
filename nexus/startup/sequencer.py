@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -398,7 +399,9 @@ class StartupSequencer:
             strategy_id = spec.strategy_id
 
             for sensor_spec in spec.sensors:
-                experiment_name = str(sensor_spec.experiment_dir.resolve())
+                path_hash = hashlib.sha256(
+                    str(sensor_spec.experiment_dir.resolve()).encode(),
+                ).hexdigest()[:12]
 
                 try:
                     trainer = Trainer(sensor_spec.experiment_dir)
@@ -411,7 +414,7 @@ class StartupSequencer:
                     ) from e
 
                 for sensor in sensors:
-                    sensor_id = f'{experiment_name}:{sensor.permutation_id}'
+                    sensor_id = f'{path_hash}:{sensor.permutation_id}'
                     # NOTE: trainer._manifest is a private attribute on Limen Trainer.
                     # No public accessor exists as of vaquum_limen 1.52.0.
                     wired = WiredSensor(
