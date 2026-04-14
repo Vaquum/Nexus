@@ -26,6 +26,7 @@ class PraxisOutbound:
         submit_fn: Async callable matching Praxis Trading.submit_command signature.
         register_fn: Sync callable matching Praxis Trading.register_account.
         unregister_fn: Async callable matching Praxis Trading.unregister_account.
+        pull_positions_fn: Sync callable matching Praxis Trading.pull_positions.
         loop: Asyncio event loop running in the Praxis thread.
         timeout: Seconds to wait for async calls to complete.
     '''
@@ -36,12 +37,14 @@ class PraxisOutbound:
         loop: asyncio.AbstractEventLoop,
         register_fn: Callable[[str], None] | None = None,
         unregister_fn: Callable[[str], Awaitable[None]] | None = None,
+        pull_positions_fn: Callable[[str], dict] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
         self._loop = loop
         self._register_fn = register_fn
         self._unregister_fn = unregister_fn
+        self._pull_positions_fn = pull_positions_fn
         self._timeout = timeout
 
     def send_command(self, command: TradeCommand) -> str:
@@ -141,3 +144,22 @@ class PraxisOutbound:
             raise
 
         _log.info('account deregistered', extra={'account_id': account_id})
+
+    def pull_positions(self, account_id: str) -> dict:
+        '''Pull positions snapshot from Praxis Trading.
+
+        Args:
+            account_id: Account identifier to query.
+
+        Returns:
+            Detached positions snapshot from Praxis.
+
+        Raises:
+            RuntimeError: If pull_positions_fn is not configured.
+        '''
+
+        if self._pull_positions_fn is None:
+            msg = 'pull_positions_fn not configured'
+            raise RuntimeError(msg)
+
+        return self._pull_positions_fn(account_id)

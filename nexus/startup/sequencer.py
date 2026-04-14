@@ -23,6 +23,7 @@ from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
 
+_ZERO = Decimal(0)
 _HUNDRED = Decimal('100')
 _log = structlog.get_logger()
 
@@ -182,10 +183,75 @@ class StartupSequencer:
     def _reconcile_capital(self) -> None:
         '''Reconcile capital state against Trading positions.
 
-        Stub: logs warning, does nothing. See TD-006.
+        Pulls positions from Praxis, compares against Nexus state by trade_id,
+        updates position_notional to match actual venue state. Logs discrepancies.
         '''
 
-        _log.warning('reconcile_capital not implemented')
+        if self._praxis_outbound is None or self._account_id is None:
+            _log.warning('praxis_outbound or account_id not configured, skipping reconciliation')
+            return
+
+        if self._state is None:
+            raise StartupError('reconcile_capital', 'state not recovered')
+
+        try:
+            praxis_positions = self._praxis_outbound.pull_positions(self._account_id)
+        except Exception as e:
+            raise StartupError('reconcile_capital', str(e)) from e
+
+        praxis_by_trade_id = {
+            trade_id: pos
+            for (_, trade_id), pos in praxis_positions.items()
+            if isinstance(trade_id, str)
+        }
+
+        praxis_total_notional = _ZERO
+
+        for trade_id, praxis_pos in praxis_by_trade_id.items():
+            notional = praxis_pos.qty * praxis_pos.avg_entry_price
+            praxis_total_notional += notional
+
+            nexus_pos = self._state.positions.get(trade_id)
+
+            if nexus_pos is None:
+                _log.warning(
+                    'position in Praxis but not in Nexus',
+                    trade_id=trade_id,
+                    praxis_qty=str(praxis_pos.qty),
+                )
+                continue
+
+            if nexus_pos.size != praxis_pos.qty:
+                _log.warning(
+                    'position size mismatch',
+                    trade_id=trade_id,
+                    nexus_size=str(nexus_pos.size),
+                    praxis_qty=str(praxis_pos.qty),
+                )
+
+        for trade_id in self._state.positions:
+            if trade_id not in praxis_by_trade_id:
+                _log.warning(
+                    'position in Nexus but not in Praxis',
+                    trade_id=trade_id,
+                )
+
+        old_notional = self._state.capital.position_notional
+
+        if old_notional != praxis_total_notional:
+            _log.warning(
+                'position_notional adjusted',
+                old=str(old_notional),
+                new=str(praxis_total_notional),
+            )
+            self._state.capital.position_notional = praxis_total_notional
+
+        _log.info(
+            'capital reconciliation complete',
+            nexus_positions=len(self._state.positions),
+            praxis_positions=len(praxis_by_trade_id),
+            position_notional=str(self._state.capital.position_notional),
+        )
 
     def _load_manifest(self) -> None:
         '''Load and validate strategy manifest.'''

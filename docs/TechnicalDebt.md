@@ -305,3 +305,18 @@ When the manifest changes experiment directories or permutation IDs, Sensors sho
 
 **When to fix**: Before end-to-end strategy → trade execution.
 **Migration**: Add RFC-specified fields to Action dataclass. Update ValidationPipeline to validate the new fields. Update `translate_to_trade_command` to map from the enriched Action.
+
+---
+
+## TD-024: Reconciliation cannot import Praxis-only positions
+
+**Origin**: MMVP-X.1 capital reconciliation (X.1.5.2)
+**Severity**: Medium (detected but not resolved)
+**Module**: `nexus/startup/sequencer.py`
+
+`_reconcile_capital()` detects positions that exist in Praxis but not in Nexus (logged as warnings). However, it cannot import them because Praxis `Position` has no `strategy_id` — Nexus requires `strategy_id` to assign positions to strategies for capital tracking, risk limits, and P&L attribution. The `trade_id → strategy_id` mapping only exists when Nexus originally submitted the command.
+
+This affects crash recovery where Nexus state is lost but Praxis still holds positions, and phantom position detection (RFC misfire handling).
+
+**When to fix**: Before production crash recovery or multi-strategy deployments.
+**Migration**: Either (a) add `strategy_id` passthrough to Praxis Position (Praxis stores what Nexus sends in trade metadata), or (b) maintain a persistent `trade_id → strategy_id` mapping in Nexus WAL that survives state loss.
