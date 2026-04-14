@@ -214,7 +214,9 @@ class StartupSequencer:
         praxis_total_notional = _ZERO
 
         for trade_id, praxis_pos in praxis_by_trade_id.items():
-            notional = praxis_pos.qty * praxis_pos.avg_entry_price
+            qty = Decimal(str(praxis_pos.qty))
+            price = Decimal(str(praxis_pos.avg_entry_price))
+            notional = qty * price
             praxis_total_notional += notional
 
             nexus_pos = self._state.positions.get(trade_id)

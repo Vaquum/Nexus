@@ -263,7 +263,7 @@
 - Add [`praxis_outbound.py`](nexus/infrastructure/praxis_connector/praxis_outbound.py) with `PraxisOutbound` sync-to-async bridge — `asyncio.run_coroutine_threadsafe` for `submit_command`, `register_account`, `deregister_account`, `pull_positions`
 - Add [`praxis_inbound.py`](nexus/infrastructure/praxis_connector/praxis_inbound.py) with `PraxisInbound` queue-based `receive_outcome()` consuming from `queue.Queue[TradeOutcome]`
 - Implement `_register_with_trading()` and `_deregister()` via `PraxisOutbound` (TD-005, TD-012)
-- Wire `PraxisOutbound` into `_submit_actions()` for shutdown EXIT/ABORT submission (TD-015)
+- Wire `PraxisOutbound` into `_submit_actions()` for shutdown EXIT/ABORT filtering; actual submission pending Action fields (TD-015, TD-023)
 - Implement `_wait_terminal()` polling `PraxisInbound` for terminal outcomes with configurable `shutdown_timeout` (TD-016)
 - Implement `_reconcile_capital()` pulling Praxis positions, comparing by trade_id, updating `position_notional` (TD-006)
 - Split `test_manifest.py` into `test_sensor_spec.py`, `test_strategy_spec.py`, `test_manifest.py`
