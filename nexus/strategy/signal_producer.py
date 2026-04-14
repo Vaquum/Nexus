@@ -76,6 +76,8 @@ def _extract_values(result: dict[str, Any]) -> dict[str, Any]:
                 values[key] = int(scalar) if isinstance(scalar, (np.integer, int)) else float(scalar)
             else:
                 values[key] = float(val[-1])
+        elif isinstance(val, np.generic):
+            values[key] = int(val) if isinstance(val, np.integer) else float(val)
         elif isinstance(val, (int, float)):
             values[key] = val
 

@@ -26,6 +26,7 @@ from nexus.strategy.runner import StrategyRunner
 
 _ZERO = Decimal(0)
 _HUNDRED = Decimal('100')
+_POSITION_KEY_LENGTH = 2
 _log = structlog.get_logger()
 
 __all__ = ['StartupSequencer', 'WiredSensor']
@@ -202,20 +203,31 @@ class StartupSequencer:
 
         praxis_by_trade_id: dict[str, object] = {}
 
-        for (_, trade_id), pos in praxis_positions.items():
-            if isinstance(trade_id, str):
-                praxis_by_trade_id[trade_id] = pos
-            else:
-                _log.warning(
-                    'skipping Praxis position with non-string trade_id',
-                    trade_id=repr(trade_id),
-                )
+        try:
+            for key, pos in praxis_positions.items():
+                if not isinstance(key, tuple) or len(key) != _POSITION_KEY_LENGTH:
+                    _log.warning('skipping Praxis position with unexpected key', key=repr(key))
+                    continue
+                _, trade_id = key
+                if isinstance(trade_id, str):
+                    praxis_by_trade_id[trade_id] = pos
+                else:
+                    _log.warning(
+                        'skipping Praxis position with non-string trade_id',
+                        trade_id=repr(trade_id),
+                    )
+        except Exception as e:
+            raise StartupError('reconcile_capital', f'failed to parse Praxis positions: {e}') from e
 
         praxis_total_notional = _ZERO
 
         for trade_id, praxis_pos in praxis_by_trade_id.items():
-            qty = Decimal(str(praxis_pos.qty))
-            price = Decimal(str(praxis_pos.avg_entry_price))
+            try:
+                qty = Decimal(str(praxis_pos.qty))
+                price = Decimal(str(praxis_pos.avg_entry_price))
+            except (AttributeError, ArithmeticError) as e:
+                _log.warning('skipping position with invalid fields', trade_id=trade_id, error=str(e))
+                continue
             notional = qty * price
             praxis_total_notional += notional
 
