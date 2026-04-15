@@ -317,10 +317,11 @@ class TestExternalIntegrationStubs:
         with pytest.raises(StartupError, match='manifest not loaded'):
             sequencer._wire_sensors()
 
-    def test_register_timers_does_not_raise(self) -> None:
+    def test_register_timers_without_manifest_raises(self) -> None:
         sequencer = _make_sequencer()
 
-        sequencer._register_timers()
+        with pytest.raises(StartupError, match='manifest not loaded'):
+            sequencer._register_timers()
 
     def test_determine_mode_sets_active(self) -> None:
         from nexus.core.domain.enums import OperationalMode

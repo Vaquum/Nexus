@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-__all__ = ['Manifest', 'SensorSpec', 'StrategySpec', 'load_manifest']
+__all__ = ['Manifest', 'SensorSpec', 'StrategySpec', 'TimerSpec', 'load_manifest']
 
 _ZERO = Decimal('0')
 _ONE_HUNDRED = Decimal('100')
@@ -65,6 +65,34 @@ class SensorSpec:
 
 
 @dataclass(frozen=True)
+class TimerSpec:
+    '''Specification for a strategy timer.
+
+    Args:
+        timer_id: Unique identifier for this timer within the strategy.
+        interval_seconds: How often the timer fires in seconds.
+    '''
+
+    timer_id: str
+    interval_seconds: int
+
+    def __post_init__(self) -> None:
+        '''Validate timer specification invariants.'''
+
+        if not isinstance(self.timer_id, str) or not self.timer_id.strip():
+            msg = 'TimerSpec.timer_id must be a non-empty string'
+            raise ValueError(msg)
+
+        if not isinstance(self.interval_seconds, int) or isinstance(self.interval_seconds, bool):
+            msg = 'TimerSpec.interval_seconds must be an int'
+            raise ValueError(msg)
+
+        if self.interval_seconds <= 0:
+            msg = f'TimerSpec.interval_seconds must be positive: {self.interval_seconds}'
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True)
 class StrategySpec:
     '''Immutable specification for a single strategy.
 
@@ -73,12 +101,14 @@ class StrategySpec:
         file: Relative path string to the Python strategy implementation.
         sensors: Sensor specifications for signal sources.
         capital_pct: Capital allocation percentage for this strategy.
+        timers: Optional timer specifications for on_timer callbacks.
     '''
 
     strategy_id: str
     file: str
     sensors: tuple[SensorSpec, ...]
     capital_pct: Decimal
+    timers: tuple[TimerSpec, ...] = ()
 
     def __post_init__(self) -> None:
         '''Validate strategy specification invariants.'''
@@ -114,6 +144,23 @@ class StrategySpec:
         if self.capital_pct <= _ZERO or self.capital_pct > _ONE_HUNDRED:
             msg = 'StrategySpec.capital_pct must be in (0, 100]'
             raise ValueError(msg)
+
+        if not isinstance(self.timers, tuple):
+            msg = 'StrategySpec.timers must be a tuple'
+            raise ValueError(msg)
+
+        seen_timer_ids: set[str] = set()
+
+        for t in self.timers:
+            if not isinstance(t, TimerSpec):
+                msg = 'StrategySpec.timers must contain TimerSpec instances'
+                raise ValueError(msg)
+
+            if t.timer_id in seen_timer_ids:
+                msg = f'StrategySpec.timers contains duplicate timer_id: {t.timer_id!r}'
+                raise ValueError(msg)
+
+            seen_timer_ids.add(t.timer_id)
 
 
 @dataclass(frozen=True)
@@ -293,6 +340,36 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
                 )
             )
 
+        timer_specs: list[TimerSpec] = []
+        raw_timers = raw_spec.get('timers', [])
+
+        if not isinstance(raw_timers, list):
+            msg = f'Strategy {strategy_id!r} timers must be a list'
+            raise ValueError(msg)
+
+        for raw_timer in raw_timers:
+            if not isinstance(raw_timer, dict):
+                msg = f'Strategy {strategy_id!r} timer entries must be mappings'
+                raise ValueError(msg)
+
+            timer_id = raw_timer.get('id')
+            if timer_id is None:
+                msg = f'Strategy {strategy_id!r} timer missing required field: id'
+                raise ValueError(msg)
+
+            timer_interval = raw_timer.get('interval_seconds')
+            if timer_interval is None:
+                msg = f'Strategy {strategy_id!r} timer missing required field: interval_seconds'
+                raise ValueError(msg)
+
+            if isinstance(timer_interval, bool) or not isinstance(timer_interval, int):
+                msg = f'Strategy {strategy_id!r} timer interval_seconds must be an int, got {timer_interval!r}'
+                raise ValueError(msg)
+
+            timer_specs.append(
+                TimerSpec(timer_id=str(timer_id), interval_seconds=timer_interval)
+            )
+
         raw_capital_pct = raw_spec.get('capital_pct')
         if raw_capital_pct is None:
             msg = f'Strategy {strategy_id!r} missing required field: capital_pct'
@@ -310,6 +387,7 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
                 file=file,
                 sensors=tuple(sensor_specs),
                 capital_pct=capital_pct,
+                timers=tuple(timer_specs),
             )
         )
 

@@ -119,6 +119,13 @@ class StartupSequencer:
         self._runner: StrategyRunner | None = None
         self._mode: OperationalMode | None = None
         self._wired_sensors: list[WiredSensor] = []
+        self._timer_specs: dict[str, tuple] = {}
+
+    @property
+    def timer_specs(self) -> dict[str, tuple]:
+        '''Return registered timer specs by strategy_id.'''
+
+        return dict(self._timer_specs)
 
     @property
     def wired_sensors(self) -> list[WiredSensor]:
@@ -434,13 +441,30 @@ class StartupSequencer:
                     )
 
     def _register_timers(self) -> None:
-        '''Register strategy timers.
+        '''Register strategy timers from manifest.
 
-        Stub: logs warning, does nothing. See TD-010.
-        Timer registration not implemented yet.
+        Builds a TimerLoop from manifest timer specs and stores it
+        for later use. Does not start the loop — that happens after
+        startup completes.
         '''
 
-        _log.warning('register_timers not implemented')
+        if self._manifest is None:
+            raise StartupError('register_timers', 'manifest not loaded')
+
+        strategy_timers: dict[str, tuple] = {}
+
+        for spec in self._manifest.strategies:
+            if spec.timers:
+                strategy_timers[spec.strategy_id] = spec.timers
+                for t in spec.timers:
+                    _log.info(
+                        'registered timer',
+                        strategy_id=spec.strategy_id,
+                        timer_id=t.timer_id,
+                        interval_seconds=t.interval_seconds,
+                    )
+
+        self._timer_specs = strategy_timers
 
     def _determine_mode(self) -> None:
         '''Determine operational mode based on health.

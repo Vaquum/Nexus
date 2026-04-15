@@ -313,3 +313,16 @@ This affects crash recovery where Nexus state is lost but Praxis still holds pos
 
 **When to fix**: Before production crash recovery or multi-strategy deployments.
 **Migration**: Either (a) add `strategy_id` passthrough to Praxis Position (Praxis stores what Nexus sends in trade metadata), or (b) maintain a persistent `trade_id → strategy_id` mapping in Nexus WAL that survives state loss.
+
+---
+
+## TD-025: PredictLoop and TimerLoop use threading.Timer per tick (thread churn)
+
+**Origin**: MMVP-X.1 predict loop (X.1.2.4), MMVP-X.2 timer loop (X.2.1.1)
+**Severity**: Low (correct but wasteful at scale)
+**Modules**: `nexus/strategy/predict_loop.py`, `nexus/strategy/timer_loop.py`
+
+`threading.Timer` fires once and creates a new thread per fire. Both loops reschedule by creating a new Timer at the end of each tick. With many sensors/timers or short intervals, this causes thread churn — continuous thread creation and teardown. A single persistent thread per loop with `time.sleep` or `threading.Event.wait(timeout)` would be more efficient.
+
+**When to fix**: Before HFT or high-sensor-count deployments.
+**Migration**: Replace per-tick `threading.Timer` with a single scheduler thread per loop that sleeps between fires. Maintain the same lock-guarded `_running` check pattern.
