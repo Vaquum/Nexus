@@ -1,12 +1,14 @@
 '''Snapshot manager for persisting full InstanceState to disk.
 
 Saves and loads complete InstanceState snapshots via the WAL codec.
-A save triggers WAL truncation to keep the log bounded.
+A save triggers WAL truncation while preserving recent events for
+rolling loss window derivation.
 '''
 
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from nexus.core.domain.instance_state import InstanceState
@@ -14,6 +16,8 @@ from nexus.infrastructure.wal import WriteAheadLog
 from nexus.infrastructure.wal_codec import deserialize_state, serialize_state
 
 __all__ = ['load_snapshot', 'save_snapshot']
+
+_EVENT_RETENTION_DAYS = 30
 
 
 def _fsync_directory(dir_path: Path) -> None:
@@ -30,6 +34,7 @@ def save_snapshot(state: InstanceState, path: Path, wal: WriteAheadLog) -> None:
     '''Serialize full InstanceState to disk and truncate the WAL.
 
     Writes to a temporary file then atomically renames for crash safety.
+    Preserves STRATEGY_EVENT entries within the 30-day rolling loss window.
 
     Args:
         state: The instance state to persist.
@@ -44,7 +49,8 @@ def save_snapshot(state: InstanceState, path: Path, wal: WriteAheadLog) -> None:
         os.fsync(f.fileno())
     tmp.replace(path)
     _fsync_directory(path.parent)
-    wal.truncate()
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=_EVENT_RETENTION_DAYS)
+    wal.truncate_keeping_events(cutoff)
 
 
 def load_snapshot(path: Path) -> InstanceState | None:

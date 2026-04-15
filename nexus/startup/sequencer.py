@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import structlog
 
+from limen.experiment.trainer.trainer import Trainer
+
 from nexus.core.domain.capital_state import CapitalState
+from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest, load_manifest
@@ -19,10 +25,33 @@ from nexus.strategy.loader import instantiate_strategy
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
 
+_ZERO = Decimal(0)
 _HUNDRED = Decimal('100')
+_POSITION_KEY_LENGTH = 2
 _log = structlog.get_logger()
 
-__all__ = ['StartupSequencer']
+__all__ = ['StartupSequencer', 'WiredSensor']
+
+
+@dataclass(frozen=True)
+class WiredSensor:
+    '''A trained Sensor ready for signal generation.
+
+    Args:
+        sensor_id: Unique identifier ({path_hash_12}:{permutation_id}).
+        sensor: Limen Sensor callable (predict(data) -> dict).
+        limen_manifest: Limen Manifest for feature preparation.
+        round_params: Hyperparameters used to train this Sensor.
+        strategy_id: Strategy this Sensor feeds signals to.
+        interval_seconds: How often to call predict().
+    '''
+
+    sensor_id: str
+    sensor: Any
+    limen_manifest: Any
+    round_params: dict[str, Any]
+    strategy_id: str
+    interval_seconds: int
 
 
 class StartupSequencer:
@@ -30,7 +59,7 @@ class StartupSequencer:
 
     Executes steps in order: recover state (snapshot + WAL) → register with Trading →
     reconcile capital → load manifest → instantiate strategies → restore strategy state →
-    replay strategy events → wire predictor_fns → register timers →
+    replay strategy events → wire sensors → register timers →
     determine mode → dispatch on_startup.
 
     Args:
@@ -39,6 +68,8 @@ class StartupSequencer:
         strategies_base_path: Base path for resolving strategy file paths.
         allocated_capital: Hard ceiling for manifest capital_pool validation.
         strategy_state_path: Directory for strategy state blob files.
+        praxis_outbound: Outbound connector for Praxis Trading operations.
+        account_id: Account identifier for Praxis registration.
     '''
 
     def __init__(
@@ -48,6 +79,8 @@ class StartupSequencer:
         strategies_base_path: Path,
         allocated_capital: Decimal,
         strategy_state_path: Path | None = None,
+        praxis_outbound: PraxisOutbound | None = None,
+        account_id: str | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
             msg = 'state_store must be a StateStore instance'
@@ -78,11 +111,20 @@ class StartupSequencer:
         self._strategies_base_path = strategies_base_path
         self._allocated_capital = allocated_capital
         self._strategy_state_path = strategy_state_path
+        self._praxis_outbound = praxis_outbound
+        self._account_id = account_id
 
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
         self._runner: StrategyRunner | None = None
         self._mode: OperationalMode | None = None
+        self._wired_sensors: list[WiredSensor] = []
+
+    @property
+    def wired_sensors(self) -> list[WiredSensor]:
+        '''Return trained Sensors wired during startup.'''
+
+        return list(self._wired_sensors)
 
     def start(self) -> StrategyRunner:
         '''Execute the full startup sequence.
@@ -101,7 +143,7 @@ class StartupSequencer:
         self._instantiate_strategies()
         self._restore_strategy_state()
         self._replay_strategy_events()
-        self._wire_predictor_fns()
+        self._wire_sensors()
         self._register_timers()
         self._determine_mode()
         self._dispatch_startup()
@@ -130,20 +172,112 @@ class StartupSequencer:
             raise StartupError('recover_state', str(e)) from e
 
     def _register_with_trading(self) -> None:
-        '''Register with Trading sub-system.
+        '''Register this account with Trading sub-system via PraxisOutbound.'''
 
-        Stub: logs warning, does nothing. See TD-005.
-        '''
+        if self._praxis_outbound is None or self._account_id is None:
+            _log.warning('praxis_outbound or account_id not configured, skipping registration')
+            return
 
-        _log.warning('register_with_trading not implemented')
+        try:
+            self._praxis_outbound.register_account(self._account_id)
+        except Exception as e:
+            raise StartupError('register_with_trading', str(e)) from e
 
     def _reconcile_capital(self) -> None:
         '''Reconcile capital state against Trading positions.
 
-        Stub: logs warning, does nothing. See TD-006.
+        Pulls positions from Praxis, compares against Nexus state by trade_id,
+        updates position_notional to match actual venue state. Logs discrepancies.
         '''
 
-        _log.warning('reconcile_capital not implemented')
+        if self._praxis_outbound is None or self._account_id is None:
+            _log.warning('praxis_outbound or account_id not configured, skipping reconciliation')
+            return
+
+        if self._state is None:
+            raise StartupError('reconcile_capital', 'state not recovered')
+
+        try:
+            praxis_positions = self._praxis_outbound.pull_positions(self._account_id)
+        except Exception as e:
+            raise StartupError('reconcile_capital', str(e)) from e
+
+        praxis_by_trade_id: dict[str, Any] = {}
+
+        try:
+            for key, pos in praxis_positions.items():
+                if not isinstance(key, tuple) or len(key) != _POSITION_KEY_LENGTH:
+                    _log.warning('skipping Praxis position with unexpected key', key=repr(key))
+                    continue
+                _, trade_id = key
+                if isinstance(trade_id, str):
+                    praxis_by_trade_id[trade_id] = pos
+                else:
+                    _log.warning(
+                        'skipping Praxis position with non-string trade_id',
+                        trade_id=repr(trade_id),
+                    )
+        except Exception as e:
+            raise StartupError('reconcile_capital', f'failed to parse Praxis positions: {e}') from e
+
+        praxis_total_notional = _ZERO
+
+        for trade_id, praxis_pos in praxis_by_trade_id.items():
+            try:
+                qty = Decimal(str(praxis_pos.qty))
+                price = Decimal(str(praxis_pos.avg_entry_price))
+            except (AttributeError, ArithmeticError) as e:
+                _log.warning('skipping position with invalid fields', trade_id=trade_id, error=str(e))
+                continue
+            notional = qty * price
+            praxis_total_notional += notional
+
+            nexus_pos = self._state.positions.get(trade_id)
+
+            if nexus_pos is None:
+                _log.warning(
+                    'position in Praxis but not in Nexus',
+                    trade_id=trade_id,
+                    praxis_qty=str(praxis_pos.qty),
+                )
+                continue
+
+            if nexus_pos.size != qty:
+                _log.warning(
+                    'position size mismatch',
+                    trade_id=trade_id,
+                    nexus_size=str(nexus_pos.size),
+                    praxis_qty=str(qty),
+                )
+
+        for trade_id in self._state.positions:
+            if trade_id not in praxis_by_trade_id:
+                _log.warning(
+                    'position in Nexus but not in Praxis',
+                    trade_id=trade_id,
+                )
+
+        old_notional = self._state.capital.position_notional
+
+        if old_notional != praxis_total_notional:
+            _log.warning(
+                'position_notional adjusted',
+                old=str(old_notional),
+                new=str(praxis_total_notional),
+            )
+            self._state.capital.position_notional = praxis_total_notional
+
+            try:
+                self._state_store.checkpoint(self._state)
+            except Exception as e:
+                raise StartupError('reconcile_capital', f'checkpoint after reconciliation failed: {e}') from e
+
+        _log.info(
+            'capital reconciliation complete',
+            nexus_positions=len(self._state.positions),
+            praxis_positions=len(praxis_by_trade_id),
+            position_notional=str(self._state.capital.position_notional),
+        )
 
     def _load_manifest(self) -> None:
         '''Load and validate strategy manifest.'''
@@ -249,14 +383,55 @@ class StartupSequencer:
             except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
                 _log.exception('on_event_replay failed', strategy_id=strategy_id)
 
-    def _wire_predictor_fns(self) -> None:
-        '''Wire predictor_fn subscriptions.
+    def _wire_sensors(self) -> None:
+        '''Train Limen Sensors and wire them for signal generation.
 
-        Stub: logs warning, does nothing. See TD-009.
-        Predictor function wiring not implemented yet.
+        For each SensorSpec in the manifest, calls Trainer(experiment_dir).train(permutation_ids)
+        to produce Sensor callables. Stores WiredSensor entries for later use by the predict loop.
         '''
 
-        _log.warning('wire_predictor_fns not implemented')
+        if self._manifest is None:
+            raise StartupError('wire_sensors', 'manifest not loaded')
+
+        self._wired_sensors.clear()
+
+        for spec in self._manifest.strategies:
+            strategy_id = spec.strategy_id
+
+            for sensor_spec in spec.sensors:
+                path_hash = hashlib.sha256(
+                    str(sensor_spec.experiment_dir.resolve()).encode(),
+                ).hexdigest()[:12]
+
+                try:
+                    trainer = Trainer(sensor_spec.experiment_dir)
+                    sensors = trainer.train(list(sensor_spec.permutation_ids))
+                except Exception as e:
+                    raise StartupError(
+                        'wire_sensors',
+                        f'strategy {strategy_id!r} experiment '
+                        f'{sensor_spec.experiment_dir}: {e}',
+                    ) from e
+
+                for sensor in sensors:
+                    sensor_id = f'{path_hash}:{sensor.permutation_id}'
+                    # NOTE: trainer._manifest is a private attribute on Limen Trainer.
+                    # No public accessor exists as of vaquum_limen 1.52.0.
+                    wired = WiredSensor(
+                        sensor_id=sensor_id,
+                        sensor=sensor,
+                        limen_manifest=trainer._manifest,
+                        round_params=sensor.round_params,
+                        strategy_id=strategy_id,
+                        interval_seconds=sensor_spec.interval_seconds,
+                    )
+                    self._wired_sensors.append(wired)
+                    _log.info(
+                        'wired sensor',
+                        sensor_id=sensor_id,
+                        strategy_id=strategy_id,
+                        interval_seconds=sensor_spec.interval_seconds,
+                    )
 
     def _register_timers(self) -> None:
         '''Register strategy timers.

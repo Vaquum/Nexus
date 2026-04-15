@@ -98,16 +98,9 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-009: StartupSequencer._wire_predictor_fns is a stub
+## TD-009: ~~StartupSequencer._wire_sensors is a stub~~ RESOLVED
 
-**Origin**: 9.1.6 (runtime setup stubs)
-**Severity**: High (no signal subscription)
-**Module**: `nexus/startup/sequencer.py`
-
-`_wire_predictor_fns()` logs a warning and does nothing. Strategies are not subscribed to predictor functions, meaning no signals will be received.
-
-**When to fix**: When predictor_fn subscription system is built.
-**Migration**: Implement signal subscription wiring. Remove this entry when done.
+**Status**: Implemented in v0.25.0 (X.1.2.2). `_wire_sensors()` trains Limen Sensors via `Trainer(experiment_dir).train(permutation_ids)` and stores `WiredSensor` entries.
 
 ---
 
@@ -156,9 +149,9 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 **Severity**: High (signals continue during shutdown)
 **Module**: `nexus/startup/shutdown_sequencer.py`
 
-`_stop_signals()` logs a warning and does nothing. Without unsubscribing from predictor_fns, new signals can arrive and trigger strategy callbacks during shutdown, causing race conditions. Blocked by TD-009 — cannot stop what was never wired.
+~~`_stop_signals()` logs a warning and does nothing.~~ RESOLVED
 
-**When to fix**: When predictor_fn subscription system is built (after TD-009).
+**Status**: Implemented in v0.25.0 (X.1.2.5). `_stop_signals()` calls `PredictLoop.stop()` to cancel all sensor timers before shutdown proceeds.
 **Migration**: Implement signal unsubscription. Remove this entry when done.
 
 ---
@@ -184,21 +177,21 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 `_submit_actions()` filters actions to EXIT/ABORT but cannot validate or submit them. No ValidationPipeline or OutboundConnector is wired in. EXIT actions from on_shutdown are logged but not executed.
 
-**When to fix**: When shutdown integration is built.
+**When to fix**: When Action dataclass has full fields (TD-023) and shutdown integration is built.
 **Migration**: Add validator and connector parameters to ShutdownSequencer. Validate filtered actions through pipeline, submit valid ones via connector. Remove this entry when done.
 
 ---
 
-## TD-016: ShutdownSequencer._wait_terminal is a stub
+## TD-016: _wait_terminal lacks ABORT escalation
 
-**Origin**: 9.2.5 (shutdown sequence)
-**Severity**: High (no graceful position closure)
+**Origin**: 9.2.5 (shutdown sequence), updated X.1.4.2
+**Severity**: Medium (timeout logs warning but does not force-close)
 **Module**: `nexus/startup/shutdown_sequencer.py`
 
-`_wait_terminal()` logs a warning and returns immediately. Submitted EXIT commands are not tracked to completion. Shutdown proceeds without confirming positions are closed.
+`_wait_terminal()` now polls PraxisInbound for terminal outcomes with a configurable timeout. However, when timeout expires with commands still pending, it only logs a warning. The RFC specifies ABORT escalation: remaining in-flight commands should be force-aborted via PraxisOutbound, then wait again with a shorter timeout. This requires Action fields (TD-023) to construct ABORT TradeCommands.
 
-**When to fix**: When TradeOutcome inbound integration is built.
-**Migration**: Subscribe/poll for TradeOutcome until all commands reach terminal state. Implement timeout with ABORT escalation. Remove this entry when done.
+**When to fix**: When TD-023 (Action fields) is resolved.
+**Migration**: On timeout, submit ABORT for each pending command via PraxisOutbound, then re-enter wait loop with shorter deadline.
 
 ---
 
@@ -236,3 +229,87 @@ Several hot paths and recovery routines use linear O(N) scans and manual diction
 - Replace O(N) dictionary/list scans with O(1) or O(log N) structures (e.g., `collections.deque` or `heapq` for expiration tracking).
 - If `Decimal` precision is not required for a hot path, consider switching that path to float-based aggregation and NumPy; otherwise optimize the `Decimal` path by reducing repeated `Decimal` operations and avoiding full re-scans.
 - Implement batch processing or incremental updates for rolling loss windows so recovery and loss derivation update aggregates from prior state instead of recalculating across the full WAL.
+
+---
+
+## TD-019: Cohort (multi-decoder aggregation) not supported
+
+**Origin**: MMVP-X.1 signal flow design (X.1.2.1)
+**Severity**: Medium (single-decoder Trainer path works, Cohort deferred)
+**Module**: `nexus/startup/sequencer.py`
+
+Nexus trains Sensors via `Trainer(experiment_dir).train(permutation_ids)` — this produces one Sensor per permutation ID from a single SFD experiment. Limen's Cohort system (RegimeDiversifiedOpinionPools) aggregates predictions across multiple decoders/regimes into a single callable, but Cohort is not yet ready in Limen.
+
+When Cohort becomes available, Nexus must support a second path in the manifest where a strategy references a Cohort rather than individual Trainer permutations. The Cohort callable exposes the same `predict()` interface as Sensor, so the downstream dispatch (Signal → strategy) is unchanged.
+
+**When to fix**: When Limen Cohort is production-ready.
+**Migration**: Add `cohort` as an alternative to `experiment` + `permutation_ids` in the manifest `sensors` schema. Implement Cohort instantiation path in StartupSequencer alongside the existing Trainer path.
+
+---
+
+## TD-020: No experiment directory sandboxing per account
+
+**Origin**: MMVP-X.1 manifest schema (X.1.2.1)
+**Severity**: High (access control gap)
+**Module**: `nexus/infrastructure/manifest.py`
+
+`SensorSpec.experiment_dir` accepts any path on disk. A manifest can reference any experiment directory, regardless of which account ran that experiment. In a multi-account process, account A's manifest could point to account B's experiments, or to experiments the account owner never ran. There is no validation that an account is authorized to use a given experiment.
+
+**When to fix**: Before multi-tenant or multi-account production deployment.
+**Migration**: Introduce per-account experiment directory allowlists or a scoped base path per account (e.g. `{base}/{account_id}/experiments/`). Validate during manifest load that all `experiment_dir` paths fall within the account's allowed scope. Reject manifests that reference experiments outside the account's sandbox.
+
+---
+
+## TD-021: PredictLoop uses stub market data provider
+
+**Origin**: MMVP-X.1 predict loop (X.1.2.4)
+**Severity**: High (no real market data flows to Sensors)
+**Module**: `nexus/strategy/predict_loop.py`
+
+`PredictLoop` accepts a `market_data_provider: Callable[[int], pl.DataFrame]` that returns a rolling DataFrame of bars for a given kline_size. No concrete provider exists — the predict loop works but has nothing to call in production.
+
+The concrete provider depends on Praxis TD-016 #3 (shared market data poller) which fetches klines per unique kline_size using `binancial.compute.get_spot_klines`. The kline_size for each sensor is in the Limen manifest's `data_source_config.params['kline_size']` — already extracted by `PredictLoop._extract_kline_size()`.
+
+**When to fix**: When Praxis TD-016 #3 (shared market data poller) is built.
+**Migration**: Implement the concrete market data provider that wraps the shared poller's rolling DataFrames. Wire it into PredictLoop construction during Nexus instance startup.
+
+---
+
+## TD-022: Sensor hot reload not implemented
+
+**Origin**: MMVP-X.1 signal flow (X.1.2.6)
+**Severity**: Medium (requires process restart to change sensors)
+**Modules**: `nexus/startup/sequencer.py`, `nexus/strategy/predict_loop.py`
+
+When the manifest changes experiment directories or permutation IDs, Sensors should be re-trained and the predict loop restarted without process restart. This requires: manifest file watching, diffing old vs new SensorSpecs, stopping the predict loop, re-running `_wire_sensors` with updated specs, restarting the loop with new WiredSensors. The RFC describes a full hot reload system with tier-1/tier-2/tier-3 change classification — none of this infrastructure exists yet.
+
+**When to fix**: When manifest hot reload infrastructure is built.
+**Migration**: Implement manifest file watcher, change diffing, and Sensor re-training via `importlib` reload. Integrate with PredictLoop start/stop lifecycle.
+
+---
+
+## TD-023: Action dataclass lacks trade fields
+
+**Origin**: MMVP-X.1 command flow (X.1.3.3)
+**Severity**: High (strategies cannot express tradeable decisions)
+**Module**: `nexus/strategy/action.py`
+
+`Action` only has `action_type` (ENTER, EXIT, MODIFY, ABORT). The RFC specifies additional fields required for trade execution: `direction` (BUY/SELL), `size` (base asset quantity), `execution_mode` (SingleShot, Bracket, TWAP, etc.), `order_type` (Market, Limit, etc.), `execution_params` (mode-specific), `deadline` (timeout seconds), `trade_id` (for EXIT/MODIFY/ABORT), `maker_preference`, `reference_price`. Without these fields, the Action → ValidationPipeline → TradeCommand → Praxis submission chain cannot function. The shutdown action submission (TD-015) and the live strategy action flow both depend on this.
+
+**When to fix**: Before end-to-end strategy → trade execution.
+**Migration**: Add RFC-specified fields to Action dataclass. Update ValidationPipeline to validate the new fields. Update `translate_to_trade_command` to map from the enriched Action.
+
+---
+
+## TD-024: Reconciliation cannot import Praxis-only positions
+
+**Origin**: MMVP-X.1 capital reconciliation (X.1.5.2)
+**Severity**: Medium (detected but not resolved)
+**Module**: `nexus/startup/sequencer.py`
+
+`_reconcile_capital()` detects positions that exist in Praxis but not in Nexus (logged as warnings). However, it cannot import them because Praxis `Position` has no `strategy_id` — Nexus requires `strategy_id` to assign positions to strategies for capital tracking, risk limits, and P&L attribution. The `trade_id → strategy_id` mapping only exists when Nexus originally submitted the command.
+
+This affects crash recovery where Nexus state is lost but Praxis still holds positions, and phantom position detection (RFC misfire handling).
+
+**When to fix**: Before production crash recovery or multi-strategy deployments.
+**Migration**: Either (a) add `strategy_id` passthrough to Praxis Position (Praxis stores what Nexus sends in trade metadata), or (b) maintain a persistent `trade_id → strategy_id` mapping in Nexus WAL that survives state loss.

@@ -108,12 +108,22 @@ class TestValidation:
             _make_reservation(estimated_fees=Decimal('Inf'))
 
     def test_naive_created_at_rejected(self) -> None:
-        with pytest.raises(ValueError, match='timezone-aware'):
+        with pytest.raises(ValueError, match='must be UTC'):
             _make_reservation(created_at=datetime(2026, 3, 19, 12, 0, 0))
 
+    def test_non_utc_created_at_rejected(self) -> None:
+        non_utc = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be UTC'):
+            _make_reservation(created_at=non_utc)
+
     def test_naive_expires_at_rejected(self) -> None:
-        with pytest.raises(ValueError, match='timezone-aware'):
+        with pytest.raises(ValueError, match='must be UTC'):
             _make_reservation(expires_at=datetime(2026, 3, 19, 12, 0, 30))
+
+    def test_non_utc_expires_at_rejected(self) -> None:
+        non_utc = datetime(2026, 3, 19, 12, 0, 30, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be UTC'):
+            _make_reservation(expires_at=non_utc)
 
     def test_expires_at_before_created_at_rejected(self) -> None:
         with pytest.raises(ValueError, match='expires_at must be after'):
@@ -160,5 +170,11 @@ class TestReservationResult:
 class TestIsExpiredValidation:
     def test_naive_now_rejected(self) -> None:
         r = _make_reservation()
-        with pytest.raises(ValueError, match='timezone-aware'):
+        with pytest.raises(ValueError, match='requires UTC'):
             r.is_expired(datetime(2026, 3, 19, 12, 0, 30))
+
+    def test_non_utc_now_rejected(self) -> None:
+        r = _make_reservation()
+        non_utc = datetime(2026, 3, 19, 12, 0, 30, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='requires UTC'):
+            r.is_expired(non_utc)

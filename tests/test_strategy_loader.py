@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from nexus.infrastructure.manifest import StrategySpec
+from nexus.infrastructure.manifest import SensorSpec, StrategySpec
 from nexus.strategy import Strategy
 from nexus.strategy.loader import instantiate_strategy, load_strategy_class
 
@@ -237,16 +237,25 @@ class TestLoadStrategyClass:
                 load_strategy_class(Path('bad.py'), tmp_path)
 
 
+_EXP_DIR_HANDLE = tempfile.TemporaryDirectory()
+_EXP_DIR = Path(_EXP_DIR_HANDLE.name)
+
+
 def _make_spec(
     strategy_id: str = 'test_strategy',
     file: str = 'strategies/momentum.py',
 ) -> StrategySpec:
     '''Create a StrategySpec for testing.'''
 
+    pfn = SensorSpec(
+        experiment_dir=_EXP_DIR,
+        permutation_ids=(1,),
+        interval_seconds=60,
+    )
     return StrategySpec(
         strategy_id=strategy_id,
         file=file,
-        permutation_ids=('pred1',),
+        sensors=(pfn,),
         capital_pct=Decimal('50'),
     )
 

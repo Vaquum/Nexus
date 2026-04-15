@@ -7,7 +7,7 @@ Represents execution results from Trading sub-system. Fill outcomes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
@@ -25,7 +25,7 @@ class TradeOutcome:
         outcome_id: Unique outcome reference.
         command_id: Links to original TradeCommand.
         outcome_type: ACK, PARTIAL, FILLED, REJECTED, EXPIRED, or CANCELED.
-        timestamp: When outcome occurred (must be timezone-aware).
+        timestamp: When outcome occurred (must be UTC).
         fill_size: Base asset filled; required for PARTIAL/FILLED.
         fill_price: Execution price; required for PARTIAL/FILLED.
         fill_notional: Quote amount filled; required for PARTIAL/FILLED.
@@ -67,11 +67,8 @@ class TradeOutcome:
             msg = 'TradeOutcome.timestamp must be a datetime instance'
             raise ValueError(msg)
 
-        if (
-            self.timestamp.tzinfo is None
-            or self.timestamp.tzinfo.utcoffset(self.timestamp) is None
-        ):
-            msg = 'TradeOutcome.timestamp must be timezone-aware'
+        if self.timestamp.tzinfo is not timezone.utc:
+            msg = 'TradeOutcome.timestamp must be UTC'
             raise ValueError(msg)
 
         if self.outcome_type.is_fill:

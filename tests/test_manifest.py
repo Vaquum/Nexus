@@ -1,294 +1,74 @@
-'''Tests for manifest loading and validation.'''
+'''Tests for Manifest dataclass and load_manifest function.'''
 
 from __future__ import annotations
 
-import tempfile
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import yaml
 
-from nexus.infrastructure.manifest import Manifest, StrategySpec, load_manifest
+from nexus.infrastructure.manifest import (
+    Manifest,
+    SensorSpec,
+    StrategySpec,
+    load_manifest,
+)
 
 
-class TestStrategySpec:
-    '''Tests for StrategySpec dataclass.'''
-
-    def test_valid_strategy_spec(self) -> None:
-        '''Valid StrategySpec creates successfully.'''
-
-        spec = StrategySpec(
-            strategy_id='momentum_v1',
-            file='strategies/momentum.py',
-            permutation_ids=('cohort_alpha_v3', 'sensor_volatility'),
-            capital_pct=Decimal('25'),
-        )
-
-        assert spec.strategy_id == 'momentum_v1'
-        assert spec.file == 'strategies/momentum.py'
-        assert spec.permutation_ids == ('cohort_alpha_v3', 'sensor_volatility')
-        assert spec.capital_pct == Decimal('25')
-
-    def test_strategy_spec_is_frozen(self) -> None:
-        '''StrategySpec is immutable.'''
-
-        spec = StrategySpec(
-            strategy_id='test',
-            file='test.py',
-            permutation_ids=('pred1',),
-            capital_pct=Decimal('10'),
-        )
-
-        with pytest.raises(AttributeError):
-            spec.strategy_id = 'changed'  # type: ignore[misc]
-
-    def test_empty_strategy_id_raises(self) -> None:
-        '''Empty strategy_id raises ValueError.'''
-
-        with pytest.raises(ValueError, match='strategy_id must be a non-empty string'):
-            StrategySpec(
-                strategy_id='',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_whitespace_strategy_id_raises(self) -> None:
-        '''Whitespace-only strategy_id raises ValueError.'''
-
-        with pytest.raises(ValueError, match='strategy_id must be a non-empty string'):
-            StrategySpec(
-                strategy_id='   ',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_empty_file_raises(self) -> None:
-        '''Empty file raises ValueError.'''
-
-        with pytest.raises(ValueError, match='file must be a non-empty string'):
-            StrategySpec(
-                strategy_id='test',
-                file='',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_whitespace_file_raises(self) -> None:
-        '''Whitespace-only file raises ValueError.'''
-
-        with pytest.raises(ValueError, match='file must be a non-empty string'):
-            StrategySpec(
-                strategy_id='test',
-                file='  ',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_padded_whitespace_file_raises(self) -> None:
-        '''File with surrounding whitespace raises ValueError.'''
-
-        with pytest.raises(ValueError, match='file must be a non-empty string without surrounding whitespace'):
-            StrategySpec(
-                strategy_id='test',
-                file=' strategies/foo.py ',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_empty_permutation_ids_raises(self) -> None:
-        '''Empty permutation_ids raises ValueError.'''
-
-        with pytest.raises(ValueError, match='permutation_ids must be a non-empty tuple'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=(),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_permutation_ids_not_tuple_raises(self) -> None:
-        '''Non-tuple permutation_ids raises ValueError.'''
-
-        with pytest.raises(ValueError, match='permutation_ids must be a non-empty tuple'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=['pred1'],  # type: ignore[arg-type]
-                capital_pct=Decimal('10'),
-            )
-
-    def test_permutation_ids_with_empty_string_raises(self) -> None:
-        '''permutation_ids containing empty string raises ValueError.'''
-
-        with pytest.raises(ValueError, match='permutation_ids must contain non-empty strings'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1', ''),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_permutation_ids_with_whitespace_raises(self) -> None:
-        '''permutation_ids containing whitespace-only string raises ValueError.'''
-
-        with pytest.raises(ValueError, match='permutation_ids must contain non-empty strings'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1', '   '),
-                capital_pct=Decimal('10'),
-            )
-
-    def test_permutation_ids_with_non_string_raises(self) -> None:
-        '''permutation_ids containing non-string raises ValueError.'''
-
-        with pytest.raises(ValueError, match='permutation_ids must contain non-empty strings'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1', 123),  # type: ignore[arg-type]
-                capital_pct=Decimal('10'),
-            )
-
-    def test_non_decimal_capital_pct_raises(self) -> None:
-        '''Non-Decimal capital_pct raises ValueError.'''
-
-        with pytest.raises(ValueError, match='capital_pct must be a finite Decimal'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=25,  # type: ignore[arg-type]
-            )
-
-    def test_infinite_capital_pct_raises(self) -> None:
-        '''Infinite capital_pct raises ValueError.'''
-
-        with pytest.raises(ValueError, match='capital_pct must be a finite Decimal'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('inf'),
-            )
-
-    def test_nan_capital_pct_raises(self) -> None:
-        '''NaN capital_pct raises ValueError.'''
-
-        with pytest.raises(ValueError, match='capital_pct must be a finite Decimal'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('nan'),
-            )
-
-    def test_zero_capital_pct_raises(self) -> None:
-        '''Zero capital_pct raises ValueError.'''
-
-        with pytest.raises(ValueError, match='capital_pct must be in'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('0'),
-            )
-
-    def test_negative_capital_pct_raises(self) -> None:
-        '''Negative capital_pct raises ValueError.'''
-
-        with pytest.raises(ValueError, match='capital_pct must be in'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('-5'),
-            )
-
-    def test_capital_pct_over_100_raises(self) -> None:
-        '''capital_pct > 100 raises ValueError.'''
-
-        with pytest.raises(ValueError, match='capital_pct must be in'):
-            StrategySpec(
-                strategy_id='test',
-                file='test.py',
-                permutation_ids=('pred1',),
-                capital_pct=Decimal('101'),
-            )
-
-    def test_capital_pct_exactly_100_allowed(self) -> None:
-        '''capital_pct of exactly 100 is allowed.'''
-
-        spec = StrategySpec(
-            strategy_id='test',
-            file='test.py',
-            permutation_ids=('pred1',),
-            capital_pct=Decimal('100'),
-        )
-
-        assert spec.capital_pct == Decimal('100')
-
-    def test_capital_pct_fractional_allowed(self) -> None:
-        '''Fractional capital_pct is allowed.'''
-
-        spec = StrategySpec(
-            strategy_id='test',
-            file='test.py',
-            permutation_ids=('pred1',),
-            capital_pct=Decimal('12.5'),
-        )
-
-        assert spec.capital_pct == Decimal('12.5')
-
-    def test_single_permutation_id_allowed(self) -> None:
-        '''Single permutation_id in tuple is allowed.'''
-
-        spec = StrategySpec(
-            strategy_id='test',
-            file='test.py',
-            permutation_ids=('single_pred',),
-            capital_pct=Decimal('50'),
-        )
-
-        assert spec.permutation_ids == ('single_pred',)
-
-    def test_multiple_permutation_ids_allowed(self) -> None:
-        '''Multiple permutation_ids are allowed.'''
-
-        spec = StrategySpec(
-            strategy_id='test',
-            file='test.py',
-            permutation_ids=('pred1', 'pred2', 'pred3'),
-            capital_pct=Decimal('50'),
-        )
-
-        assert spec.permutation_ids == ('pred1', 'pred2', 'pred3')
+def _pfn(tmp_path: Path) -> SensorSpec:
+    exp_dir = tmp_path / 'experiment'
+    exp_dir.mkdir(exist_ok=True)
+    return SensorSpec(
+        experiment_dir=exp_dir,
+        permutation_ids=(1,),
+        interval_seconds=60,
+    )
 
 
 def _make_spec(
+    tmp_path: Path,
     strategy_id: str = 'test',
     capital_pct: Decimal = Decimal('50'),
 ) -> StrategySpec:
-    '''Create a valid StrategySpec for testing.'''
-
     return StrategySpec(
         strategy_id=strategy_id,
         file='test.py',
-        permutation_ids=('pred1',),
+        sensors=(_pfn(tmp_path),),
         capital_pct=capital_pct,
     )
 
 
-class TestManifest:
-    '''Tests for Manifest dataclass.'''
+def _write_yaml(path: Path, content: str) -> None:
+    path.write_text(content, encoding='utf-8')
 
-    def test_valid_manifest(self) -> None:
+
+def _write_strategy_file(base: Path, rel_path: str, content: str = '') -> None:
+    file_path = base / rel_path
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    file_path.write_text(content or '# Strategy file\n', encoding='utf-8')
+
+
+def _yaml_sensors(tmp_path: Path) -> str:
+    '''Return YAML sensors block pointing to a real experiment dir.'''
+
+    exp_dir = tmp_path / 'experiment'
+    exp_dir.mkdir(exist_ok=True)
+    return (
+        f'    sensors:\n'
+        f'      - experiment: {exp_dir}\n'
+        f'        permutation_ids: [1]\n'
+        f'        interval_seconds: 60\n'
+    )
+
+
+class TestManifest:
+
+    def test_valid_manifest(self, tmp_path: Path) -> None:
         '''Valid Manifest creates successfully.'''
 
-        spec1 = _make_spec('strategy_a', Decimal('60'))
-        spec2 = _make_spec('strategy_b', Decimal('40'))
+        spec1 = _make_spec(tmp_path, 'strategy_a', Decimal('60'))
+        spec2 = _make_spec(tmp_path, 'strategy_b', Decimal('40'))
 
         manifest = Manifest(
             capital_pool=Decimal('10000'),
@@ -298,60 +78,60 @@ class TestManifest:
         assert manifest.capital_pool == Decimal('10000')
         assert manifest.strategies == (spec1, spec2)
 
-    def test_manifest_is_frozen(self) -> None:
+    def test_manifest_is_frozen(self, tmp_path: Path) -> None:
         '''Manifest is immutable.'''
 
         manifest = Manifest(
             capital_pool=Decimal('10000'),
-            strategies=(_make_spec(),),
+            strategies=(_make_spec(tmp_path),),
         )
 
         with pytest.raises(AttributeError):
             manifest.capital_pool = Decimal('5000')  # type: ignore[misc]
 
-    def test_non_decimal_capital_pool_raises(self) -> None:
+    def test_non_decimal_capital_pool_raises(self, tmp_path: Path) -> None:
         '''Non-Decimal capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
             Manifest(
                 capital_pool=10000,  # type: ignore[arg-type]
-                strategies=(_make_spec(),),
+                strategies=(_make_spec(tmp_path),),
             )
 
-    def test_infinite_capital_pool_raises(self) -> None:
+    def test_infinite_capital_pool_raises(self, tmp_path: Path) -> None:
         '''Infinite capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
             Manifest(
                 capital_pool=Decimal('inf'),
-                strategies=(_make_spec(),),
+                strategies=(_make_spec(tmp_path),),
             )
 
-    def test_nan_capital_pool_raises(self) -> None:
+    def test_nan_capital_pool_raises(self, tmp_path: Path) -> None:
         '''NaN capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
             Manifest(
                 capital_pool=Decimal('nan'),
-                strategies=(_make_spec(),),
+                strategies=(_make_spec(tmp_path),),
             )
 
-    def test_zero_capital_pool_raises(self) -> None:
+    def test_zero_capital_pool_raises(self, tmp_path: Path) -> None:
         '''Zero capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be positive'):
             Manifest(
                 capital_pool=Decimal('0'),
-                strategies=(_make_spec(),),
+                strategies=(_make_spec(tmp_path),),
             )
 
-    def test_negative_capital_pool_raises(self) -> None:
+    def test_negative_capital_pool_raises(self, tmp_path: Path) -> None:
         '''Negative capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be positive'):
             Manifest(
                 capital_pool=Decimal('-1000'),
-                strategies=(_make_spec(),),
+                strategies=(_make_spec(tmp_path),),
             )
 
     def test_empty_strategies_raises(self) -> None:
@@ -363,136 +143,125 @@ class TestManifest:
                 strategies=(),
             )
 
-    def test_strategies_not_tuple_raises(self) -> None:
+    def test_strategies_not_tuple_raises(self, tmp_path: Path) -> None:
         '''Non-tuple strategies raises ValueError.'''
 
         with pytest.raises(ValueError, match='strategies must be a non-empty tuple'):
             Manifest(
                 capital_pool=Decimal('10000'),
-                strategies=[_make_spec()],  # type: ignore[arg-type]
+                strategies=[_make_spec(tmp_path)],  # type: ignore[arg-type]
             )
 
-    def test_strategies_with_non_spec_raises(self) -> None:
+    def test_strategies_with_non_spec_raises(self, tmp_path: Path) -> None:
         '''Strategies containing non-StrategySpec raises ValueError.'''
 
         with pytest.raises(ValueError, match='strategies must contain StrategySpec'):
             Manifest(
                 capital_pool=Decimal('10000'),
-                strategies=(_make_spec(), 'not a spec'),  # type: ignore[arg-type]
+                strategies=(_make_spec(tmp_path), 'not a spec'),  # type: ignore[arg-type]
             )
 
-    def test_duplicate_strategy_id_raises(self) -> None:
+    def test_duplicate_strategy_id_raises(self, tmp_path: Path) -> None:
         '''Duplicate strategy_id raises ValueError.'''
 
         with pytest.raises(ValueError, match='duplicate strategy_id'):
             Manifest(
                 capital_pool=Decimal('10000'),
                 strategies=(
-                    _make_spec('same_id', Decimal('50')),
-                    _make_spec('same_id', Decimal('50')),
+                    _make_spec(tmp_path, 'same_id', Decimal('50')),
+                    _make_spec(tmp_path, 'same_id', Decimal('50')),
                 ),
             )
 
-    def test_capital_pct_sum_over_100_raises(self) -> None:
+    def test_capital_pct_sum_over_100_raises(self, tmp_path: Path) -> None:
         '''capital_pct sum > 100 raises ValueError.'''
 
         with pytest.raises(ValueError, match=r'capital_pct sum .* exceeds 100'):
             Manifest(
                 capital_pool=Decimal('10000'),
                 strategies=(
-                    _make_spec('a', Decimal('60')),
-                    _make_spec('b', Decimal('50')),
+                    _make_spec(tmp_path, 'a', Decimal('60')),
+                    _make_spec(tmp_path, 'b', Decimal('50')),
                 ),
             )
 
-    def test_capital_pct_sum_exactly_100_allowed(self) -> None:
+    def test_capital_pct_sum_exactly_100_allowed(self, tmp_path: Path) -> None:
         '''capital_pct sum of exactly 100 is allowed.'''
 
         manifest = Manifest(
             capital_pool=Decimal('10000'),
             strategies=(
-                _make_spec('a', Decimal('60')),
-                _make_spec('b', Decimal('40')),
+                _make_spec(tmp_path, 'a', Decimal('60')),
+                _make_spec(tmp_path, 'b', Decimal('40')),
             ),
         )
 
         assert manifest.capital_pool == Decimal('10000')
 
-    def test_capital_pct_sum_under_100_allowed(self) -> None:
+    def test_capital_pct_sum_under_100_allowed(self, tmp_path: Path) -> None:
         '''capital_pct sum under 100 is allowed.'''
 
         manifest = Manifest(
             capital_pool=Decimal('10000'),
             strategies=(
-                _make_spec('a', Decimal('30')),
-                _make_spec('b', Decimal('20')),
+                _make_spec(tmp_path, 'a', Decimal('30')),
+                _make_spec(tmp_path, 'b', Decimal('20')),
             ),
         )
 
         assert manifest.capital_pool == Decimal('10000')
 
-    def test_single_strategy_allowed(self) -> None:
+    def test_single_strategy_allowed(self, tmp_path: Path) -> None:
         '''Single strategy in manifest is allowed.'''
 
         manifest = Manifest(
             capital_pool=Decimal('10000'),
-            strategies=(_make_spec('only_one', Decimal('100')),),
+            strategies=(_make_spec(tmp_path, 'only_one', Decimal('100')),),
         )
 
         assert len(manifest.strategies) == 1
 
 
-def _write_yaml(path: Path, content: str) -> None:
-    '''Write YAML content to a file.'''
-
-    path.write_text(content, encoding='utf-8')
-
-
-def _write_strategy_file(base: Path, rel_path: str, content: str = '') -> None:
-    '''Create a strategy .py file.'''
-
-    file_path = base / rel_path
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(content or '# Strategy file\n', encoding='utf-8')
-
-
 class TestLoadManifest:
-    '''Tests for load_manifest function.'''
 
-    def test_valid_manifest_loads(self) -> None:
+    def test_valid_manifest_loads(self, tmp_path: Path) -> None:
         '''Valid YAML manifest loads successfully.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            _write_strategy_file(tmp_path, 'strategies/momentum.py')
-            _write_strategy_file(tmp_path, 'strategies/mean_rev.py')
+        _write_strategy_file(tmp_path, 'strategies/momentum.py')
+        _write_strategy_file(tmp_path, 'strategies/mean_rev.py')
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: momentum
-    file: strategies/momentum.py
-    permutation_ids:
-      - alpha_v1
-    capital_pct: 60
-  - id: mean_rev
-    file: strategies/mean_rev.py
-    permutation_ids:
-      - sensor_vol
-    capital_pct: 40
-''',
-            )
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: momentum\n'
+            f'    file: strategies/momentum.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 60\n'
+            f'  - id: mean_rev\n'
+            f'    file: strategies/mean_rev.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [2]\n'
+            f'        interval_seconds: 300\n'
+            f'    capital_pct: 40\n',
+        )
 
-            manifest = load_manifest(path, Decimal('20000'))
+        manifest = load_manifest(path, Decimal('20000'))
 
-            assert manifest.capital_pool == Decimal('10000')
-            assert len(manifest.strategies) == 2
-            assert manifest.strategies[0].strategy_id == 'momentum'
-            assert manifest.strategies[1].strategy_id == 'mean_rev'
+        assert manifest.capital_pool == Decimal('10000')
+        assert len(manifest.strategies) == 2
+        assert manifest.strategies[0].strategy_id == 'momentum'
+        assert manifest.strategies[1].strategy_id == 'mean_rev'
+        assert manifest.strategies[0].sensors[0].permutation_ids == (1,)
+        assert manifest.strategies[0].sensors[0].interval_seconds == 60
 
     def test_file_not_found_raises(self) -> None:
         '''Missing manifest file raises FileNotFoundError.'''
@@ -500,400 +269,423 @@ strategies:
         with pytest.raises(FileNotFoundError, match='Manifest file not found'):
             load_manifest(Path('/nonexistent/manifest.yaml'), Decimal('10000'))
 
-    def test_capital_pool_exceeds_allocated_raises(self) -> None:
+    def test_capital_pool_exceeds_allocated_raises(self, tmp_path: Path) -> None:
         '''capital_pool > allocated_capital raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 15000
-strategies:
-  - id: test
-    file: test.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match='exceeds allocated_capital'):
-                load_manifest(path, Decimal('10000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 15000\n'
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-    def test_non_finite_allocated_capital_raises(self) -> None:
+        with pytest.raises(ValueError, match='exceeds allocated_capital'):
+            load_manifest(path, Decimal('10000'))
+
+    def test_non_finite_allocated_capital_raises(self, tmp_path: Path) -> None:
         '''Non-finite allocated_capital raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            strategy = Path(tmp) / 'test.py'
-            strategy.write_text('pass')
-            _write_yaml(
-                path,
-                '''
-capital_pool: 5000
-strategies:
-  - id: test
-    file: test.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        strategy = tmp_path / 'test.py'
+        strategy.write_text('pass')
 
-            with pytest.raises(ValueError, match='allocated_capital must be a finite'):
-                load_manifest(path, Decimal('NaN'))
+        _write_yaml(
+            path,
+            f'capital_pool: 5000\n'
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-            with pytest.raises(ValueError, match='allocated_capital must be a finite'):
-                load_manifest(path, Decimal('Infinity'))
+        with pytest.raises(ValueError, match='allocated_capital must be a finite'):
+            load_manifest(path, Decimal('NaN'))
 
-    def test_missing_capital_pool_raises(self) -> None:
+        with pytest.raises(ValueError, match='allocated_capital must be a finite'):
+            load_manifest(path, Decimal('Infinity'))
+
+    def test_missing_capital_pool_raises(self, tmp_path: Path) -> None:
         '''Missing capital_pool raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-strategies:
-  - id: test
-    file: test.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match='missing required field: capital_pool'):
-                load_manifest(path, Decimal('10000'))
+        _write_yaml(
+            path,
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-    def test_missing_strategies_raises(self) -> None:
+        with pytest.raises(ValueError, match='missing required field: capital_pool'):
+            load_manifest(path, Decimal('10000'))
+
+    def test_missing_strategies_raises(self, tmp_path: Path) -> None:
         '''Missing strategies raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(path, 'capital_pool: 10000\n')
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(path, 'capital_pool: 10000\n')
 
-            with pytest.raises(ValueError, match='missing or empty strategies'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match='missing or empty strategies'):
+            load_manifest(path, Decimal('20000'))
 
-    def test_empty_strategies_raises(self) -> None:
+    def test_empty_strategies_raises(self, tmp_path: Path) -> None:
         '''Empty strategies list raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies: []
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(path, 'capital_pool: 10000\nstrategies: []\n')
 
-            with pytest.raises(ValueError, match='missing or empty strategies'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match='missing or empty strategies'):
+            load_manifest(path, Decimal('20000'))
 
-    def test_strategy_missing_id_raises(self) -> None:
+    def test_strategy_missing_id_raises(self, tmp_path: Path) -> None:
         '''Strategy missing id raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - file: test.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match='missing required field: id'):
-                load_manifest(path, Decimal('20000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-    def test_strategy_missing_file_raises(self) -> None:
+        with pytest.raises(ValueError, match='missing required field: id'):
+            load_manifest(path, Decimal('20000'))
+
+    def test_strategy_missing_file_raises(self, tmp_path: Path) -> None:
         '''Strategy missing file raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: test
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match='missing required field: file'):
-                load_manifest(path, Decimal('20000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-    def test_strategy_missing_permutation_ids_raises(self) -> None:
-        '''Strategy missing permutation_ids raises ValueError.'''
+        with pytest.raises(ValueError, match='missing required field: file'):
+            load_manifest(path, Decimal('20000'))
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: test
-    file: test.py
-    capital_pct: 100
-''',
-            )
+    def test_strategy_missing_sensors_raises(self, tmp_path: Path) -> None:
+        '''Strategy missing sensors raises ValueError.'''
 
-            with pytest.raises(ValueError, match='missing or empty permutation_ids'):
-                load_manifest(path, Decimal('20000'))
+        path = tmp_path / 'manifest.yaml'
 
-    def test_strategy_missing_capital_pct_raises(self) -> None:
+        _write_yaml(
+            path,
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    capital_pct: 100\n',
+        )
+
+        with pytest.raises(ValueError, match='missing or empty sensors'):
+            load_manifest(path, Decimal('20000'))
+
+    def test_strategy_missing_capital_pct_raises(self, tmp_path: Path) -> None:
         '''Strategy missing capital_pct raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: test
-    file: test.py
-    permutation_ids: [pred1]
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match='missing required field: capital_pct'):
-                load_manifest(path, Decimal('20000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n',
+        )
 
-    def test_malformed_yaml_raises(self) -> None:
+        with pytest.raises(ValueError, match='missing required field: capital_pct'):
+            load_manifest(path, Decimal('20000'))
+
+    def test_malformed_yaml_raises(self, tmp_path: Path) -> None:
         '''Malformed YAML raises yaml.YAMLError.'''
 
-        import yaml
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(path, 'capital_pool: [unclosed')
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(path, 'capital_pool: [unclosed')
+        with pytest.raises(yaml.YAMLError):
+            load_manifest(path, Decimal('20000'))
 
-            with pytest.raises(yaml.YAMLError):
-                load_manifest(path, Decimal('20000'))
-
-    def test_non_mapping_yaml_raises(self) -> None:
+    def test_non_mapping_yaml_raises(self, tmp_path: Path) -> None:
         '''Non-mapping YAML raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(path, '- item1\n- item2\n')
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(path, '- item1\n- item2\n')
 
-            with pytest.raises(ValueError, match='must be a YAML mapping'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match='must be a YAML mapping'):
+            load_manifest(path, Decimal('20000'))
 
-    def test_duplicate_strategy_id_raises(self) -> None:
+    def test_duplicate_strategy_id_raises(self, tmp_path: Path) -> None:
         '''Duplicate strategy_id raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: same
-    file: test1.py
-    permutation_ids: [pred1]
-    capital_pct: 50
-  - id: same
-    file: test2.py
-    permutation_ids: [pred2]
-    capital_pct: 50
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match='duplicate strategy_id'):
-                load_manifest(path, Decimal('20000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: same\n'
+            f'    file: test1.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 50\n'
+            f'  - id: same\n'
+            f'    file: test2.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [2]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 50\n',
+        )
 
-    def test_capital_pct_sum_over_100_raises(self) -> None:
+        with pytest.raises(ValueError, match='duplicate strategy_id'):
+            load_manifest(path, Decimal('20000'))
+
+    def test_capital_pct_sum_over_100_raises(self, tmp_path: Path) -> None:
         '''capital_pct sum > 100 raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: a
-    file: a.py
-    permutation_ids: [pred1]
-    capital_pct: 60
-  - id: b
-    file: b.py
-    permutation_ids: [pred2]
-    capital_pct: 50
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'a.py')
+        _write_strategy_file(tmp_path, 'b.py')
 
-            with pytest.raises(ValueError, match='exceeds 100'):
-                load_manifest(path, Decimal('20000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: a\n'
+            f'    file: a.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 60\n'
+            f'  - id: b\n'
+            f'    file: b.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [2]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 50\n',
+        )
 
-    def test_strategy_file_not_found_raises(self) -> None:
+        with pytest.raises(ValueError, match='exceeds 100'):
+            load_manifest(path, Decimal('20000'))
+
+    def test_strategy_file_not_found_raises(self, tmp_path: Path) -> None:
         '''Missing strategy .py file raises ValueError with path.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: missing_file
-    file: nonexistent/strategy.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            with pytest.raises(ValueError, match=r"file not found.*nonexistent/strategy\.py"):
-                load_manifest(path, Decimal('20000'))
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: missing_file\n'
+            f'    file: nonexistent/strategy.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-    def test_strategy_file_syntax_error_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"file not found.*nonexistent/strategy\.py"):
+            load_manifest(path, Decimal('20000'))
+
+    def test_strategy_file_syntax_error_raises(self, tmp_path: Path) -> None:
         '''Invalid Python syntax in strategy file raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            strategy_file = tmp_path / 'bad_syntax.py'
-            strategy_file.write_text('def broken(\n')
+        strategy_file = tmp_path / 'bad_syntax.py'
+        strategy_file.write_text('def broken(\n')
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: bad_syntax
-    file: bad_syntax.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: bad_syntax\n'
+            f'    file: bad_syntax.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-            with pytest.raises(ValueError, match=r'syntax error.*bad_syntax\.py'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match=r'syntax error.*bad_syntax\.py'):
+            load_manifest(path, Decimal('20000'))
 
-    def test_invalid_capital_pool_decimal_raises(self) -> None:
+    def test_invalid_capital_pool_decimal_raises(self, tmp_path: Path) -> None:
         '''Non-numeric capital_pool raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'test.py')
 
-            _write_strategy_file(tmp_path, 'test.py')
+        _write_yaml(
+            path,
+            f'capital_pool: not_a_number\n'
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: not_a_number
-strategies:
-  - id: test
-    file: test.py
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        with pytest.raises(ValueError, match='capital_pool is not a valid number'):
+            load_manifest(path, Decimal('20000'))
 
-            with pytest.raises(ValueError, match='capital_pool is not a valid number'):
-                load_manifest(path, Decimal('20000'))
-
-    def test_invalid_capital_pct_decimal_raises(self) -> None:
+    def test_invalid_capital_pct_decimal_raises(self, tmp_path: Path) -> None:
         '''Non-numeric capital_pct raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'test.py')
 
-            _write_strategy_file(tmp_path, 'test.py')
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: test\n'
+            f'    file: test.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: invalid\n',
+        )
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: test
-    file: test.py
-    permutation_ids: [pred1]
-    capital_pct: invalid
-''',
-            )
+        with pytest.raises(ValueError, match='capital_pct is not a valid number'):
+            load_manifest(path, Decimal('20000'))
 
-            with pytest.raises(ValueError, match='capital_pct is not a valid number'):
-                load_manifest(path, Decimal('20000'))
-
-    def test_absolute_file_path_raises(self) -> None:
+    def test_absolute_file_path_raises(self, tmp_path: Path) -> None:
         '''Absolute strategy file path raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: absolute
-    file: /etc/passwd
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: absolute\n'
+            f'    file: /etc/passwd\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-            with pytest.raises(ValueError, match='file must be relative'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match='file must be relative'):
+            load_manifest(path, Decimal('20000'))
 
-    def test_path_traversal_raises(self) -> None:
+    def test_path_traversal_raises(self, tmp_path: Path) -> None:
         '''Strategy file path escaping base raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: escape
-    file: ../../../etc/passwd
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: escape\n'
+            f'    file: ../../../etc/passwd\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-            with pytest.raises(ValueError, match='escapes base path'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match='escapes base path'):
+            load_manifest(path, Decimal('20000'))
 
-    def test_directory_instead_of_file_raises(self) -> None:
+    def test_directory_instead_of_file_raises(self, tmp_path: Path) -> None:
         '''Directory path instead of file raises ValueError.'''
 
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            path = tmp_path / 'manifest.yaml'
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        (tmp_path / 'a_directory').mkdir()
 
-            (tmp_path / 'a_directory').mkdir()
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: dir_not_file\n'
+            f'    file: a_directory\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
 
-            _write_yaml(
-                path,
-                '''
-capital_pool: 10000
-strategies:
-  - id: dir_not_file
-    file: a_directory
-    permutation_ids: [pred1]
-    capital_pct: 100
-''',
-            )
-
-            with pytest.raises(ValueError, match='file not found'):
-                load_manifest(path, Decimal('20000'))
+        with pytest.raises(ValueError, match='file not found'):
+            load_manifest(path, Decimal('20000'))

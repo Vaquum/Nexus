@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -164,5 +164,10 @@ class TestValidation:
 
     def test_naive_datetime_rejected(self) -> None:
         naive = datetime(2024, 1, 1)
-        with pytest.raises(ValueError, match='timezone-aware'):
+        with pytest.raises(ValueError, match='must be UTC'):
             _make_order(created_at=naive)
+
+    def test_non_utc_datetime_rejected(self) -> None:
+        non_utc = datetime(2024, 1, 1, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be UTC'):
+            _make_order(created_at=non_utc)

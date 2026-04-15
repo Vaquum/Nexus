@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -12,9 +12,36 @@ from nexus.infrastructure.state_store import StateStore
 from nexus.startup import StartupError, StartupSequencer
 
 
+@pytest.fixture(autouse=True)
+def _mock_trainer() -> None:
+    '''Patch Limen Trainer so startup tests skip real training.'''
+
+    mock_sensor = MagicMock()
+    mock_sensor.permutation_id = 1
+    mock_sensor.round_params = {}
+
+    mock_trainer = MagicMock()
+    mock_trainer.return_value.train.return_value = [mock_sensor]
+    mock_trainer.return_value._manifest = MagicMock()
+
+    with patch('nexus.startup.sequencer.Trainer', mock_trainer):
+        yield
+
+
 def _make_mock_state_store() -> MagicMock:
     mock = MagicMock(spec=StateStore)
     return mock
+
+
+def _sensors_yaml(tmp_path: Path) -> str:
+    exp_dir = tmp_path / 'experiment'
+    exp_dir.mkdir(exist_ok=True)
+    return (
+        f'    sensors:\n'
+        f'      - experiment: {exp_dir}\n'
+        f'        permutation_ids: [1]\n'
+        f'        interval_seconds: 60\n'
+    )
 
 
 _PLACEHOLDER_MANIFEST = Path('/placeholder/manifest.yaml')
@@ -119,7 +146,7 @@ class TestStartupSequencerStart:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -151,7 +178,7 @@ class TestStartupSequencerStart:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -178,7 +205,7 @@ class TestStartupSequencerStart:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -284,10 +311,11 @@ class TestExternalIntegrationStubs:
         with pytest.raises(StartupError, match='replay_strategy_events'):
             sequencer._replay_strategy_events()
 
-    def test_wire_predictor_fns_does_not_raise(self) -> None:
+    def test_wire_sensors_without_manifest_raises(self) -> None:
         sequencer = _make_sequencer()
 
-        sequencer._wire_predictor_fns()
+        with pytest.raises(StartupError, match='manifest not loaded'):
+            sequencer._wire_sensors()
 
     def test_register_timers_does_not_raise(self) -> None:
         sequencer = _make_sequencer()
@@ -319,7 +347,7 @@ class TestStrategyStateRestoration:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -348,7 +376,7 @@ class TestStrategyStateRestoration:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -390,7 +418,7 @@ class TestStrategyStateRestoration:
             'strategies:\n'
             '  - id: ../evil\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -421,7 +449,7 @@ class TestEventReplay:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -450,7 +478,7 @@ class TestEventReplay:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -488,7 +516,7 @@ class TestEventReplay:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -526,7 +554,7 @@ class TestStartupDispatch:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         sequencer = _make_sequencer(
@@ -570,7 +598,7 @@ class TestStartupDispatch:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         sequencer = _make_sequencer(
@@ -594,7 +622,7 @@ class TestStartupDispatch:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         sequencer = _make_sequencer(
@@ -653,7 +681,7 @@ class TestManifestLoading:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         sequencer = _make_sequencer(
@@ -687,7 +715,7 @@ class TestStrategyInstantiation:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         sequencer = _make_sequencer(
@@ -719,7 +747,7 @@ class TestStrategyInstantiation:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: bad_import.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         sequencer = _make_sequencer(
@@ -756,7 +784,7 @@ class TestCrashOnlyDesign:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -785,7 +813,7 @@ class TestCrashOnlyDesign:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -820,7 +848,7 @@ class TestCrashOnlyDesign:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         state_store = _make_mock_state_store()
@@ -854,7 +882,7 @@ class TestCrashOnlyDesign:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
         event = StrategyEvent(
@@ -892,7 +920,7 @@ class TestCrashOnlyDesign:
             'strategies:\n'
             '  - id: test_strat\n'
             '    file: strat.py\n'
-            '    permutation_ids: [p1]\n'
+            f'{_sensors_yaml(tmp_path)}'
             '    capital_pct: 50\n'
         )
 

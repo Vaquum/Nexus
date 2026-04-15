@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from decimal import Decimal
 from pathlib import Path
 
@@ -11,9 +12,12 @@ import structlog
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
+from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
+from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
 
 __all__ = ['ShutdownSequencer']
@@ -35,6 +39,11 @@ class ShutdownSequencer:
         state_store: Persistence facade for checkpointing.
         state: Current instance state.
         strategy_state_path: Directory for strategy state blobs.
+        predict_loop: Running PredictLoop to stop during shutdown.
+        praxis_outbound: Outbound connector for deregistration.
+        praxis_inbound: Inbound connector for outcome consumption.
+        account_id: Account identifier for Praxis deregistration.
+        shutdown_timeout: Seconds to wait for commands to reach terminal state.
     '''
 
     def __init__(
@@ -44,6 +53,11 @@ class ShutdownSequencer:
         state_store: StateStore,
         state: InstanceState,
         strategy_state_path: Path,
+        predict_loop: PredictLoop | None = None,
+        praxis_outbound: PraxisOutbound | None = None,
+        praxis_inbound: PraxisInbound | None = None,
+        account_id: str | None = None,
+        shutdown_timeout: float = 120.0,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -70,6 +84,11 @@ class ShutdownSequencer:
         self._state_store = state_store
         self._state = state
         self._strategy_state_path = strategy_state_path
+        self._predict_loop = predict_loop
+        self._praxis_outbound = praxis_outbound
+        self._praxis_inbound = praxis_inbound
+        self._account_id = account_id
+        self._shutdown_timeout = shutdown_timeout
         self._shutdown_actions: dict[str, list[Action]] = {}
         self._submitted_command_ids: list[str] = []
         self._save_blobs: dict[str, bytes] = {}
@@ -95,12 +114,18 @@ class ShutdownSequencer:
         self._deregister()
 
     def _stop_signals(self) -> None:
-        '''Stop predictor_fn signal subscriptions.
+        '''Stop Sensor signal generation.
 
-        Stub: logs warning, does nothing. See TD-013.
+        Stops the PredictLoop, preventing further predict cycles
+        and signal dispatch during shutdown.
         '''
 
-        _log.warning('stop_signals not implemented')
+        if self._predict_loop is None:
+            _log.warning('predict_loop not configured, skipping signal stop')
+            return
+
+        self._predict_loop.stop()
+        _log.info('predict loop stopped')
 
     def _stop_timers(self) -> None:
         '''Cancel all registered strategy timers.
@@ -144,11 +169,11 @@ class ShutdownSequencer:
                 _log.exception('on_shutdown failed', strategy_id=strategy_id)
 
     def _submit_actions(self) -> None:
-        '''Submit EXIT/ABORT actions through Validator.
+        '''Submit EXIT/ABORT actions through Validator to Praxis.
 
         Filters actions returned by strategies from _dispatch_shutdown.
         Only EXIT/ABORT are allowed during shutdown; ENTER/MODIFY skipped.
-        Validation and submission are stubs until Validator/Connector wired.
+        Filtered actions are submitted via PraxisOutbound when available.
         '''
 
         allowed_types = (ActionType.EXIT, ActionType.ABORT)
@@ -176,26 +201,60 @@ class ShutdownSequencer:
         if not filtered:
             return
 
+        if self._praxis_outbound is None:
+            _log.warning(
+                'praxis_outbound not configured, cannot submit shutdown actions',
+                action_count=len(filtered),
+            )
+            return
+
         _log.warning(
-            'submit_actions validation/submission not implemented',
+            'shutdown action submission not yet functional — '
+            'Action fields (TD-023) required for TradeCommand translation',
             action_count=len(filtered),
         )
 
     def _wait_terminal(self) -> None:
         '''Wait for all submitted commands to reach terminal state.
 
-        Stub: logs warning, returns immediately. No outcome tracking yet.
-        Future: poll/subscribe for TradeOutcome until all commands terminal.
-        On timeout: ABORT remaining commands, wait again with shorter timeout.
+        Polls PraxisInbound for outcomes matching submitted commands.
+        Returns when all commands are terminal or timeout expires.
+        Full ABORT escalation requires Action fields (TD-023).
         '''
 
         if not self._submitted_command_ids:
             return
 
-        _log.warning(
-            'wait_terminal not implemented',
-            command_count=len(self._submitted_command_ids),
-        )
+        if self._praxis_inbound is None:
+            _log.warning(
+                'praxis_inbound not configured, cannot wait for terminal outcomes',
+                command_count=len(self._submitted_command_ids),
+            )
+            return
+
+        deadline = time.monotonic() + self._shutdown_timeout
+        pending = set(self._submitted_command_ids)
+
+        while pending and time.monotonic() < deadline:
+            outcome = self._praxis_inbound.receive_outcome()
+
+            if outcome is None:
+                continue
+
+            if outcome.command_id in pending and outcome.outcome_type.is_terminal:
+                pending.discard(outcome.command_id)
+                _log.info(
+                    'command reached terminal state',
+                    command_id=outcome.command_id,
+                    outcome_type=outcome.outcome_type.value,
+                )
+
+        if pending:
+            _log.warning(
+                'shutdown timeout: commands still pending',
+                pending_count=len(pending),
+                pending_ids=sorted(pending),
+            )
 
     def _dispatch_save(self) -> None:
         '''Dispatch on_save to all strategies.
@@ -273,9 +332,13 @@ class ShutdownSequencer:
         self._state_store.checkpoint(self._state)
 
     def _deregister(self) -> None:
-        '''Deregister from Trading sub-system.
+        '''Deregister this account from Trading sub-system via PraxisOutbound.'''
 
-        Stub: logs warning, does nothing. See TD-012.
-        '''
+        if self._praxis_outbound is None or self._account_id is None:
+            _log.warning('praxis_outbound or account_id not configured, skipping deregistration')
+            return
 
-        _log.warning('deregister not implemented')
+        try:
+            self._praxis_outbound.deregister_account(self._account_id)
+        except Exception:  # noqa: BLE001 - deregister failure must not prevent shutdown completion
+            _log.exception('deregister failed', account_id=self._account_id)

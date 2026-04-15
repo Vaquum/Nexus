@@ -211,8 +211,18 @@ def test_naive_datetime_rejected() -> None:
     config = _config()
     now = datetime.now()
 
-    with pytest.raises(ValueError, match='timezone-aware'):
+    with pytest.raises(ValueError, match='requires UTC'):
         translate_to_trade_command(context, decision, config, now)
+
+
+def test_non_utc_datetime_rejected() -> None:
+    context = _enter_context()
+    decision = ValidationDecision(allowed=True, reservation=_reservation())
+    config = _config()
+    non_utc = datetime(2026, 3, 25, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+
+    with pytest.raises(ValueError, match='requires UTC'):
+        translate_to_trade_command(context, decision, config, non_utc)
 
 
 def test_deterministic_output() -> None:

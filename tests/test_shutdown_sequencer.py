@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import queue
+import tempfile
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -10,13 +13,18 @@ import pytest
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
-from nexus.infrastructure.manifest import Manifest, StrategySpec
+from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
+from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
+_EXP_DIR_HANDLE = tempfile.TemporaryDirectory()
+_EXP_DIR = Path(_EXP_DIR_HANDLE.name)
 
 
 def _make_mock_runner() -> MagicMock:
@@ -32,10 +40,15 @@ def _make_instance_state() -> InstanceState:
 
 
 def _make_strategy_spec(strategy_id: str = 'test_strategy') -> StrategySpec:
+    pfn = SensorSpec(
+        experiment_dir=_EXP_DIR,
+        permutation_ids=(1,),
+        interval_seconds=60,
+    )
     return StrategySpec(
         strategy_id=strategy_id,
         file='test.py',
-        permutation_ids=('perm1',),
+        sensors=(pfn,),
         capital_pct=Decimal('50'),
     )
 
@@ -288,3 +301,148 @@ class TestShutdownSequence:
         assert runner.dispatch_shutdown.call_count == 2
         assert runner.dispatch_save.call_count == 2
         assert state_store.checkpoint.call_count == 2
+
+
+class TestStopSignals:
+
+    def test_stop_signals_calls_predict_loop_stop(self) -> None:
+        '''_stop_signals calls predict_loop.stop().'''
+
+        mock_loop = MagicMock()
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            predict_loop=mock_loop,
+        )
+
+        sequencer._stop_signals()
+
+        mock_loop.stop.assert_called_once()
+
+    def test_stop_signals_without_predict_loop(self) -> None:
+        '''_stop_signals completes without error when predict_loop is None.'''
+
+        sequencer = _make_sequencer()
+        sequencer._stop_signals()
+
+    def test_shutdown_stops_signals_before_dispatch(self) -> None:
+        '''Full shutdown calls predict_loop.stop() before dispatching on_shutdown.'''
+
+        call_order: list[str] = []
+
+        mock_loop = MagicMock()
+        mock_loop.stop.side_effect = lambda: call_order.append('stop_signals')
+
+        runner = _make_mock_runner()
+        runner.dispatch_shutdown.side_effect = lambda *_a, **_kw: call_order.append('dispatch_shutdown')
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            predict_loop=mock_loop,
+        )
+
+        sequencer.shutdown()
+
+        assert call_order.index('stop_signals') < call_order.index('dispatch_shutdown')
+
+
+class TestWaitTerminal:
+
+    def test_wait_terminal_completes_on_terminal_outcome(self) -> None:
+        '''_wait_terminal returns when submitted commands reach terminal state.'''
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        q.put(outcome)
+
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            shutdown_timeout=5.0,
+        )
+        sequencer._submitted_command_ids.append('cmd_001')
+
+        sequencer._wait_terminal()
+
+        assert q.empty()
+
+    def test_wait_terminal_times_out_on_missing_outcome(self) -> None:
+        '''_wait_terminal logs warning when timeout expires with pending commands.'''
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.1,
+        )
+        sequencer._submitted_command_ids.append('cmd_never')
+
+        sequencer._wait_terminal()
+
+    def test_wait_terminal_without_inbound_skips(self) -> None:
+        '''_wait_terminal skips when praxis_inbound is not configured.'''
+
+        sequencer = _make_sequencer()
+        sequencer._submitted_command_ids.append('cmd_001')
+
+        sequencer._wait_terminal()
+
+    def test_wait_terminal_ignores_non_terminal_outcomes(self) -> None:
+        '''_wait_terminal ignores ACK/PARTIAL outcomes.'''
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        ack = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        filled = TradeOutcome(
+            outcome_id='out_002',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+        q.put(ack)
+        q.put(filled)
+
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            shutdown_timeout=5.0,
+        )
+        sequencer._submitted_command_ids.append('cmd_001')
+
+        sequencer._wait_terminal()
+
+        assert q.empty()

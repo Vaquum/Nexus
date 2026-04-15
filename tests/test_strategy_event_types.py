@@ -213,11 +213,24 @@ class TestSignal:
 
         from datetime import datetime as dt
 
-        with pytest.raises(ValueError, match='timezone-aware'):
+        with pytest.raises(ValueError, match='must be UTC'):
             Signal(
                 predictor_fn_id='test',
                 values={'CAN_ENTER': 1},
                 timestamp=dt.now(),
+            )
+
+    def test_non_utc_timestamp_rejected(self) -> None:
+        '''Non-UTC timezone raises ValueError.'''
+
+        from datetime import datetime as dt, timedelta, timezone as tz
+
+        non_utc = dt(2024, 1, 1, 12, 0, 0, tzinfo=tz(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be UTC'):
+            Signal(
+                predictor_fn_id='test',
+                values={'CAN_ENTER': 1},
+                timestamp=non_utc,
             )
 
 

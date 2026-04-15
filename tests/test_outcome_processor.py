@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OrderSide
@@ -384,7 +386,7 @@ class TestPositionGrowth:
         ) / Decimal('0.03')
         assert state.positions['trade_001'].entry_price == expected
 
-    def test_entry_fill_no_position_returns_false(self) -> None:
+    def test_entry_fill_no_position_raises(self) -> None:
         proc, ctrl, _, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
@@ -399,9 +401,8 @@ class TestPositionGrowth:
             actual_fees=Decimal('1'),
         )
 
-        result = proc.process(outcome, _entry_context())
-        assert result.success is True
-        assert result.position_updated is False
+        with pytest.raises(RuntimeError, match='missing position'):
+            proc.process(outcome, _entry_context())
 
 
 class TestPositionReduction:
@@ -462,7 +463,7 @@ class TestPositionReduction:
         proc.process(outcome, _exit_context())
         assert 'trade_001' not in state.positions
 
-    def test_exit_fill_overfill_rejected(self) -> None:
+    def test_exit_fill_overfill_raises(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)
 
@@ -487,10 +488,8 @@ class TestPositionReduction:
             actual_fees=Decimal('1'),
         )
 
-        result = proc.process(outcome, _exit_context())
-        assert result.success is True
-        assert result.position_updated is False
-        assert state.positions['trade_001'].size == Decimal('0.01')
+        with pytest.raises(RuntimeError, match='exceeds position size'):
+            proc.process(outcome, _exit_context())
 
 
 class TestCommandIdMismatch:

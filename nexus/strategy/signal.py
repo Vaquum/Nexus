@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any
@@ -19,7 +19,7 @@ class Signal:
         values: Signal values dict. Keys must be strings. Numeric values (int, float,
             Decimal) must be finite. Common patterns: binary flags (CAN_ENTER=1),
             confidence scores, directional strength.
-        timestamp: When the signal was generated (must be timezone-aware).
+        timestamp: When the signal was generated (must be UTC).
     '''
 
     predictor_fn_id: str
@@ -54,11 +54,8 @@ class Signal:
             msg = 'timestamp must be a datetime'
             raise ValueError(msg)
 
-        if (
-            self.timestamp.tzinfo is None
-            or self.timestamp.tzinfo.utcoffset(self.timestamp) is None
-        ):
-            msg = 'timestamp must be timezone-aware'
+        if self.timestamp.tzinfo is not timezone.utc:
+            msg = 'timestamp must be UTC'
             raise ValueError(msg)
 
         object.__setattr__(self, 'values', MappingProxyType(dict(self.values)))

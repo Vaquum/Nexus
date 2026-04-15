@@ -280,13 +280,13 @@ class TestReleaseReservation:
         assert result.reservation is not None
 
         released = ctrl.release_reservation(result.reservation.reservation_id)
-        assert released is True
+        assert released.success is True
         assert ctrl._state.reservation_notional == _ZERO
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
     def test_release_unknown_id(self) -> None:
         ctrl = _make_controller()
-        assert ctrl.release_reservation('nonexistent') is False
+        assert ctrl.release_reservation('nonexistent').success is False
 
     def test_double_release(self) -> None:
         ctrl = _make_controller()
@@ -294,8 +294,8 @@ class TestReleaseReservation:
         assert result.reservation is not None
         rid = result.reservation.reservation_id
 
-        assert ctrl.release_reservation(rid) is True
-        assert ctrl.release_reservation(rid) is False
+        assert ctrl.release_reservation(rid).success is True
+        assert ctrl.release_reservation(rid).success is False
 
 
 class TestConcurrency:
@@ -446,7 +446,7 @@ class TestSendOrder:
         assert result.reservation is not None
 
         sent = ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
-        assert sent is True
+        assert sent.success is True
         assert ctrl._state.reservation_notional == _ZERO
         assert ctrl._state.in_flight_order_notional == Decimal('101')
         assert 'ORD-001' in ctrl._orders
@@ -455,7 +455,7 @@ class TestSendOrder:
     def test_send_order_reservation_not_found(self) -> None:
         ctrl = _make_controller()
         sent = ctrl.send_order('nonexistent', 'ORD-001')
-        assert sent is False
+        assert sent.success is False
         assert ctrl._state.in_flight_order_notional == _ZERO
 
     def test_send_order_expired_reservation(self) -> None:
@@ -473,7 +473,7 @@ class TestSendOrder:
         ctrl._state.reservation_notional = Decimal('101')
 
         sent = ctrl.send_order('expired_001', 'ORD-001')
-        assert sent is False
+        assert sent.success is False
         assert ctrl._state.reservation_notional == _ZERO
         assert ctrl._state.in_flight_order_notional == _ZERO
 
@@ -504,7 +504,7 @@ class TestOrderAck:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
 
         acked = ctrl.order_ack('ORD-001')
-        assert acked is True
+        assert acked.success is True
         assert ctrl._state.in_flight_order_notional == _ZERO
         assert ctrl._state.working_order_notional == Decimal('101')
         assert ctrl._orders['ORD-001'].state == OrderLifecycleState.WORKING
@@ -512,7 +512,7 @@ class TestOrderAck:
     def test_order_ack_not_found(self) -> None:
         ctrl = _make_controller()
         acked = ctrl.order_ack('nonexistent')
-        assert acked is False
+        assert acked.success is False
 
     def test_order_ack_wrong_state(self) -> None:
         ctrl = _make_controller()
@@ -522,7 +522,7 @@ class TestOrderAck:
         ctrl.order_ack('ORD-001')
 
         acked_again = ctrl.order_ack('ORD-001')
-        assert acked_again is False
+        assert acked_again.success is False
 
 
 class TestOrderReject:
@@ -535,7 +535,7 @@ class TestOrderReject:
         assert ctrl._state.in_flight_order_notional == Decimal('101')
 
         rejected = ctrl.order_reject('ORD-001')
-        assert rejected is True
+        assert rejected.success is True
         assert ctrl._state.in_flight_order_notional == _ZERO
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
         assert 'ORD-001' not in ctrl._orders
@@ -543,7 +543,7 @@ class TestOrderReject:
     def test_order_reject_not_found(self) -> None:
         ctrl = _make_controller()
         rejected = ctrl.order_reject('nonexistent')
-        assert rejected is False
+        assert rejected.success is False
 
     def test_order_reject_wrong_state(self) -> None:
         ctrl = _make_controller()
@@ -553,7 +553,7 @@ class TestOrderReject:
         ctrl.order_ack('ORD-001')
 
         rejected = ctrl.order_reject('ORD-001')
-        assert rejected is False
+        assert rejected.success is False
 
 
 class TestOrderFill:
@@ -565,7 +565,7 @@ class TestOrderFill:
         ctrl.order_ack('ORD-001')
 
         filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('1'))
-        assert filled is True
+        assert filled.success is True
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('101')
         assert 'ORD-001' not in ctrl._orders
@@ -578,7 +578,7 @@ class TestOrderFill:
         ctrl.order_ack('ORD-001')
 
         filled = ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
-        assert filled is True
+        assert filled.success is True
         assert ctrl._state.working_order_notional == Decimal('606')
         assert ctrl._state.position_notional == Decimal('404')
         assert 'ORD-001' in ctrl._orders
@@ -592,14 +592,14 @@ class TestOrderFill:
         ctrl.order_ack('ORD-001')
 
         filled = ctrl.order_fill('ORD-001', Decimal('200'), Decimal('2'))
-        assert filled is False
+        assert filled.success is False
         assert ctrl._state.working_order_notional == Decimal('101')
         assert ctrl._state.position_notional == _ZERO
 
     def test_order_fill_not_found(self) -> None:
         ctrl = _make_controller()
         filled = ctrl.order_fill('nonexistent', Decimal('100'), Decimal('1'))
-        assert filled is False
+        assert filled.success is False
 
     def test_order_fill_wrong_state(self) -> None:
         ctrl = _make_controller()
@@ -608,7 +608,7 @@ class TestOrderFill:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
 
         filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('1'))
-        assert filled is False
+        assert filled.success is False
 
     def test_order_fill_invalid_notional(self) -> None:
         ctrl = _make_controller()
@@ -642,7 +642,7 @@ class TestOrderFill:
         pre_reserve = ctrl._state.fee_reserve
 
         filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('10'))
-        assert filled is False
+        assert filled.success is False
         assert ctrl._state.working_order_notional == pre_working
         assert ctrl._state.position_notional == pre_position
         assert ctrl._state.fee_reserve == pre_reserve
@@ -687,7 +687,7 @@ class TestOrderCancel:
         ctrl.order_ack('ORD-001')
 
         canceled = ctrl.order_cancel('ORD-001')
-        assert canceled is True
+        assert canceled.success is True
         assert ctrl._state.working_order_notional == _ZERO
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
         assert 'ORD-001' not in ctrl._orders
@@ -701,14 +701,14 @@ class TestOrderCancel:
         ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
 
         canceled = ctrl.order_cancel('ORD-001')
-        assert canceled is True
+        assert canceled.success is True
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('404')
 
     def test_order_cancel_not_found(self) -> None:
         ctrl = _make_controller()
         canceled = ctrl.order_cancel('nonexistent')
-        assert canceled is False
+        assert canceled.success is False
 
     def test_order_cancel_wrong_state(self) -> None:
         ctrl = _make_controller()
@@ -717,7 +717,7 @@ class TestOrderCancel:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
 
         canceled = ctrl.order_cancel('ORD-001')
-        assert canceled is False
+        assert canceled.success is False
 
 
 class TestLifecycleHappyPath:
@@ -832,12 +832,12 @@ class TestLifecycleConcurrency:
                 )
                 if res.granted and res.reservation:
                     sent = ctrl.send_order(res.reservation.reservation_id, f'ORD-{idx}')
-                    if sent:
+                    if sent.success:
                         acked = ctrl.order_ack(f'ORD-{idx}')
                         filled = ctrl.order_fill(
                             f'ORD-{idx}', Decimal('500'), Decimal('5')
                         )
-                        if not acked or not filled:
+                        if not acked.success or not filled.success:
                             msg = (
                                 f'Lifecycle failure ORD-{idx}: '
                                 f'acked={acked}, filled={filled}'
