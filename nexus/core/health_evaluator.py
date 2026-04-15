@@ -131,6 +131,15 @@ class HealthThresholds:
             msg = 'HealthThresholds: headroom thresholds must be warn <= breach <= halt'
             raise ValueError(msg)
 
+        for ratio_field in (
+            'failure_rate_warn', 'failure_rate_breach', 'failure_rate_halt',
+            'headroom_warn', 'headroom_breach', 'headroom_halt',
+        ):
+            val = getattr(self, ratio_field)
+            if val > 1.0:
+                msg = f'HealthThresholds.{ratio_field} must be <= 1.0, got {val}'
+                raise ValueError(msg)
+
 
 class HealthEvaluator:
     '''Evaluate health snapshot against thresholds to determine mode.

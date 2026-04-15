@@ -370,8 +370,12 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
                 msg = f'Strategy {strategy_id!r} timer interval_seconds must be an int, got {timer_interval!r}'
                 raise ValueError(msg)
 
+            if not isinstance(timer_id, str):
+                msg = f'Strategy {strategy_id!r} timer id must be a string, got {timer_id!r}'
+                raise ValueError(msg)
+
             timer_specs.append(
-                TimerSpec(timer_id=str(timer_id), interval_seconds=timer_interval)
+                TimerSpec(timer_id=timer_id, interval_seconds=timer_interval)
             )
 
         raw_capital_pct = raw_spec.get('capital_pct')
