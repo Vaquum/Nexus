@@ -9,7 +9,8 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
+from typing import Any
 
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 
@@ -34,11 +35,11 @@ class PraxisOutbound:
 
     def __init__(
         self,
-        submit_fn: Callable[..., Awaitable[str]],
+        submit_fn: Callable[..., Coroutine[Any, Any, str]],
         loop: asyncio.AbstractEventLoop,
         register_fn: Callable[[str], None] | None = None,
-        unregister_fn: Callable[[str], Awaitable[None]] | None = None,
-        pull_positions_fn: Callable[[str], dict[tuple[str, str], object]] | None = None,
+        unregister_fn: Callable[[str], Coroutine[Any, Any, None]] | None = None,
+        pull_positions_fn: Callable[[str], dict[tuple[str, str], Any]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
@@ -64,7 +65,7 @@ class PraxisOutbound:
 
         # NOTE: execution_mode and execution_params require Action fields (TD-023).
         # Placeholder values used until full Action → TradeCommand translation is built.
-        future = asyncio.run_coroutine_threadsafe(
+        future: concurrent.futures.Future[str] = asyncio.run_coroutine_threadsafe(
             self._submit_fn(
                 trade_id=command.trade_id or command.command_id,
                 account_id=command.account_id,
@@ -101,7 +102,7 @@ class PraxisOutbound:
             },
         )
 
-        return command_id
+        return str(command_id)
 
     def register_account(self, account_id: str) -> None:
         '''Register account with Praxis Trading.
@@ -136,7 +137,7 @@ class PraxisOutbound:
             msg = 'unregister_fn not configured'
             raise RuntimeError(msg)
 
-        future = asyncio.run_coroutine_threadsafe(
+        future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
             self._unregister_fn(account_id),
             self._loop,
         )
@@ -150,7 +151,7 @@ class PraxisOutbound:
 
         _log.info('account deregistered', extra={'account_id': account_id})
 
-    def pull_positions(self, account_id: str) -> dict[tuple[str, str], object]:
+    def pull_positions(self, account_id: str) -> dict[tuple[str, str], Any]:
         '''Pull positions snapshot from Praxis Trading.
 
         Args:

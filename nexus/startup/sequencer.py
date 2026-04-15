@@ -202,7 +202,7 @@ class StartupSequencer:
         except Exception as e:
             raise StartupError('reconcile_capital', str(e)) from e
 
-        praxis_by_trade_id: dict[str, object] = {}
+        praxis_by_trade_id: dict[str, Any] = {}
 
         try:
             for key, pos in praxis_positions.items():
