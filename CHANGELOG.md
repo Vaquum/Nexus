@@ -255,7 +255,7 @@
 - Preserve `STRATEGY_EVENT` WAL entries across checkpoint for rolling loss window recovery (TD-002)
 - Add [`SensorSpec`](nexus/infrastructure/manifest.py) frozen dataclass for Limen Sensor configuration (experiment_dir, permutation_ids, interval_seconds)
 - Replace `StrategySpec.permutation_ids` with `StrategySpec.sensors: tuple[SensorSpec, ...]` and update `load_manifest` YAML parsing
-- Add `vaquum_limen>=1.52.0` as runtime dependency
+- Add `vaquum_limen` as runtime dependency (installed from `git+https://github.com/Vaquum/Limen`)
 - Add `WiredSensor` dataclass and implement `_wire_sensors()` in `StartupSequencer` — calls `Trainer(experiment_dir).train(permutation_ids)` to produce Sensors during startup (TD-009)
 - Add [`signal_producer.py`](nexus/strategy/signal_producer.py) with `produce_signal()` for live feature preparation via `limen_manifest.prepare_data()` and predict-to-Signal translation
 - Add [`predict_loop.py`](nexus/strategy/predict_loop.py) with `PredictLoop` timer-based signal generation — per-sensor `threading.Timer` at `interval_seconds` calling `produce_signal` → `dispatch_signal`

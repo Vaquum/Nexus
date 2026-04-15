@@ -43,7 +43,7 @@ def translate_to_trade_command(
 
     Raises:
         ValueError: If decision is not allowed, command_id is missing,
-            or now is not timezone-aware.
+            or now is not UTC.
     '''
 
     if not decision.allowed:

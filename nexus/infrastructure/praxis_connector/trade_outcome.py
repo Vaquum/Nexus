@@ -25,7 +25,7 @@ class TradeOutcome:
         outcome_id: Unique outcome reference.
         command_id: Links to original TradeCommand.
         outcome_type: ACK, PARTIAL, FILLED, REJECTED, EXPIRED, or CANCELED.
-        timestamp: When outcome occurred (must be timezone-aware).
+        timestamp: When outcome occurred (must be UTC).
         fill_size: Base asset filled; required for PARTIAL/FILLED.
         fill_price: Execution price; required for PARTIAL/FILLED.
         fill_notional: Quote amount filled; required for PARTIAL/FILLED.
