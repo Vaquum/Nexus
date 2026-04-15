@@ -21,7 +21,9 @@ class HealthSnapshot:
         latency_p99_ms: Ack latency p99 in milliseconds.
         consecutive_failures: Number of consecutive failures.
         failure_rate: Failure rate over rolling window (0.0 to 1.0).
-        rate_limit_headroom: Rate limit utilization fraction (0.0 = idle, 1.0 = at limit). Higher is worse.
+        rate_limit_headroom: Rate limit utilization fraction (0.0 = idle, 1.0 = at limit).
+            Higher is worse. NOTE: health_stage.py uses inverted semantics
+            (higher_is_worse=False) — see TD-018 migration notes.
         clock_drift_ms: Clock drift from exchange in milliseconds.
     '''
 
@@ -40,6 +42,12 @@ class HealthSnapshot:
             val = getattr(self, field_name)
             if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
                 msg = f'HealthSnapshot.{field_name} must be a finite non-negative number'
+                raise ValueError(msg)
+
+        for ratio_field in ('failure_rate', 'rate_limit_headroom'):
+            val = getattr(self, ratio_field)
+            if val > 1.0:
+                msg = f'HealthSnapshot.{ratio_field} must be <= 1.0, got {val}'
                 raise ValueError(msg)
 
         if not isinstance(self.consecutive_failures, int) or isinstance(self.consecutive_failures, bool):
@@ -88,6 +96,10 @@ class HealthThresholds:
 
 class HealthEvaluator:
     '''Evaluate health snapshot against thresholds to determine mode.
+
+    Evaluates breach and halt thresholds only. Warn thresholds are
+    defined in HealthThresholds for future alert integration but are
+    not evaluated here — alert routing requires TD-026 (live health source).
 
     Args:
         thresholds: Health policy thresholds.
