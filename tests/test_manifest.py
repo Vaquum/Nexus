@@ -802,3 +802,32 @@ class TestLoadManifestTimers:
 
         with pytest.raises(ValueError, match='interval_seconds must be an int'):
             load_manifest(path, Decimal('20000'))
+
+    def test_duplicate_timer_id_raises(self, tmp_path: Path) -> None:
+        '''Duplicate timer_id raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'strat.py')
+
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: strat1\n'
+            f'    file: strat.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n'
+            f'    timers:\n'
+            f'      - id: check\n'
+            f'        interval_seconds: 30\n'
+            f'      - id: check\n'
+            f'        interval_seconds: 60\n',
+        )
+
+        with pytest.raises(ValueError, match='duplicate timer_id'):
+            load_manifest(path, Decimal('20000'))

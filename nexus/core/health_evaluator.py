@@ -105,7 +105,7 @@ class HealthThresholds:
             'clock_drift_max_ms',
         ):
             val = getattr(self, field_name)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
                 msg = f'HealthThresholds.{field_name} must be a finite non-negative number'
                 raise ValueError(msg)
 
