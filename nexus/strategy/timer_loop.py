@@ -97,6 +97,10 @@ class TimerLoop:
         try:
             context = self._context_provider(strategy_id)
 
+            with self._lock:
+                if not self._running:
+                    return
+
             self._runner.dispatch_timer(
                 strategy_id,
                 spec.timer_id,
