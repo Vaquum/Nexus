@@ -448,9 +448,8 @@ class StartupSequencer:
     def _register_timers(self) -> None:
         '''Register strategy timers from manifest.
 
-        Builds a TimerLoop from manifest timer specs and stores it
-        for later use. Does not start the loop — that happens after
-        startup completes.
+        Collects timer specs per strategy from the manifest. The caller
+        creates and starts a TimerLoop from the stored specs.
         '''
 
         if self._manifest is None:

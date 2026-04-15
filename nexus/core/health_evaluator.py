@@ -21,7 +21,7 @@ class HealthSnapshot:
         latency_p99_ms: Ack latency p99 in milliseconds.
         consecutive_failures: Number of consecutive failures.
         failure_rate: Failure rate over rolling window (0.0 to 1.0).
-        rate_limit_headroom: Rate limit utilization (0.0 to 1.0).
+        rate_limit_headroom: Rate limit utilization fraction (0.0 = idle, 1.0 = at limit). Higher is worse.
         clock_drift_ms: Clock drift from exchange in milliseconds.
     '''
 
@@ -38,7 +38,7 @@ class HealthSnapshot:
 
         for field_name in ('latency_p99_ms', 'failure_rate', 'rate_limit_headroom', 'clock_drift_ms'):
             val = getattr(self, field_name)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+            if isinstance(val, bool) or not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
                 msg = f'HealthSnapshot.{field_name} must be a finite non-negative number'
                 raise ValueError(msg)
 

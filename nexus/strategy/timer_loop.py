@@ -85,7 +85,7 @@ class TimerLoop:
             args=(strategy_id, spec),
         )
         timer.daemon = True
-        timer_key = f'{strategy_id}:{spec.timer_id}'
+        timer_key = f'{strategy_id}\0{spec.timer_id}'
         self._active_timers[timer_key] = timer
         timer.start()
 
