@@ -13,10 +13,11 @@ import structlog
 from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
-from nexus.infrastructure.manifest import Manifest, load_manifest
+from nexus.infrastructure.manifest import Manifest, TimerSpec, load_manifest
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.error import StartupError
 from nexus.strategy.context import StrategyContext
@@ -81,6 +82,8 @@ class StartupSequencer:
         strategy_state_path: Path | None = None,
         praxis_outbound: PraxisOutbound | None = None,
         account_id: str | None = None,
+        health_evaluator: HealthEvaluator | None = None,
+        health_snapshot: HealthSnapshot | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
             msg = 'state_store must be a StateStore instance'
@@ -113,12 +116,21 @@ class StartupSequencer:
         self._strategy_state_path = strategy_state_path
         self._praxis_outbound = praxis_outbound
         self._account_id = account_id
+        self._health_evaluator = health_evaluator
+        self._health_snapshot = health_snapshot
 
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
         self._runner: StrategyRunner | None = None
         self._mode: OperationalMode | None = None
         self._wired_sensors: list[WiredSensor] = []
+        self._timer_specs: dict[str, tuple[TimerSpec, ...]] = {}
+
+    @property
+    def timer_specs(self) -> dict[str, tuple[TimerSpec, ...]]:
+        '''Return registered timer specs by strategy_id.'''
+
+        return dict(self._timer_specs)
 
     @property
     def wired_sensors(self) -> list[WiredSensor]:
@@ -434,23 +446,44 @@ class StartupSequencer:
                     )
 
     def _register_timers(self) -> None:
-        '''Register strategy timers.
+        '''Register strategy timers from manifest.
 
-        Stub: logs warning, does nothing. See TD-010.
-        Timer registration not implemented yet.
+        Collects timer specs per strategy from the manifest. The caller
+        creates and starts a TimerLoop from the stored specs.
         '''
 
-        _log.warning('register_timers not implemented')
+        if self._manifest is None:
+            raise StartupError('register_timers', 'manifest not loaded')
+
+        strategy_timers: dict[str, tuple[TimerSpec, ...]] = {}
+
+        for spec in self._manifest.strategies:
+            if spec.timers:
+                strategy_timers[spec.strategy_id] = spec.timers
+                for t in spec.timers:
+                    _log.info(
+                        'registered timer',
+                        strategy_id=spec.strategy_id,
+                        timer_id=t.timer_id,
+                        interval_seconds=t.interval_seconds,
+                    )
+
+        self._timer_specs = strategy_timers
 
     def _determine_mode(self) -> None:
         '''Determine operational mode based on health.
 
-        Stub: always sets ACTIVE. See TD-011.
-        Health check not implemented yet.
+        Evaluates health snapshot against thresholds if a health_evaluator
+        and health_snapshot are configured. Defaults to ACTIVE when health
+        data is unavailable (no health signal source wired yet — TD-026).
         '''
 
-        _log.warning('determine_mode health check not implemented, defaulting to ACTIVE')
-        self._mode = OperationalMode.ACTIVE
+        if self._health_evaluator is not None and self._health_snapshot is not None:
+            self._mode = self._health_evaluator.evaluate(self._health_snapshot)
+            _log.info('mode determined from health', mode=self._mode.value)
+        else:
+            _log.warning('no health data available, defaulting to ACTIVE')
+            self._mode = OperationalMode.ACTIVE
 
     def _dispatch_startup(self) -> None:
         '''Dispatch on_startup to all strategies.

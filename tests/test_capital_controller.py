@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -342,6 +343,7 @@ class TestExpiredPurge:
             expires_at=past + timedelta(seconds=1),
         )
         ctrl._reservations['expired_001'] = expired_res
+        heapq.heappush(ctrl._expiry_heap, (expired_res.expires_at, 'expired_001'))
         ctrl._state.reservation_notional = Decimal('505')
         ctrl._state.per_strategy_deployed['strat_a'] = Decimal('505')
 
@@ -364,6 +366,7 @@ class TestExpiredPurge:
             expires_at=past + timedelta(seconds=30),
         )
         ctrl._reservations['expired_002'] = expired_res
+        heapq.heappush(ctrl._expiry_heap, (expired_res.expires_at, 'expired_002'))
         ctrl._state.reservation_notional = Decimal('202')
 
         with caplog.at_level('WARNING'):
@@ -391,6 +394,7 @@ class TestExpiredPurge:
                 expires_at=past + timedelta(seconds=30),
             )
             ctrl._reservations[f'expired_{i}'] = res
+            heapq.heappush(ctrl._expiry_heap, (res.expires_at, f'expired_{i}'))
         ctrl._state.reservation_notional = Decimal('303')
 
         with caplog.at_level('WARNING'):
@@ -470,6 +474,7 @@ class TestSendOrder:
             expires_at=past + timedelta(seconds=1),
         )
         ctrl._reservations['expired_001'] = expired
+        heapq.heappush(ctrl._expiry_heap, (expired.expires_at, 'expired_001'))
         ctrl._state.reservation_notional = Decimal('101')
 
         sent = ctrl.send_order('expired_001', 'ORD-001')

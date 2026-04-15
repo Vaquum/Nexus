@@ -226,9 +226,10 @@ Several hot paths and recovery routines use linear O(N) scans and manual diction
 
 **When to fix**: Before high-frequency trading (HFT) or large-scale multi-strategy deployments.
 **Migration**:
-- Replace O(N) dictionary/list scans with O(1) or O(log N) structures (e.g., `collections.deque` or `heapq` for expiration tracking).
-- If `Decimal` precision is not required for a hot path, consider switching that path to float-based aggregation and NumPy; otherwise optimize the `Decimal` path by reducing repeated `Decimal` operations and avoiding full re-scans.
-- Implement batch processing or incremental updates for rolling loss windows so recovery and loss derivation update aggregates from prior state instead of recalculating across the full WAL.
+- ~~Replace O(N) dictionary/list scans~~ RESOLVED in v0.26.0 (X.2.3.1) — `_purge_expired` uses heapq, `make_duplicate_order_hook` uses deque.
+- `derive_rolling_losses` Decimal arithmetic is already O(n) single-pass with early exits. Float aggregation rejected — RFC requires Decimal precision for financial calculations. No further optimization needed unless event volume exceeds 100k per recovery.
+- `WriteAheadLog.read_all` reads sequentially with length-prefixed records — no skip-ahead possible without reading headers. Memory-mapping doesn't help for variable-length records. Marginal optimization; real fix is incremental updates (below) that avoid full WAL reads.
+- ~~Incremental rolling loss updates~~ RESOLVED by TD-002 (X.1.1.4) — snapshot preserves rolling losses, `truncate_keeping_events` retains post-checkpoint events only, recovery re-derives from delta events not full WAL.
 
 ---
 
@@ -313,3 +314,31 @@ This affects crash recovery where Nexus state is lost but Praxis still holds pos
 
 **When to fix**: Before production crash recovery or multi-strategy deployments.
 **Migration**: Either (a) add `strategy_id` passthrough to Praxis Position (Praxis stores what Nexus sends in trade metadata), or (b) maintain a persistent `trade_id → strategy_id` mapping in Nexus WAL that survives state loss.
+
+---
+
+## TD-025: PredictLoop and TimerLoop use threading.Timer per tick (thread churn)
+
+**Origin**: MMVP-X.1 predict loop (X.1.2.4), MMVP-X.2 timer loop (X.2.1.1)
+**Severity**: Low (correct but wasteful at scale)
+**Modules**: `nexus/strategy/predict_loop.py`, `nexus/strategy/timer_loop.py`
+
+`threading.Timer` fires once and creates a new thread per fire. Both loops reschedule by creating a new Timer at the end of each tick. With many sensors/timers or short intervals, this causes thread churn — continuous thread creation and teardown. A single persistent thread per loop with `time.sleep` or `threading.Event.wait(timeout)` would be more efficient.
+
+**When to fix**: Before HFT or high-sensor-count deployments.
+**Migration**: Replace per-tick `threading.Timer` with a single scheduler thread per loop that sleeps between fires. Maintain the same lock-guarded `_running` check pattern.
+
+---
+
+## TD-026: Health snapshot has no live data source
+
+**Origin**: MMVP-X.2 health evaluation (X.2.2)
+**Severity**: High (mode determination always defaults to ACTIVE without real health data)
+**Module**: `nexus/startup/sequencer.py`
+
+`_determine_mode()` evaluates a `HealthSnapshot` against `HealthThresholds` to set operational mode. The evaluation logic works, but there is no mechanism to populate `HealthSnapshot` with real health data from Praxis. Health signals (latency, consecutive failures, failure rate, rate limit headroom, clock drift) must come from the Trading sub-system via `PraxisInbound` or a dedicated health channel.
+
+Without a live health source, `_determine_mode()` defaults to ACTIVE at startup, and there is no periodic re-evaluation during runtime (the RFC requires continuous health monitoring via `CONTINUOUS_LIMIT_EVAL_INTERVAL_SECONDS`).
+
+**When to fix**: When Praxis TD-016 exposes health signals.
+**Migration**: Add a health signal delivery mechanism from Praxis (either via the outcome queue or a separate channel). Implement periodic health re-evaluation in the Nexus instance thread. Update mode on each evaluation and trigger mode transitions (ACTIVE → REDUCE_ONLY → HALTED) with alerts.
