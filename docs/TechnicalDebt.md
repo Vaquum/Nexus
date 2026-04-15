@@ -326,3 +326,18 @@ This affects crash recovery where Nexus state is lost but Praxis still holds pos
 
 **When to fix**: Before HFT or high-sensor-count deployments.
 **Migration**: Replace per-tick `threading.Timer` with a single scheduler thread per loop that sleeps between fires. Maintain the same lock-guarded `_running` check pattern.
+
+---
+
+## TD-026: Health snapshot has no live data source
+
+**Origin**: MMVP-X.2 health evaluation (X.2.2)
+**Severity**: High (mode determination always defaults to ACTIVE without real health data)
+**Module**: `nexus/startup/sequencer.py`
+
+`_determine_mode()` evaluates a `HealthSnapshot` against `HealthThresholds` to set operational mode. The evaluation logic works, but there is no mechanism to populate `HealthSnapshot` with real health data from Praxis. Health signals (latency, consecutive failures, failure rate, rate limit headroom, clock drift) must come from the Trading sub-system via `PraxisInbound` or a dedicated health channel.
+
+Without a live health source, `_determine_mode()` defaults to ACTIVE at startup, and there is no periodic re-evaluation during runtime (the RFC requires continuous health monitoring via `CONTINUOUS_LIMIT_EVAL_INTERVAL_SECONDS`).
+
+**When to fix**: When Praxis TD-016 exposes health signals.
+**Migration**: Add a health signal delivery mechanism from Praxis (either via the outcome queue or a separate channel). Implement periodic health re-evaluation in the Nexus instance thread. Update mode on each evaluation and trigger mode transitions (ACTIVE → REDUCE_ONLY → HALTED) with alerts.

@@ -13,6 +13,7 @@ import structlog
 from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
@@ -81,6 +82,8 @@ class StartupSequencer:
         strategy_state_path: Path | None = None,
         praxis_outbound: PraxisOutbound | None = None,
         account_id: str | None = None,
+        health_evaluator: HealthEvaluator | None = None,
+        health_snapshot: HealthSnapshot | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
             msg = 'state_store must be a StateStore instance'
@@ -113,6 +116,8 @@ class StartupSequencer:
         self._strategy_state_path = strategy_state_path
         self._praxis_outbound = praxis_outbound
         self._account_id = account_id
+        self._health_evaluator = health_evaluator
+        self._health_snapshot = health_snapshot
 
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
@@ -469,12 +474,17 @@ class StartupSequencer:
     def _determine_mode(self) -> None:
         '''Determine operational mode based on health.
 
-        Stub: always sets ACTIVE. See TD-011.
-        Health check not implemented yet.
+        Evaluates health snapshot against thresholds if a health_evaluator
+        and health_snapshot are configured. Defaults to ACTIVE when health
+        data is unavailable (no health signal source wired yet — TD-026).
         '''
 
-        _log.warning('determine_mode health check not implemented, defaulting to ACTIVE')
-        self._mode = OperationalMode.ACTIVE
+        if self._health_evaluator is not None and self._health_snapshot is not None:
+            self._mode = self._health_evaluator.evaluate(self._health_snapshot)
+            _log.info('mode determined from health', mode=self._mode.value)
+        else:
+            _log.warning('no health data available, defaulting to ACTIVE')
+            self._mode = OperationalMode.ACTIVE
 
     def _dispatch_startup(self) -> None:
         '''Dispatch on_startup to all strategies.
