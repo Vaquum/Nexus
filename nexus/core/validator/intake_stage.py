@@ -136,6 +136,7 @@ def make_duplicate_order_hook(
     clock = now_fn or (lambda: datetime.now(tz=timezone.utc))
     duplicate_window_seconds = duplicate_window_ms / 1000
     seen: dict[tuple[str, ...], float] = {}
+    expiry_deque: deque[tuple[float, tuple[str, ...]]] = deque()
     lock = Lock()
 
     def hook(context: ValidationRequestContext) -> ValidationDecision | None:
@@ -168,8 +169,8 @@ def make_duplicate_order_hook(
         cutoff = now - duplicate_window_seconds
 
         with lock:
-            stale_keys = [k for k, ts in seen.items() if ts <= cutoff]
-            for stale_key in stale_keys:
+            while expiry_deque and expiry_deque[0][0] <= cutoff:
+                _, stale_key = expiry_deque.popleft()
                 seen.pop(stale_key, None)
 
             prior = seen.get(key)
@@ -185,6 +186,7 @@ def make_duplicate_order_hook(
                 )
 
             seen[key] = now
+            expiry_deque.append((now, key))
         return None
 
     return hook

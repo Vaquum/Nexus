@@ -6,6 +6,7 @@ TOCTOU races when multiple strategies compete for the same pool.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import threading
 import uuid
@@ -49,6 +50,7 @@ class CapitalController:
         self._state = capital_state
         self._lock = threading.Lock()
         self._reservations: dict[str, Reservation] = {}
+        self._expiry_heap: list[tuple[datetime, str]] = []
         self._orders: dict[str, TrackedOrder] = {}
 
     def check_and_reserve(
@@ -194,6 +196,7 @@ class CapitalController:
             )
 
             self._reservations[reservation.reservation_id] = reservation
+            heapq.heappush(self._expiry_heap, (reservation.expires_at, reservation.reservation_id))
             self._state.reservation_notional += total
             self._adjust_strategy_deployed(strategy_id, total)
 
@@ -254,10 +257,14 @@ class CapitalController:
     def _purge_expired(self, now: datetime | None = None) -> None:
         if now is None:
             now = datetime.now(tz=timezone.utc)
-        expired = [rid for rid, r in self._reservations.items() if r.is_expired(now)]
 
-        for rid in expired:
-            reservation = self._reservations.pop(rid)
+        while self._expiry_heap and self._expiry_heap[0][0] <= now:
+            _, rid = heapq.heappop(self._expiry_heap)
+            reservation = self._reservations.pop(rid, None)
+
+            if reservation is None:
+                continue
+
             self._state.reservation_notional -= reservation.total
             self._adjust_strategy_deployed(
                 reservation.strategy_id,
