@@ -446,3 +446,29 @@ class TestWaitTerminal:
         sequencer._wait_terminal()
 
         assert q.empty()
+
+
+class TestStopTimers:
+
+    def test_stop_timers_calls_timer_loop_stop(self) -> None:
+        '''_stop_timers calls timer_loop.stop().'''
+
+        mock_loop = MagicMock()
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            timer_loop=mock_loop,
+        )
+
+        sequencer._stop_timers()
+
+        mock_loop.stop.assert_called_once()
+
+    def test_stop_timers_without_timer_loop(self) -> None:
+        '''_stop_timers completes without error when timer_loop is None.'''
+
+        sequencer = _make_sequencer()
+        sequencer._stop_timers()

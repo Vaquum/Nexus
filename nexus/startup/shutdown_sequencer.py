@@ -19,6 +19,7 @@ from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
+from nexus.strategy.timer_loop import TimerLoop
 
 __all__ = ['ShutdownSequencer']
 
@@ -40,6 +41,7 @@ class ShutdownSequencer:
         state: Current instance state.
         strategy_state_path: Directory for strategy state blobs.
         predict_loop: Running PredictLoop to stop during shutdown.
+        timer_loop: Running TimerLoop to stop during shutdown.
         praxis_outbound: Outbound connector for deregistration.
         praxis_inbound: Inbound connector for outcome consumption.
         account_id: Account identifier for Praxis deregistration.
@@ -54,6 +56,7 @@ class ShutdownSequencer:
         state: InstanceState,
         strategy_state_path: Path,
         predict_loop: PredictLoop | None = None,
+        timer_loop: TimerLoop | None = None,
         praxis_outbound: PraxisOutbound | None = None,
         praxis_inbound: PraxisInbound | None = None,
         account_id: str | None = None,
@@ -85,6 +88,7 @@ class ShutdownSequencer:
         self._state = state
         self._strategy_state_path = strategy_state_path
         self._predict_loop = predict_loop
+        self._timer_loop = timer_loop
         self._praxis_outbound = praxis_outbound
         self._praxis_inbound = praxis_inbound
         self._account_id = account_id
@@ -130,10 +134,16 @@ class ShutdownSequencer:
     def _stop_timers(self) -> None:
         '''Cancel all registered strategy timers.
 
-        Stub: logs warning, does nothing. See TD-014.
+        Stops the TimerLoop, preventing further on_timer callbacks
+        during shutdown.
         '''
 
-        _log.warning('stop_timers not implemented')
+        if self._timer_loop is None:
+            _log.warning('timer_loop not configured, skipping timer stop')
+            return
+
+        self._timer_loop.stop()
+        _log.info('timer loop stopped')
 
     def _dispatch_shutdown(self) -> None:
         '''Dispatch on_shutdown to all strategies.
