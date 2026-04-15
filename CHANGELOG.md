@@ -269,3 +269,18 @@
 - Split `test_manifest.py` into `test_sensor_spec.py`, `test_strategy_spec.py`, `test_manifest.py`
 - Add `docs/TechnicalDebt.md` entries TD-019 through TD-024 for deferred work
 - Add 53 tests across new modules (944 total)
+
+## v0.26.0 on 15th of April, 2026
+
+- Add [`TimerSpec`](nexus/infrastructure/manifest.py) frozen dataclass for strategy timer configuration (timer_id, interval_seconds)
+- Add optional `timers` field to `StrategySpec` with duplicate timer_id rejection
+- Update `load_manifest` YAML parsing for optional `timers` entries
+- Add [`timer_loop.py`](nexus/strategy/timer_loop.py) with `TimerLoop` class — per-strategy `threading.Timer` scheduling for `on_timer` callbacks (TD-010)
+- Implement `_register_timers()` in `StartupSequencer` — extracts timer specs from manifest (TD-010)
+- Implement `_stop_timers()` in `ShutdownSequencer` via `TimerLoop.stop()` (TD-014)
+- Add [`health_evaluator.py`](nexus/core/health_evaluator.py) with `HealthEvaluator`, `HealthSnapshot`, and `HealthThresholds` for three-threshold mode determination (warn/breach/halt) (TD-011)
+- Implement `_determine_mode()` in `StartupSequencer` — evaluates health snapshot against thresholds, defaults to ACTIVE when no health data available
+- Replace O(N) dictionary scan in `_purge_expired` with `heapq`-based expiry tracking (TD-018)
+- Replace O(N) dictionary scan in `make_duplicate_order_hook` with `collections.deque`-based chronological expiry (TD-018)
+- Add `docs/TechnicalDebt.md` entries TD-025 (thread churn) and TD-026 (health data source)
+- Add 28 tests across new modules (972 total)
