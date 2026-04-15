@@ -689,3 +689,116 @@ class TestLoadManifest:
 
         with pytest.raises(ValueError, match='file not found'):
             load_manifest(path, Decimal('20000'))
+
+
+class TestLoadManifestTimers:
+
+    def test_manifest_with_timers_loads(self, tmp_path: Path) -> None:
+        '''Manifest with valid timers parses correctly.'''
+
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'strat.py')
+
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: strat1\n'
+            f'    file: strat.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n'
+            f'    timers:\n'
+            f'      - id: trailing_stop\n'
+            f'        interval_seconds: 30\n'
+            f'      - id: position_review\n'
+            f'        interval_seconds: 300\n',
+        )
+
+        manifest = load_manifest(path, Decimal('20000'))
+
+        assert len(manifest.strategies[0].timers) == 2
+        assert manifest.strategies[0].timers[0].timer_id == 'trailing_stop'
+        assert manifest.strategies[0].timers[1].interval_seconds == 300
+
+    def test_manifest_without_timers_loads(self, tmp_path: Path) -> None:
+        '''Manifest without timers field defaults to empty tuple.'''
+
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'strat.py')
+
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: strat1\n'
+            f'    file: strat.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n',
+        )
+
+        manifest = load_manifest(path, Decimal('20000'))
+
+        assert manifest.strategies[0].timers == ()
+
+    def test_timer_missing_id_raises(self, tmp_path: Path) -> None:
+        '''Timer missing id raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'strat.py')
+
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: strat1\n'
+            f'    file: strat.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n'
+            f'    timers:\n'
+            f'      - interval_seconds: 30\n',
+        )
+
+        with pytest.raises(ValueError, match='timer missing required field: id'):
+            load_manifest(path, Decimal('20000'))
+
+    def test_timer_bool_interval_raises(self, tmp_path: Path) -> None:
+        '''Timer with bool interval_seconds raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        exp_dir = tmp_path / 'experiment'
+        exp_dir.mkdir()
+        _write_strategy_file(tmp_path, 'strat.py')
+
+        _write_yaml(
+            path,
+            f'capital_pool: 10000\n'
+            f'strategies:\n'
+            f'  - id: strat1\n'
+            f'    file: strat.py\n'
+            f'    sensors:\n'
+            f'      - experiment: {exp_dir}\n'
+            f'        permutation_ids: [1]\n'
+            f'        interval_seconds: 60\n'
+            f'    capital_pct: 100\n'
+            f'    timers:\n'
+            f'      - id: check\n'
+            f'        interval_seconds: true\n',
+        )
+
+        with pytest.raises(ValueError, match='interval_seconds must be an int'):
+            load_manifest(path, Decimal('20000'))

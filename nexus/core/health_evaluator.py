@@ -93,6 +93,44 @@ class HealthThresholds:
     headroom_halt: float = 0.90
     clock_drift_max_ms: float = 500.0
 
+    def __post_init__(self) -> None:
+        '''Validate threshold ordering invariants.'''
+
+        import math
+
+        for field_name in (
+            'latency_warn_ms', 'latency_breach_ms', 'latency_halt_ms',
+            'failure_rate_warn', 'failure_rate_breach', 'failure_rate_halt',
+            'headroom_warn', 'headroom_breach', 'headroom_halt',
+            'clock_drift_max_ms',
+        ):
+            val = getattr(self, field_name)
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+                msg = f'HealthThresholds.{field_name} must be a finite non-negative number'
+                raise ValueError(msg)
+
+        for field_name in ('failure_warn', 'failure_breach', 'failure_halt'):
+            val = getattr(self, field_name)
+            if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                msg = f'HealthThresholds.{field_name} must be a non-negative int'
+                raise ValueError(msg)
+
+        if not (self.latency_warn_ms <= self.latency_breach_ms <= self.latency_halt_ms):
+            msg = 'HealthThresholds: latency thresholds must be warn <= breach <= halt'
+            raise ValueError(msg)
+
+        if not (self.failure_warn <= self.failure_breach <= self.failure_halt):
+            msg = 'HealthThresholds: failure thresholds must be warn <= breach <= halt'
+            raise ValueError(msg)
+
+        if not (self.failure_rate_warn <= self.failure_rate_breach <= self.failure_rate_halt):
+            msg = 'HealthThresholds: failure_rate thresholds must be warn <= breach <= halt'
+            raise ValueError(msg)
+
+        if not (self.headroom_warn <= self.headroom_breach <= self.headroom_halt):
+            msg = 'HealthThresholds: headroom thresholds must be warn <= breach <= halt'
+            raise ValueError(msg)
+
 
 class HealthEvaluator:
     '''Evaluate health snapshot against thresholds to determine mode.

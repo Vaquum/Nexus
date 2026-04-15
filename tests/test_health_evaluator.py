@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.health_evaluator import (
     HealthEvaluator,
@@ -106,7 +108,7 @@ class TestHealthEvaluator:
     def test_custom_thresholds(self) -> None:
         '''Custom thresholds override defaults.'''
 
-        thresholds = HealthThresholds(latency_breach_ms=100.0, latency_halt_ms=200.0)
+        thresholds = HealthThresholds(latency_warn_ms=50.0, latency_breach_ms=100.0, latency_halt_ms=200.0)
         evaluator = HealthEvaluator(thresholds)
 
         assert evaluator.evaluate(HealthSnapshot(latency_p99_ms=150.0)) == OperationalMode.REDUCE_ONLY
@@ -124,3 +126,49 @@ class TestHealthEvaluator:
         )
 
         assert evaluator.evaluate(snapshot) == OperationalMode.ACTIVE
+
+
+class TestHealthSnapshotValidation:
+
+    def test_nan_latency_raises(self) -> None:
+        with pytest.raises(ValueError, match='finite non-negative'):
+            HealthSnapshot(latency_p99_ms=float('nan'))
+
+    def test_negative_failure_rate_raises(self) -> None:
+        with pytest.raises(ValueError, match='finite non-negative'):
+            HealthSnapshot(failure_rate=-0.1)
+
+    def test_failure_rate_over_one_raises(self) -> None:
+        with pytest.raises(ValueError, match=r'<= 1\.0'):
+            HealthSnapshot(failure_rate=1.5)
+
+    def test_headroom_over_one_raises(self) -> None:
+        with pytest.raises(ValueError, match=r'<= 1\.0'):
+            HealthSnapshot(rate_limit_headroom=1.1)
+
+    def test_bool_latency_raises(self) -> None:
+        with pytest.raises(ValueError, match='finite non-negative'):
+            HealthSnapshot(latency_p99_ms=True)  # type: ignore[arg-type]
+
+    def test_bool_consecutive_failures_raises(self) -> None:
+        with pytest.raises(ValueError, match='must be an int'):
+            HealthSnapshot(consecutive_failures=True)  # type: ignore[arg-type]
+
+    def test_negative_consecutive_failures_raises(self) -> None:
+        with pytest.raises(ValueError, match='non-negative'):
+            HealthSnapshot(consecutive_failures=-1)
+
+
+class TestHealthThresholdsValidation:
+
+    def test_inverted_latency_order_raises(self) -> None:
+        with pytest.raises(ValueError, match='warn <= breach <= halt'):
+            HealthThresholds(latency_warn_ms=500.0, latency_breach_ms=200.0)
+
+    def test_negative_threshold_raises(self) -> None:
+        with pytest.raises(ValueError, match='finite non-negative'):
+            HealthThresholds(latency_warn_ms=-1.0)
+
+    def test_bool_failure_threshold_raises(self) -> None:
+        with pytest.raises(ValueError, match='non-negative int'):
+            HealthThresholds(failure_warn=True)  # type: ignore[arg-type]
