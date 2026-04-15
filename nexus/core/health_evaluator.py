@@ -31,6 +31,25 @@ class HealthSnapshot:
     rate_limit_headroom: float = 0.0
     clock_drift_ms: float = 0.0
 
+    def __post_init__(self) -> None:
+        '''Validate health metric invariants.'''
+
+        import math
+
+        for field_name in ('latency_p99_ms', 'failure_rate', 'rate_limit_headroom', 'clock_drift_ms'):
+            val = getattr(self, field_name)
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+                msg = f'HealthSnapshot.{field_name} must be a finite non-negative number'
+                raise ValueError(msg)
+
+        if not isinstance(self.consecutive_failures, int) or isinstance(self.consecutive_failures, bool):
+            msg = 'HealthSnapshot.consecutive_failures must be an int'
+            raise ValueError(msg)
+
+        if self.consecutive_failures < 0:
+            msg = 'HealthSnapshot.consecutive_failures must be non-negative'
+            raise ValueError(msg)
+
 
 @dataclass(frozen=True)
 class HealthThresholds:

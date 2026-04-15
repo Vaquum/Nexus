@@ -170,8 +170,9 @@ def make_duplicate_order_hook(
 
         with lock:
             while expiry_deque and expiry_deque[0][0] <= cutoff:
-                _, stale_key = expiry_deque.popleft()
-                seen.pop(stale_key, None)
+                stale_ts, stale_key = expiry_deque.popleft()
+                if seen.get(stale_key) == stale_ts:
+                    del seen[stale_key]
 
             prior = seen.get(key)
             if prior is not None and (now - prior) < duplicate_window_seconds:

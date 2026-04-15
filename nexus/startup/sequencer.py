@@ -17,7 +17,7 @@ from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
-from nexus.infrastructure.manifest import Manifest, load_manifest
+from nexus.infrastructure.manifest import Manifest, TimerSpec, load_manifest
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.error import StartupError
 from nexus.strategy.context import StrategyContext
@@ -124,10 +124,10 @@ class StartupSequencer:
         self._runner: StrategyRunner | None = None
         self._mode: OperationalMode | None = None
         self._wired_sensors: list[WiredSensor] = []
-        self._timer_specs: dict[str, tuple] = {}
+        self._timer_specs: dict[str, tuple[TimerSpec, ...]] = {}
 
     @property
-    def timer_specs(self) -> dict[str, tuple]:
+    def timer_specs(self) -> dict[str, tuple[TimerSpec, ...]]:
         '''Return registered timer specs by strategy_id.'''
 
         return dict(self._timer_specs)
@@ -456,7 +456,7 @@ class StartupSequencer:
         if self._manifest is None:
             raise StartupError('register_timers', 'manifest not loaded')
 
-        strategy_timers: dict[str, tuple] = {}
+        strategy_timers: dict[str, tuple[TimerSpec, ...]] = {}
 
         for spec in self._manifest.strategies:
             if spec.timers:

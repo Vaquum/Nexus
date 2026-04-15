@@ -79,8 +79,12 @@ class TimerSpec:
     def __post_init__(self) -> None:
         '''Validate timer specification invariants.'''
 
-        if not isinstance(self.timer_id, str) or not self.timer_id.strip():
-            msg = 'TimerSpec.timer_id must be a non-empty string'
+        if (
+            not isinstance(self.timer_id, str)
+            or not self.timer_id.strip()
+            or self.timer_id != self.timer_id.strip()
+        ):
+            msg = 'TimerSpec.timer_id must be a non-empty string without surrounding whitespace'
             raise ValueError(msg)
 
         if not isinstance(self.interval_seconds, int) or isinstance(self.interval_seconds, bool):
