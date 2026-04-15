@@ -226,9 +226,10 @@ Several hot paths and recovery routines use linear O(N) scans and manual diction
 
 **When to fix**: Before high-frequency trading (HFT) or large-scale multi-strategy deployments.
 **Migration**:
-- Replace O(N) dictionary/list scans with O(1) or O(log N) structures (e.g., `collections.deque` or `heapq` for expiration tracking).
-- If `Decimal` precision is not required for a hot path, consider switching that path to float-based aggregation and NumPy; otherwise optimize the `Decimal` path by reducing repeated `Decimal` operations and avoiding full re-scans.
-- Implement batch processing or incremental updates for rolling loss windows so recovery and loss derivation update aggregates from prior state instead of recalculating across the full WAL.
+- ~~Replace O(N) dictionary/list scans~~ RESOLVED in v0.26.0 (X.2.3.1) — `_purge_expired` uses heapq, `make_duplicate_order_hook` uses deque.
+- `derive_rolling_losses` Decimal arithmetic is already O(n) single-pass with early exits. Float aggregation rejected — RFC requires Decimal precision for financial calculations. No further optimization needed unless event volume exceeds 100k per recovery.
+- `WriteAheadLog.read_all` reads sequentially with length-prefixed records — no skip-ahead possible without reading headers. Memory-mapping doesn't help for variable-length records. Marginal optimization; real fix is incremental updates (below) that avoid full WAL reads.
+- ~~Incremental rolling loss updates~~ RESOLVED by TD-002 (X.1.1.4) — snapshot preserves rolling losses, `truncate_keeping_events` retains post-checkpoint events only, recovery re-derives from delta events not full WAL.
 
 ---
 
