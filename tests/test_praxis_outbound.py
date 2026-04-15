@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -115,7 +116,7 @@ class TestPraxisOutbound:
 
         command = _make_command()
 
-        with pytest.raises(TimeoutError):
+        with pytest.raises((TimeoutError, concurrent.futures.TimeoutError)):
             outbound.send_command(command)
 
     def test_async_error_propagates(
