@@ -41,7 +41,8 @@ class Action:
         order_type: Order type (e.g. Market, Limit). Required for ENTER.
         execution_params: Mode-specific parameters. Optional.
         deadline: Timeout in seconds. Required for ENTER.
-        trade_id: Existing trade reference. Required for EXIT, MODIFY, ABORT.
+        trade_id: Existing trade reference. Required for EXIT.
+        command_id: Existing command reference. Required for MODIFY, ABORT.
         maker_preference: Maker/taker preference. Optional.
         reference_price: Strategy reference price for slippage measurement. Optional.
     '''
@@ -54,6 +55,7 @@ class Action:
     execution_params: dict[str, object] | None = None
     deadline: int | None = None
     trade_id: str | None = None
+    command_id: str | None = None
     maker_preference: str | None = None
     reference_price: Decimal | None = None
 
@@ -109,6 +111,13 @@ class Action:
             msg = 'trade_id must be a non-empty string or None'
             raise ValueError(msg)
 
+        if self.command_id is not None and (
+            not isinstance(self.command_id, str)
+            or not self.command_id.strip()
+        ):
+            msg = 'command_id must be a non-empty string or None'
+            raise ValueError(msg)
+
         if self.maker_preference is not None and (
             not isinstance(self.maker_preference, str)
             or not self.maker_preference.strip()
@@ -156,11 +165,11 @@ class Action:
                 raise ValueError(msg)
 
         elif self.action_type == ActionType.MODIFY:
-            if self.trade_id is None:
-                msg = 'MODIFY requires: trade_id'
+            if self.command_id is None:
+                msg = 'MODIFY requires: command_id'
                 raise ValueError(msg)
 
         elif self.action_type == ActionType.ABORT:
-            if self.trade_id is None:
-                msg = 'ABORT requires: trade_id'
+            if self.command_id is None:
+                msg = 'ABORT requires: command_id'
                 raise ValueError(msg)

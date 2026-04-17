@@ -173,9 +173,9 @@ class TestSubmitActions:
         sequencer._shutdown_actions = {
             'test': [
                 Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1')),
-                Action(action_type=ActionType.ABORT, trade_id='t-2'),
+                Action(action_type=ActionType.ABORT, command_id='cmd-2'),
                 Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300),
-                Action(action_type=ActionType.MODIFY, trade_id='t-3'),
+                Action(action_type=ActionType.MODIFY, command_id='cmd-3'),
             ],
         }
 

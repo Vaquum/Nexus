@@ -315,14 +315,14 @@ class TestEventCallbacks:
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.MODIFY, trade_id='t-1')]
+                return [Action(action_type=ActionType.MODIFY, command_id='cmd-1')]
 
             def on_shutdown(
                 self,
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.ABORT, trade_id='t-1')]
+                return [Action(action_type=ActionType.ABORT, command_id='cmd-1')]
 
         strategy = ActionReturningStrategy('test')
         params = StrategyParams(raw={})

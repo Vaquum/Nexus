@@ -264,11 +264,11 @@ class TestAction:
             ),
             ActionType.MODIFY: Action(
                 action_type=ActionType.MODIFY,
-                trade_id='t-1',
+                command_id='cmd-1',
             ),
             ActionType.ABORT: Action(
                 action_type=ActionType.ABORT,
-                trade_id='t-1',
+                command_id='cmd-1',
             ),
         }
 
@@ -280,6 +280,36 @@ class TestAction:
 
         with pytest.raises(ValueError, match='must be an ActionType'):
             Action(action_type='enter')  # type: ignore[arg-type]
+
+    def test_modify_requires_command_id(self) -> None:
+        '''MODIFY raises when command_id is missing.'''
+
+        with pytest.raises(ValueError, match='MODIFY requires: command_id'):
+            Action(action_type=ActionType.MODIFY)
+
+    def test_abort_requires_command_id(self) -> None:
+        '''ABORT raises when command_id is missing.'''
+
+        with pytest.raises(ValueError, match='ABORT requires: command_id'):
+            Action(action_type=ActionType.ABORT)
+
+    def test_modify_rejects_trade_id_only(self) -> None:
+        '''MODIFY without command_id raises even when trade_id is provided.'''
+
+        with pytest.raises(ValueError, match='MODIFY requires: command_id'):
+            Action(action_type=ActionType.MODIFY, trade_id='t-1')
+
+    def test_abort_rejects_trade_id_only(self) -> None:
+        '''ABORT without command_id raises even when trade_id is provided.'''
+
+        with pytest.raises(ValueError, match='ABORT requires: command_id'):
+            Action(action_type=ActionType.ABORT, trade_id='t-1')
+
+    def test_command_id_must_be_non_empty_string(self) -> None:
+        '''command_id must be a non-empty string when provided.'''
+
+        with pytest.raises(ValueError, match='command_id must be a non-empty string or None'):
+            Action(action_type=ActionType.ABORT, command_id='   ')
 
 
 class TestStrategyContext:

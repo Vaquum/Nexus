@@ -84,7 +84,7 @@ class StubStrategy(Strategy):
         if self.delay:
             time.sleep(self.delay)
         self.calls.append('on_shutdown')
-        return [Action(ActionType.ABORT, trade_id='t-1')]
+        return [Action(ActionType.ABORT, command_id='cmd-1')]
 
     def on_event_replay(self, event: StrategyEvent) -> None:
         self.calls.append('on_event_replay')
