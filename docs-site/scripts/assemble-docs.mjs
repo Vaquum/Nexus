@@ -295,7 +295,8 @@ function rewriteOutsideCode(content, transform) {
   while (index < content.length) {
     if (content.startsWith('```', index)) {
       if (plainStart < index) {
-        out += transform(content.slice(plainStart, index));
+        const chunk = content.slice(plainStart, index);
+        out += inFence ? chunk : transform(chunk);
       }
       inFence = !inFence;
       out += '```';
@@ -308,7 +309,8 @@ function rewriteOutsideCode(content, transform) {
   }
 
   if (plainStart < content.length) {
-    out += transform(content.slice(plainStart));
+    const tail = content.slice(plainStart);
+    out += inFence ? tail : transform(tail);
   }
 
   return out;
