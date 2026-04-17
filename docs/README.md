@@ -14,8 +14,7 @@ Nexus does not do upstream market-data research or downstream venue execution. I
 
 1. Read the [product home page](../README.md)
 2. Read the [developer docs entry](Developer/README.md)
-3. Review the documentation contract in [Developer/Documentation-System.md](Developer/Documentation-System.md)
-4. Review current implementation limits and follow-up work in [Technical Debt](TechnicalDebt.md)
+3. Review current implementation limits and follow-up work in [Technical Debt](TechnicalDebt.md)
 
 ### If You Want To Understand The System Boundary
 

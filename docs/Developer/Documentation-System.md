@@ -210,6 +210,7 @@ Use one terminology set across the whole docs system.
 ### Naming Rules
 
 - Use `Manager` consistently for the per-account runtime instance.
+- Treat `Manager` as an architectural runtime concept, not the name of one concrete class. In the current codebase it is expressed through `InstanceConfig`, `InstanceState`, lifecycle controllers, validation, and startup or shutdown sequencing working together.
 - Do not describe Limen research logic as part of Nexus.
 - Do not describe Praxis venue execution logic as if it lives inside Nexus.
 - Do not describe Veritas oversight responsibilities as if they are owned by Nexus.
