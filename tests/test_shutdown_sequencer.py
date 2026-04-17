@@ -546,6 +546,95 @@ class TestWaitTerminal:
 
         assert q.empty()
 
+    def test_wait_terminal_escalates_abort_on_timeout(self) -> None:
+        '''On first-round timeout, _wait_terminal sends ABORT for each pending command.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            praxis_outbound=outbound,
+            config=config,
+            shutdown_timeout=0.05,
+        )
+        sequencer._submitted_command_ids.extend(['cmd_a', 'cmd_b'])
+
+        sequencer._wait_terminal()
+
+        assert outbound.send_abort.call_count == 2
+        reasons = {call.kwargs['reason'] for call in outbound.send_abort.call_args_list}
+        command_ids = {call.kwargs['command_id'] for call in outbound.send_abort.call_args_list}
+        assert reasons == {'shutdown_escalation'}
+        assert command_ids == {'cmd_a', 'cmd_b'}
+
+    def test_wait_terminal_escalation_noop_when_outbound_missing(self) -> None:
+        '''Escalation is a no-op (logged) when outbound or config is missing.'''
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.05,
+        )
+        sequencer._submitted_command_ids.append('cmd_a')
+
+        sequencer._wait_terminal()
+
+    def test_wait_terminal_no_escalation_when_all_terminal(self) -> None:
+        '''Escalation does not fire when all commands terminate before timeout.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(TradeOutcome(
+            outcome_id='out_a',
+            command_id='cmd_a',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+        ))
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            praxis_outbound=outbound,
+            config=config,
+            shutdown_timeout=5.0,
+        )
+        sequencer._submitted_command_ids.append('cmd_a')
+
+        sequencer._wait_terminal()
+
+        outbound.send_abort.assert_not_called()
+
 
 class TestStopTimers:
 

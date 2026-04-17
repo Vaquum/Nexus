@@ -37,6 +37,8 @@ _log = structlog.get_logger()
 _HUNDRED = Decimal('100')
 _ZERO = Decimal(0)
 _SHUTDOWN_ABORT_REASON = 'shutdown'
+_ESCALATION_ABORT_REASON = 'shutdown_escalation'
+_ESCALATION_TIMEOUT_RATIO = 0.5
 
 
 class ShutdownSequencer:
@@ -341,8 +343,9 @@ class ShutdownSequencer:
         '''Wait for all submitted commands to reach terminal state.
 
         Polls PraxisInbound for outcomes matching submitted commands.
-        Returns when all commands are terminal or timeout expires.
-        Full ABORT escalation requires Action fields (TD-023).
+        On first-round timeout, escalates by issuing ABORT for each still-
+        pending command via PraxisOutbound, then polls again with a shorter
+        deadline before giving up.
         '''
 
         if not self._submitted_command_ids:
@@ -355,29 +358,86 @@ class ShutdownSequencer:
             )
             return
 
-        deadline = time.monotonic() + self._shutdown_timeout
-        pending = set(self._submitted_command_ids)
+        pending = self._poll_until_terminal(
+            set(self._submitted_command_ids),
+            self._shutdown_timeout,
+        )
 
-        while pending and time.monotonic() < deadline:
+        if not pending:
+            return
+
+        self._escalate_abort_pending(pending)
+
+        pending = self._poll_until_terminal(
+            pending,
+            self._shutdown_timeout * _ESCALATION_TIMEOUT_RATIO,
+        )
+
+        if pending:
+            _log.warning(
+                'shutdown timeout after escalation: commands still pending',
+                pending_count=len(pending),
+                pending_ids=sorted(pending),
+            )
+
+    def _poll_until_terminal(
+        self,
+        pending: set[str],
+        timeout: float,
+    ) -> set[str]:
+        '''Poll PraxisInbound until pending is empty or deadline expires.'''
+
+        if self._praxis_inbound is None or timeout <= 0:
+            return pending
+
+        remaining = set(pending)
+        deadline = time.monotonic() + timeout
+
+        while remaining and time.monotonic() < deadline:
             outcome = self._praxis_inbound.receive_outcome()
 
             if outcome is None:
                 continue
 
-            if outcome.command_id in pending and outcome.outcome_type.is_terminal:
-                pending.discard(outcome.command_id)
+            if outcome.command_id in remaining and outcome.outcome_type.is_terminal:
+                remaining.discard(outcome.command_id)
                 _log.info(
                     'command reached terminal state',
                     command_id=outcome.command_id,
                     outcome_type=outcome.outcome_type.value,
                 )
 
-        if pending:
+        return remaining
+
+    def _escalate_abort_pending(self, pending: set[str]) -> None:
+        '''Send ABORT for each still-pending command and log outcomes.'''
+
+        if self._praxis_outbound is None or self._config is None:
             _log.warning(
-                'shutdown timeout: commands still pending',
+                'praxis_outbound or config not configured, cannot escalate aborts',
                 pending_count=len(pending),
-                pending_ids=sorted(pending),
             )
+            return
+
+        _log.warning(
+            'shutdown timeout: escalating aborts for pending commands',
+            pending_count=len(pending),
+            pending_ids=sorted(pending),
+        )
+
+        for command_id in sorted(pending):
+            try:
+                self._praxis_outbound.send_abort(
+                    command_id=command_id,
+                    account_id=self._config.account_id,
+                    reason=_ESCALATION_ABORT_REASON,
+                    created_at=datetime.now(tz=timezone.utc),
+                )
+            except Exception:  # noqa: BLE001 - outbound failure must not abort shutdown
+                _log.exception(
+                    'escalation abort failed',
+                    command_id=command_id,
+                )
 
     def _dispatch_save(self) -> None:
         '''Dispatch on_save to all strategies.
