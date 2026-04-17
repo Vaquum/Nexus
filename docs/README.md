@@ -48,7 +48,7 @@ Nexus does not do upstream market-data research or downstream venue execution. I
 - `Overview`: [Product Home](../README.md), [this docs hub](README.md)
 - `Guides`: [Manifest](Manifest.md), [Signal And Strategy Flow](Signal-And-Strategy-Flow.md), [Validation Pipeline](Validation-Pipeline.md), [Persistence And Recovery](Persistence-And-Recovery.md), [Startup And Shutdown](Startup-And-Shutdown.md)
 - `Reference`: [Reference Architecture](Reference-Architecture.md)
-- `Developer`: [Developer Guidelines](Developer/README.md), [Documentation System](Developer/Documentation-System.md), [Technical Debt](TechnicalDebt.md), plus external [Vaquum Developer Docs](https://github.com/Vaquum/dev-docs/blob/main/src/README.md), [Making Release](https://github.com/Vaquum/dev-docs/blob/main/src/Making-Release.md), and [Semantic Versioning](https://github.com/Vaquum/dev-docs/blob/main/src/Semantic-Versioning.md)
+- `Developer`: [Developer Guidelines](Developer/README.md), [Documentation System](Developer/Documentation-System.md), [Technical Debt](TechnicalDebt.md), plus external [Vaquum Developer Docs](https://github.com/Vaquum/dev-docs/blob/main/src/README.md), [Making a Release](https://github.com/Vaquum/dev-docs/blob/main/src/Making-Release.md), and [Semantic Versioning](https://github.com/Vaquum/dev-docs/blob/main/src/Semantic-Versioning.md)
 - `Packages`: planned as the next documentation slice described in [Developer/Documentation-System.md](Developer/Documentation-System.md)
 
 ## Product Boundary
