@@ -289,6 +289,67 @@ class TestSubmitActions:
         outbound.send_command.assert_not_called()
         assert sequencer._submitted_command_ids == []
 
+    def test_submit_exit_swallows_send_command_errors(self) -> None:
+        '''send_command exceptions do not abort shutdown or record a command_id.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-1': Position(
+                    trade_id='t-1',
+                    strategy_id='test',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.5'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.side_effect = RuntimeError('praxis down')
+        sequencer = _make_sequencer(state=state)
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('0.5')),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert outbound.send_command.call_count == 1
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_abort_swallows_send_abort_errors(self) -> None:
+        '''send_abort exceptions do not abort shutdown or record a command_id.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_abort.side_effect = RuntimeError('abort not supported')
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.ABORT, command_id='cmd-1')],
+        }
+
+        sequencer._submit_actions()
+
+        assert outbound.send_abort.call_count == 1
+        assert sequencer._submitted_command_ids == []
+
 
 class TestDispatchSave:
 

@@ -324,6 +324,32 @@ def test_denied_decision_rejected() -> None:
         translate_to_trade_command(action, context, decision, config, now)
 
 
+def test_enter_translation_propagates_none_defaults() -> None:
+    '''An ENTER Action with only required fields yields a TradeCommand with None optionals.'''
+
+    minimal_action = Action(
+        action_type=ActionType.ENTER,
+        direction=OrderSide.BUY,
+        size=Decimal('0.01'),
+        execution_mode=ExecutionMode.SINGLE_SHOT,
+        order_type=OrderType.MARKET,
+        deadline=300,
+    )
+    context = _enter_context()
+    decision = ValidationDecision(allowed=True, reservation=_reservation())
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(minimal_action, context, decision, config, now)
+
+    assert cmd.maker_preference is None
+    assert cmd.reference_price is None
+    assert cmd.execution_params is None
+    assert cmd.execution_mode == ExecutionMode.SINGLE_SHOT
+    assert cmd.order_type == OrderType.MARKET
+    assert cmd.deadline == 300
+
+
 def test_missing_command_id_rejected() -> None:
     action = _exit_action()
     context = ValidationRequestContext(

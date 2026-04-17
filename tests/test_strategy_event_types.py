@@ -312,6 +312,173 @@ class TestAction:
         with pytest.raises(ValueError, match='command_id must be a non-empty string or None'):
             Action(action_type=ActionType.ABORT, command_id='   ')
 
+    def test_enter_requires_direction(self) -> None:
+        '''ENTER raises when direction is missing.'''
+
+        with pytest.raises(ValueError, match=r'ENTER requires:.*direction'):
+            Action(
+                action_type=ActionType.ENTER,
+                size=Decimal('1'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_enter_requires_size(self) -> None:
+        '''ENTER raises when size is missing.'''
+
+        with pytest.raises(ValueError, match=r'ENTER requires:.*size'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_enter_requires_execution_mode(self) -> None:
+        '''ENTER raises when execution_mode is missing.'''
+
+        with pytest.raises(ValueError, match=r'ENTER requires:.*execution_mode'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_enter_requires_order_type(self) -> None:
+        '''ENTER raises when order_type is missing.'''
+
+        with pytest.raises(ValueError, match=r'ENTER requires:.*order_type'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                deadline=300,
+            )
+
+    def test_enter_requires_deadline(self) -> None:
+        '''ENTER raises when deadline is missing.'''
+
+        with pytest.raises(ValueError, match=r'ENTER requires:.*deadline'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+            )
+
+    def test_exit_requires_trade_id(self) -> None:
+        '''EXIT raises when trade_id is missing.'''
+
+        with pytest.raises(ValueError, match=r'EXIT requires:.*trade_id'):
+            Action(action_type=ActionType.EXIT, size=Decimal('1'))
+
+    def test_exit_requires_size(self) -> None:
+        '''EXIT raises when size is missing.'''
+
+        with pytest.raises(ValueError, match=r'EXIT requires:.*size'):
+            Action(action_type=ActionType.EXIT, trade_id='t-1')
+
+    def test_execution_mode_must_be_enum(self) -> None:
+        '''execution_mode must be an ExecutionMode member when provided.'''
+
+        with pytest.raises(ValueError, match='execution_mode must be an ExecutionMode'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                execution_mode='SINGLE_SHOT',  # type: ignore[arg-type]
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_order_type_must_be_enum(self) -> None:
+        '''order_type must be an OrderType member when provided.'''
+
+        with pytest.raises(ValueError, match='order_type must be an OrderType'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type='MARKET',  # type: ignore[arg-type]
+                deadline=300,
+            )
+
+    def test_maker_preference_must_be_enum(self) -> None:
+        '''maker_preference must be a MakerPreference member when provided.'''
+
+        with pytest.raises(ValueError, match='maker_preference must be a MakerPreference'):
+            Action(
+                action_type=ActionType.ABORT,
+                command_id='cmd-1',
+                maker_preference='NO_PREFERENCE',  # type: ignore[arg-type]
+            )
+
+    def test_direction_must_be_order_side(self) -> None:
+        '''direction must be an OrderSide member when provided.'''
+
+        with pytest.raises(ValueError, match='direction must be an OrderSide'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction='BUY',  # type: ignore[arg-type]
+                size=Decimal('1'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_size_must_be_positive_decimal(self) -> None:
+        '''size must be a finite positive Decimal when provided.'''
+
+        with pytest.raises(ValueError, match='size must be a finite positive Decimal'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('0'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_deadline_must_be_positive_int(self) -> None:
+        '''deadline must be a positive int when provided.'''
+
+        with pytest.raises(ValueError, match='deadline must be a positive int'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=0,
+            )
+
+    def test_reference_price_must_be_positive(self) -> None:
+        '''reference_price must be a finite positive Decimal when provided.'''
+
+        with pytest.raises(ValueError, match='reference_price must be a finite positive Decimal'):
+            Action(
+                action_type=ActionType.ABORT,
+                command_id='cmd-1',
+                reference_price=Decimal('0'),
+            )
+
+    def test_execution_params_must_be_dict(self) -> None:
+        '''execution_params must be a dict when provided.'''
+
+        with pytest.raises(ValueError, match='execution_params must be a dict'):
+            Action(
+                action_type=ActionType.ABORT,
+                command_id='cmd-1',
+                execution_params='not a dict',  # type: ignore[arg-type]
+            )
+
 
 class TestStrategyContext:
     '''Tests for StrategyContext dataclass.'''
