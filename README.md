@@ -4,7 +4,7 @@
   <br />
 </div>
 <br />
-<div align="center"><strong>Vaquum Nexus turns signals and strategy intent into execution-safe trading decisions, controlled capital deployment, and recoverable manager state.</strong></div>
+<div align="center"><strong>Vaquum Nexus turns signals and strategy intent into execution-safe trading decisions, controlled capital deployment, and recoverable Manager state.</strong></div>
 
 <div align="center">
   <a href="#nexus">Nexus</a> •

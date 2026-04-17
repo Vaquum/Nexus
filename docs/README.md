@@ -4,7 +4,7 @@ This page is the routing hub for the Nexus docs. Use it to choose the right path
 
 ## Nexus In One Page
 
-Nexus is the decision layer between Limen and Praxis. It accepts strategy actions, applies deterministic validation and capital controls, translates admissible actions into execution commands, and keeps per-account manager state recoverable through WAL, snapshots, replay, and startup recovery.
+Nexus is the decision layer between Limen and Praxis. It accepts strategy actions, applies deterministic validation and capital controls, translates admissible actions into execution commands, and keeps per-account Manager state recoverable through WAL, snapshots, replay, and startup recovery.
 
 Nexus does not do upstream market-data research or downstream venue execution. In the wider Vaquum architecture, Limen sits upstream for research and signal generation, Praxis sits downstream for execution, and Veritas sits alongside the stack for oversight and audit.
 
