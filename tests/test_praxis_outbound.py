@@ -11,6 +11,7 @@ from decimal import Decimal
 import pytest
 
 from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 from nexus.core.stp_mode import STPMode
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
@@ -43,6 +44,12 @@ def _make_command(command_id: str = 'cmd_001') -> TradeCommand:
         size=Decimal('0.01'),
         stp_mode=STPMode.CANCEL_TAKER,
         trade_id='trade_001',
+        execution_mode=ExecutionMode.SINGLE_SHOT,
+        order_type=OrderType.MARKET,
+        execution_params={'slippage_bps': 10},
+        deadline=300,
+        maker_preference=MakerPreference.NO_PREFERENCE,
+        reference_price=Decimal('100000'),
     )
 
 
@@ -95,6 +102,11 @@ class TestPraxisOutbound:
         assert received_kwargs['side'] == OrderSide.BUY
         assert received_kwargs['trade_id'] == 'trade_001'
         assert received_kwargs['stp_mode'] == STPMode.CANCEL_TAKER
+        assert received_kwargs['order_type'] == OrderType.MARKET
+        assert received_kwargs['execution_mode'] == ExecutionMode.SINGLE_SHOT
+        assert received_kwargs['execution_params'] == {'slippage_bps': 10}
+        assert received_kwargs['maker_preference'] == MakerPreference.NO_PREFERENCE
+        assert received_kwargs['reference_price'] == Decimal('100000')
 
     def test_timeout_raises(
         self,

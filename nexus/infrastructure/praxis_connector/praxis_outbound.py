@@ -63,8 +63,6 @@ class PraxisOutbound:
             Exception: Propagates the original exception raised by submit_fn.
         '''
 
-        # NOTE: execution_mode and execution_params require Action fields (TD-023).
-        # Placeholder values used until full Action → TradeCommand translation is built.
         future: concurrent.futures.Future[str] = asyncio.run_coroutine_threadsafe(
             self._submit_fn(
                 trade_id=command.trade_id or command.command_id,
@@ -72,12 +70,12 @@ class PraxisOutbound:
                 symbol=command.symbol,
                 side=command.side,
                 qty=command.size,
-                order_type=command.command_type,
-                execution_mode=None,
-                execution_params=None,
+                order_type=command.order_type,
+                execution_mode=command.execution_mode,
+                execution_params=command.execution_params,
                 timeout=max(1, round(self._timeout)),
-                reference_price=None,
-                maker_preference=None,
+                reference_price=command.reference_price,
+                maker_preference=command.maker_preference,
                 stp_mode=command.stp_mode,
                 created_at=command.created_at,
             ),
