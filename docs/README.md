@@ -13,21 +13,25 @@ Nexus does not do upstream market-data research or downstream venue execution. I
 ### If You Are New To Nexus
 
 1. Read the [product home page](../README.md)
-2. Read the [developer docs entry](Developer/README.md)
-3. Review current implementation limits and follow-up work in [Technical Debt](TechnicalDebt.md)
+2. Continue to [Reference Architecture](Reference-Architecture.md)
+3. Read [Manifest](Manifest.md)
+4. Continue to [Validation Pipeline](Validation-Pipeline.md)
+5. Review current implementation limits and follow-up work in [Technical Debt](TechnicalDebt.md)
 
 ### If You Want To Understand The System Boundary
 
 1. Start with the [product home page](../README.md)
-2. Continue to [Developer/Documentation-System.md](Developer/Documentation-System.md)
-3. Review [Technical Debt](TechnicalDebt.md) to see what is already implemented versus still stubbed or deferred
+2. Continue to [Reference Architecture](Reference-Architecture.md)
+3. Continue to [Persistence And Recovery](Persistence-And-Recovery.md)
+4. Review [Technical Debt](TechnicalDebt.md) to see what is already implemented versus still stubbed or deferred
 
 ### If You Want To Contribute Or Maintain
 
 1. Start with [Developer/README.md](Developer/README.md)
 2. Read the docs contract in [Developer/Documentation-System.md](Developer/Documentation-System.md)
-3. Review current known code and integration gaps in [Technical Debt](TechnicalDebt.md)
-4. Use the shared [Vaquum Developer Docs](https://github.com/Vaquum/dev-docs/blob/main/src/README.md) for organization-wide conventions
+3. Read [Reference Architecture](Reference-Architecture.md) and [Startup And Shutdown](Startup-And-Shutdown.md)
+4. Review current known code and integration gaps in [Technical Debt](TechnicalDebt.md)
+5. Use the shared [Vaquum Developer Docs](https://github.com/Vaquum/dev-docs/blob/main/src/README.md) for organization-wide conventions
 
 ## How Nexus Flows
 
@@ -42,8 +46,10 @@ Nexus does not do upstream market-data research or downstream venue execution. I
 ## Docs Map
 
 - `Overview`: [Product Home](../README.md), [this docs hub](README.md)
+- `Guides`: [Manifest](Manifest.md), [Signal And Strategy Flow](Signal-And-Strategy-Flow.md), [Validation Pipeline](Validation-Pipeline.md), [Persistence And Recovery](Persistence-And-Recovery.md), [Startup And Shutdown](Startup-And-Shutdown.md)
+- `Reference`: [Reference Architecture](Reference-Architecture.md)
 - `Developer`: [Developer Guidelines](Developer/README.md), [Documentation System](Developer/Documentation-System.md), [Technical Debt](TechnicalDebt.md), plus external [Vaquum Developer Docs](https://github.com/Vaquum/dev-docs/blob/main/src/README.md), [Making Release](https://github.com/Vaquum/dev-docs/blob/main/src/Making-Release.md), and [Semantic Versioning](https://github.com/Vaquum/dev-docs/blob/main/src/Semantic-Versioning.md)
-- `Guides`, `Reference`, and `Packages`: planned as the next documentation slices described in [Developer/Documentation-System.md](Developer/Documentation-System.md)
+- `Packages`: planned as the next documentation slice described in [Developer/Documentation-System.md](Developer/Documentation-System.md)
 
 ## Product Boundary
 
@@ -66,6 +72,8 @@ Nexus does not do upstream market-data research or downstream venue execution. I
 ## Read Next
 
 - For the product boundary and capability summary, continue to the [product home page](../README.md)
+- For the system map, continue to [Reference Architecture](Reference-Architecture.md)
+- For the runtime setup path, continue to [Manifest](Manifest.md) and [Startup And Shutdown](Startup-And-Shutdown.md)
 - For contribution and maintenance workflow, continue to [Developer/README.md](Developer/README.md)
 - For the docs architecture and rewrite plan, continue to [Developer/Documentation-System.md](Developer/Documentation-System.md)
 - For current implementation gaps, continue to [Technical Debt](TechnicalDebt.md)

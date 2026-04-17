@@ -1,0 +1,15 @@
+{
+  "productId": "nexus",
+  "productName": "Nexus",
+  "tagline": "Signals and strategy intent into execution-safe trading decisions, controlled capital deployment, and recoverable Manager state.",
+  "versionLabel": "latest",
+  "basePath": "/nexus/",
+  "navSections": [
+    "Overview",
+    "Guides",
+    "Reference",
+    "Developer",
+    "Packages"
+  ],
+  "sourceRepoUrl": "https://github.com/Vaquum/Nexus"
+}
