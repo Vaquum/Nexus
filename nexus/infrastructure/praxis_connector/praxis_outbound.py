@@ -10,6 +10,7 @@ import asyncio
 import concurrent.futures
 import logging
 from collections.abc import Callable, Coroutine
+from datetime import datetime
 from typing import Any
 
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
@@ -29,6 +30,7 @@ class PraxisOutbound:
         register_fn: Sync callable matching Praxis Trading.register_account.
         unregister_fn: Async callable matching Praxis Trading.unregister_account.
         pull_positions_fn: Sync callable matching Praxis Trading.pull_positions.
+        submit_abort_fn: Async callable wrapping Praxis Trading.submit_abort.
         loop: Asyncio event loop running in the Praxis thread.
         timeout: Seconds to wait for async calls to complete.
     '''
@@ -40,6 +42,7 @@ class PraxisOutbound:
         register_fn: Callable[[str], None] | None = None,
         unregister_fn: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         pull_positions_fn: Callable[[str], dict[tuple[str, str], Any]] | None = None,
+        submit_abort_fn: Callable[..., Coroutine[Any, Any, None]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
@@ -47,6 +50,7 @@ class PraxisOutbound:
         self._register_fn = register_fn
         self._unregister_fn = unregister_fn
         self._pull_positions_fn = pull_positions_fn
+        self._submit_abort_fn = submit_abort_fn
         self._timeout = timeout
 
     def send_command(self, command: TradeCommand) -> str:
@@ -101,6 +105,51 @@ class PraxisOutbound:
         )
 
         return str(command_id)
+
+    def send_abort(
+        self,
+        *,
+        command_id: str,
+        account_id: str,
+        reason: str,
+        created_at: datetime,
+    ) -> None:
+        '''Submit trade abort to Praxis via async bridge.
+
+        Args:
+            command_id: Command to abort.
+            account_id: Owning account for the command.
+            reason: Reason for the abort (e.g. 'shutdown').
+            created_at: Abort creation timestamp (UTC, timezone-aware).
+
+        Raises:
+            RuntimeError: If submit_abort_fn is not configured.
+            TimeoutError: If Praxis does not respond within timeout.
+            Exception: Propagates the original exception raised by submit_abort_fn.
+        '''
+
+        if self._submit_abort_fn is None:
+            msg = 'submit_abort_fn not configured'
+            raise RuntimeError(msg)
+
+        future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
+            self._submit_abort_fn(
+                command_id=command_id,
+                account_id=account_id,
+                reason=reason,
+                created_at=created_at,
+            ),
+            self._loop,
+        )
+
+        try:
+            future.result(timeout=self._timeout)
+        except (TimeoutError, concurrent.futures.TimeoutError):
+            future.cancel()
+            _log.error('submit_abort timed out: command_id=%s', command_id)
+            raise
+
+        _log.info('abort submitted', extra={'command_id': command_id, 'reason': reason})
 
     def register_account(self, account_id: str) -> None:
         '''Register account with Praxis Trading.

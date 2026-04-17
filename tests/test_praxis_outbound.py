@@ -152,3 +152,90 @@ class TestPraxisOutbound:
 
         with pytest.raises(ValueError, match='account not registered'):
             outbound.send_command(command)
+
+
+class TestPraxisOutboundSendAbort:
+
+    def test_sends_abort_with_fields(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort bridges to async submit_abort_fn with named fields.'''
+
+        loop, _ = event_loop_thread
+        received: dict[str, object] = {}
+
+        async def mock_submit_abort(**kwargs: object) -> None:
+            received.update(kwargs)
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=mock_submit_abort,
+        )
+
+        created_at = datetime.now(tz=timezone.utc)
+        outbound.send_abort(
+            command_id='cmd_42',
+            account_id='acc_001',
+            reason='shutdown',
+            created_at=created_at,
+        )
+
+        assert received['command_id'] == 'cmd_42'
+        assert received['account_id'] == 'acc_001'
+        assert received['reason'] == 'shutdown'
+        assert received['created_at'] == created_at
+
+    def test_raises_when_fn_not_configured(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort raises RuntimeError if submit_abort_fn is None.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(submit_fn=mock_submit, loop=loop)
+
+        with pytest.raises(RuntimeError, match='submit_abort_fn not configured'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=datetime.now(tz=timezone.utc),
+            )
+
+    def test_async_error_propagates(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''Async submit_abort_fn exception propagates to sync caller.'''
+
+        loop, _ = event_loop_thread
+
+        async def failing_abort(**_kwargs: object) -> None:
+            msg = 'unknown command'
+            raise ValueError(msg)
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=failing_abort,
+        )
+
+        with pytest.raises(ValueError, match='unknown command'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=datetime.now(tz=timezone.utc),
+            )

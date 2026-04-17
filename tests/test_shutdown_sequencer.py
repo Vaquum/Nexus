@@ -12,15 +12,18 @@ from unittest.mock import MagicMock
 import pytest
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.order_types import ExecutionMode, OrderType
+from nexus.core.domain.position import Position
+from nexus.core.stp_mode import STPMode
 from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
+from nexus.instance_config import InstanceConfig
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
-from nexus.core.domain.enums import OrderSide
-from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
@@ -190,6 +193,100 @@ class TestSubmitActions:
 
         sequencer._submit_actions()
 
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_actions_routes_exit_and_abort(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-1': Position(
+                    trade_id='t-1',
+                    strategy_id='test',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.5'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+        sequencer = _make_sequencer(state=state)
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('0.5')),
+                Action(action_type=ActionType.ABORT, command_id='cmd-99'),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert outbound.send_command.call_count == 1
+        assert outbound.send_abort.call_count == 1
+        assert sequencer._submitted_command_ids == ['praxis_cmd_42', 'cmd-99']
+
+        abort_kwargs = outbound.send_abort.call_args.kwargs
+        assert abort_kwargs['command_id'] == 'cmd-99'
+        assert abort_kwargs['account_id'] == 'acc_001'
+        assert abort_kwargs['reason'] == 'shutdown'
+
+    def test_submit_actions_skips_when_outbound_missing(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        sequencer = _make_sequencer()
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.ABORT, command_id='cmd-1')],
+        }
+
+        sequencer._submit_actions()
+
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_actions_skips_when_config_missing(self) -> None:
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.ABORT, command_id='cmd-1')],
+        }
+
+        sequencer._submit_actions()
+
+        outbound.send_command.assert_not_called()
+        outbound.send_abort.assert_not_called()
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_exit_skips_unknown_trade_id(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.EXIT, trade_id='missing', size=Decimal('1'))],
+        }
+
+        sequencer._submit_actions()
+
+        outbound.send_command.assert_not_called()
         assert sequencer._submitted_command_ids == []
 
 
