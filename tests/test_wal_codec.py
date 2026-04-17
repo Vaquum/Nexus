@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import cast
 
+import msgpack
 import pytest
 
 from nexus.core.domain.capital_state import CapitalState
@@ -267,19 +268,12 @@ class TestCodecVersioning:
     def test_unsupported_version_rejected(self) -> None:
         '''Verify deserialize rejects unknown codec version.'''
 
-        import msgpack
-
         bad_data = cast(bytes, msgpack.packb({'_v': 999}))
         with pytest.raises(ValueError, match='Unsupported WAL codec version'):
             deserialize_state(bad_data)
 
     def test_missing_version_defaults_to_v1(self) -> None:
         '''Verify deserialize treats missing _v as v1 for backward compatibility.'''
-
-        import msgpack
-
-        from nexus.core.domain.capital_state import CapitalState
-        from nexus.core.domain.instance_state import InstanceState
 
         state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
         v1_data = cast(bytes, serialize_state(state))
@@ -297,8 +291,6 @@ class TestRiskDecodeDefaults:
 
     def test_missing_risk_fields_seed_from_high_water_mark(self) -> None:
         '''Verify missing risk fields default from high_water_mark.'''
-
-        import msgpack
 
         payload = {
             '_v': 1,
@@ -342,8 +334,6 @@ class TestMalformedPayload:
     def test_non_dict_payload_raises(self) -> None:
         '''Verify non-dict msgpack payload raises ValueError.'''
 
-        import msgpack
-
         bad_data = cast(bytes, msgpack.packb([1, 2, 3]))
 
         with pytest.raises(ValueError, match='Expected dict from WAL payload'):
@@ -351,8 +341,6 @@ class TestMalformedPayload:
 
     def test_invalid_decimal_in_risk_payload_raises(self) -> None:
         '''Verify malformed Decimal risk field raises normalized ValueError.'''
-
-        import msgpack
 
         payload = {
             '_v': 1,
@@ -402,8 +390,6 @@ class TestSerializationOutput:
 
     def test_output_is_valid_msgpack(self) -> None:
         '''Verify serialized bytes are valid msgpack.'''
-
-        import msgpack
 
         state = _make_minimal_state()
         result = serialize_state(state)
@@ -464,15 +450,11 @@ class TestEventRoundTrip:
 
 class TestEventCodecVersion:
     def test_version_embedded(self) -> None:
-        import msgpack
-
         data = serialize_event(_make_event())
         unpacked = msgpack.unpackb(data, raw=False)
         assert unpacked['_v'] == 1
 
     def test_wrong_version_rejected(self) -> None:
-        import msgpack
-
         d = {
             '_v': 99,
             'strategy_id': 'strat_a',
@@ -488,16 +470,12 @@ class TestEventCodecVersion:
 
 class TestEventMalformedPayload:
     def test_non_dict_rejected(self) -> None:
-        import msgpack
-
         data = cast(bytes, msgpack.packb([1, 2, 3]))
 
         with pytest.raises(ValueError, match='Expected dict from event payload'):
             deserialize_event(data)
 
     def test_missing_field_rejected(self) -> None:
-        import msgpack
-
         d = {'_v': 1, 'strategy_id': 'strat_a'}
         data = cast(bytes, msgpack.packb(d))
 
@@ -505,8 +483,6 @@ class TestEventMalformedPayload:
             deserialize_event(data)
 
     def test_invalid_decimal_rejected(self) -> None:
-        import msgpack
-
         d = {
             '_v': 1,
             'strategy_id': 'strat_a',
@@ -520,8 +496,6 @@ class TestEventMalformedPayload:
             deserialize_event(data)
 
     def test_invalid_timestamp_rejected(self) -> None:
-        import msgpack
-
         d = {
             '_v': 1,
             'strategy_id': 'strat_a',
@@ -545,8 +519,6 @@ class TestEventSerializationOutput:
         assert len(result) > 0
 
     def test_output_is_valid_msgpack(self) -> None:
-        import msgpack
-
         result = serialize_event(_make_event())
         unpacked = msgpack.unpackb(result, raw=False)
         assert isinstance(unpacked, dict)

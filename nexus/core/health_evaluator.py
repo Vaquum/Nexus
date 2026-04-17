@@ -6,6 +6,7 @@ Evaluates health metrics against three-threshold policy
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from nexus.core.domain.enums import OperationalMode
@@ -35,8 +36,6 @@ class HealthSnapshot:
 
     def __post_init__(self) -> None:
         '''Validate health metric invariants.'''
-
-        import math
 
         for field_name in ('latency_p99_ms', 'failure_rate', 'rate_limit_headroom', 'clock_drift_ms'):
             val = getattr(self, field_name)
@@ -95,8 +94,6 @@ class HealthThresholds:
 
     def __post_init__(self) -> None:
         '''Validate threshold ordering invariants.'''
-
-        import math
 
         for field_name in (
             'latency_warn_ms', 'latency_breach_ms', 'latency_halt_ms',

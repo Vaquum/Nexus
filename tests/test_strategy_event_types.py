@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -211,21 +211,17 @@ class TestSignal:
     def test_naive_timestamp_raises(self) -> None:
         '''Naive datetime raises ValueError.'''
 
-        from datetime import datetime as dt
-
         with pytest.raises(ValueError, match='must be UTC'):
             Signal(
                 predictor_fn_id='test',
                 values={'CAN_ENTER': 1},
-                timestamp=dt.now(),
+                timestamp=datetime.now(),
             )
 
     def test_non_utc_timestamp_rejected(self) -> None:
         '''Non-UTC timezone raises ValueError.'''
 
-        from datetime import datetime as dt, timedelta, timezone as tz
-
-        non_utc = dt(2024, 1, 1, 12, 0, 0, tzinfo=tz(timedelta(hours=5)))
+        non_utc = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
         with pytest.raises(ValueError, match='must be UTC'):
             Signal(
                 predictor_fn_id='test',
@@ -250,11 +246,33 @@ class TestAction:
     '''Tests for Action dataclass.'''
 
     def test_action_with_each_type(self) -> None:
-        '''Action constructs with each ActionType.'''
+        '''Action constructs with each ActionType and required fields.'''
 
-        for action_type in ActionType:
-            action = Action(action_type=action_type)
+        valid_actions = {
+            ActionType.ENTER: Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                execution_mode='SingleShot',
+                order_type='Market',
+                deadline=300,
+            ),
+            ActionType.EXIT: Action(
+                action_type=ActionType.EXIT,
+                trade_id='t-1',
+                size=Decimal('1'),
+            ),
+            ActionType.MODIFY: Action(
+                action_type=ActionType.MODIFY,
+                trade_id='t-1',
+            ),
+            ActionType.ABORT: Action(
+                action_type=ActionType.ABORT,
+                trade_id='t-1',
+            ),
+        }
 
+        for action_type, action in valid_actions.items():
             assert action.action_type == action_type
 
     def test_action_type_must_be_actiontype(self) -> None:

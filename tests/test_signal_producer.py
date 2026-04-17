@@ -8,10 +8,10 @@ from datetime import timezone
 from pathlib import Path
 from typing import Any
 
+import limen
 import numpy as np
 import polars as pl
 import pytest
-
 from limen.experiment.trainer.trainer import Trainer
 
 from nexus.startup.sequencer import WiredSensor
@@ -19,13 +19,9 @@ from nexus.strategy.signal_producer import _extract_values, produce_signal
 
 
 def _find_limen_root() -> Path | None:
-    try:
-        import limen
-        root = Path(limen.__file__).parent.parent
-        if (root / 'datasets').is_dir():
-            return root
-    except ImportError:
-        pass
+    root = Path(limen.__file__).parent.parent
+    if (root / 'datasets').is_dir():
+        return root
     return None
 
 

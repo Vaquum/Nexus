@@ -19,6 +19,7 @@ from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
+from nexus.core.domain.enums import OrderSide
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
@@ -146,7 +147,7 @@ class TestDispatchShutdown:
 
     def test_dispatch_shutdown_collects_actions(self) -> None:
         runner = _make_mock_runner()
-        action = Action(action_type=ActionType.EXIT)
+        action = Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1'))
         runner.dispatch_shutdown.return_value = [action]
         sequencer = _make_sequencer(runner=runner)
 
@@ -171,10 +172,10 @@ class TestSubmitActions:
         sequencer = _make_sequencer()
         sequencer._shutdown_actions = {
             'test': [
-                Action(action_type=ActionType.EXIT),
-                Action(action_type=ActionType.ABORT),
-                Action(action_type=ActionType.ENTER),
-                Action(action_type=ActionType.MODIFY),
+                Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1')),
+                Action(action_type=ActionType.ABORT, trade_id='t-2'),
+                Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300),
+                Action(action_type=ActionType.MODIFY, trade_id='t-3'),
             ],
         }
 

@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from nexus.core.domain.enums import OperationalMode
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.strategy_event import StrategyEvent
@@ -37,7 +37,7 @@ class StubStrategy(Strategy):
         _context: StrategyContext,
     ) -> list[Action]:
         self.calls.append('on_startup')
-        return [Action(ActionType.ENTER)]
+        return [Action(ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300)]
 
     def on_signal(
         self,
@@ -46,7 +46,7 @@ class StubStrategy(Strategy):
         _context: StrategyContext,
     ) -> list[Action]:
         self.calls.append('on_signal')
-        return [Action(ActionType.ENTER)]
+        return [Action(ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300)]
 
     def on_outcome(
         self,
@@ -55,7 +55,7 @@ class StubStrategy(Strategy):
         _context: StrategyContext,
     ) -> list[Action]:
         self.calls.append('on_outcome')
-        return [Action(ActionType.EXIT)]
+        return [Action(ActionType.EXIT, trade_id='t-1', size=Decimal('1'))]
 
     def on_timer(
         self,
@@ -72,7 +72,7 @@ class StubStrategy(Strategy):
         _context: StrategyContext,
     ) -> list[Action]:
         self.calls.append('on_shutdown')
-        return [Action(ActionType.ABORT)]
+        return [Action(ActionType.ABORT, trade_id='t-1')]
 
     def on_event_replay(self, event: StrategyEvent) -> None:
         self.calls.append('on_event_replay')

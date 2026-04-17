@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from decimal import Decimal
+
 import pytest
 
-from nexus.strategy import Action, Strategy, StrategyContext, StrategyParams
-from nexus.strategy.signal import Signal
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.strategy import Action, ActionType, Strategy, StrategyContext, StrategyParams
+from nexus.strategy.signal import Signal
 
 
 class ConcreteStrategy(Strategy):
@@ -244,15 +249,6 @@ class TestEventCallbacks:
     def test_callbacks_return_empty_list(self) -> None:
         '''Callbacks can return empty list.'''
 
-        from datetime import datetime, timezone
-        from decimal import Decimal
-
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
-        from nexus.infrastructure.praxis_connector.trade_outcome_type import (
-            TradeOutcomeType,
-        )
-
         strategy = ConcreteStrategy('test')
         params = StrategyParams(raw={})
         ctx = StrategyContext(
@@ -281,11 +277,6 @@ class TestEventCallbacks:
     def test_callbacks_return_action_list(self) -> None:
         '''Callbacks can return list of Actions.'''
 
-        from decimal import Decimal
-
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.strategy import ActionType
-
         class ActionReturningStrategy(Strategy):
             '''Strategy that returns actions from callbacks.'''
 
@@ -300,7 +291,7 @@ class TestEventCallbacks:
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.ENTER)]
+                return [Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300)]
 
             def on_signal(
                 self,
@@ -308,7 +299,7 @@ class TestEventCallbacks:
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.ENTER)]
+                return [Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300)]
 
             def on_outcome(
                 self,
@@ -316,7 +307,7 @@ class TestEventCallbacks:
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.EXIT)]
+                return [Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1'))]
 
             def on_timer(
                 self,
@@ -324,14 +315,14 @@ class TestEventCallbacks:
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.MODIFY)]
+                return [Action(action_type=ActionType.MODIFY, trade_id='t-1')]
 
             def on_shutdown(
                 self,
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.ABORT)]
+                return [Action(action_type=ActionType.ABORT, trade_id='t-1')]
 
         strategy = ActionReturningStrategy('test')
         params = StrategyParams(raw={})

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nexus.core.domain.enums import OperationalMode
+from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.startup import StartupError, StartupSequencer
+from nexus.strategy.runner import StrategyRunner
 
 
 @pytest.fixture(autouse=True)
@@ -195,8 +200,6 @@ class TestStartupSequencerStart:
         assert sequencer._runner is not None
 
     def test_start_runner_ready_for_dispatch(self, tmp_path: Path) -> None:
-        from nexus.strategy.runner import StrategyRunner
-
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
@@ -243,8 +246,6 @@ class TestStateRecovery:
         assert sequencer._state is mock_state
 
     def test_recover_state_creates_initial_state_on_fresh_start(self) -> None:
-        from nexus.core.domain.instance_state import InstanceState
-
         mock_store = _make_mock_state_store()
         mock_store.recover.return_value = None
         sequencer = _make_sequencer(
@@ -324,8 +325,6 @@ class TestExternalIntegrationStubs:
             sequencer._register_timers()
 
     def test_determine_mode_sets_active(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-
         sequencer = _make_sequencer()
 
         sequencer._determine_mode()
@@ -468,9 +467,6 @@ class TestEventReplay:
         sequencer._replay_strategy_events()
 
     def test_replay_dispatches_events_to_runner(self, tmp_path: Path) -> None:
-        from datetime import datetime, timezone
-        from nexus.infrastructure.strategy_event import StrategyEvent
-
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
@@ -506,9 +502,6 @@ class TestEventReplay:
         sequencer._runner.dispatch_event_replay.assert_called_once_with('test_strat', event)
 
     def test_replay_skips_unknown_strategy(self, tmp_path: Path) -> None:
-        from datetime import datetime, timezone
-        from nexus.infrastructure.strategy_event import StrategyEvent
-
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
@@ -871,9 +864,6 @@ class TestCrashOnlyDesign:
         sequencer._runner.dispatch_load.assert_called_once_with('test_strat', b'')
 
     def test_event_replay_calls_dispatch_event_replay(self, tmp_path: Path) -> None:
-        from datetime import datetime, timezone
-        from nexus.infrastructure.strategy_event import StrategyEvent
-
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
 

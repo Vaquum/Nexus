@@ -8,19 +8,19 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup import StartupError, StartupSequencer
 
+limen = pytest.importorskip('limen')
+
+
 def _find_limen_root() -> Path | None:
-    try:
-        import limen
-        root = Path(limen.__file__).parent.parent
-        if (root / 'datasets').is_dir():
-            return root
-    except ImportError:
-        pass
+    root = Path(limen.__file__).parent.parent
+    if (root / 'datasets').is_dir():
+        return root
     return None
 
 
@@ -179,8 +179,6 @@ class TestWireSensors:
         sequencer._load_manifest()
         sequencer._instantiate_strategies()
         sequencer._wire_sensors()
-
-        import numpy as np
 
         wired = sequencer.wired_sensors[0]
         result = wired.sensor.predict({'x_test': np.array([[1, 2, 3]])})
