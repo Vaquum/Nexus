@@ -12,6 +12,7 @@ from nexus.core.validator.pipeline_models import (
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 from nexus.infrastructure.praxis_connector.trade_command_type import TradeCommandType
 from nexus.instance_config import InstanceConfig
+from nexus.strategy.action import Action
 
 __all__ = ['translate_to_trade_command']
 
@@ -25,6 +26,7 @@ _ACTION_TO_COMMAND_TYPE: dict[ValidationAction, TradeCommandType] = {
 
 
 def translate_to_trade_command(
+    action: Action,
     context: ValidationRequestContext,
     decision: ValidationDecision,
     config: InstanceConfig,
@@ -33,6 +35,9 @@ def translate_to_trade_command(
     '''Translate validated action to TradeCommand for Trading sub-system.
 
     Args:
+        action: Strategy-layer action being translated. Execution-mode,
+            order-type, maker-preference, deadline, execution-params, and
+            reference-price flow from this source.
         context: Validated action request context.
         decision: Validation pipeline decision (must be allowed).
         config: Instance configuration for account/venue/stp_mode.
@@ -78,4 +83,10 @@ def translate_to_trade_command(
         stp_mode=config.stp_mode if is_new_order else None,
         trade_id=context.trade_id,
         reservation_id=reservation_id,
+        execution_mode=action.execution_mode if is_new_order else None,
+        order_type=action.order_type if is_new_order else None,
+        execution_params=action.execution_params if is_new_order else None,
+        deadline=action.deadline if is_new_order else None,
+        maker_preference=action.maker_preference if is_new_order else None,
+        reference_price=action.reference_price if is_new_order else None,
     )

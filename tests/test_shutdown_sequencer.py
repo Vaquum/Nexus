@@ -20,6 +20,7 @@ from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcom
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
@@ -174,7 +175,7 @@ class TestSubmitActions:
             'test': [
                 Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1')),
                 Action(action_type=ActionType.ABORT, command_id='cmd-2'),
-                Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300),
+                Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode=ExecutionMode.SINGLE_SHOT, order_type=OrderType.MARKET, deadline=300),
                 Action(action_type=ActionType.MODIFY, command_id='cmd-3'),
             ],
         }

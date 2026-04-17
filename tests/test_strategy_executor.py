@@ -10,6 +10,7 @@ from decimal import Decimal
 import pytest
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.strategy_event import StrategyEvent
@@ -41,7 +42,7 @@ class StubStrategy(Strategy):
         if self.delay:
             time.sleep(self.delay)
         self.calls.append('on_startup')
-        return [Action(ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300)]
+        return [Action(ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode=ExecutionMode.SINGLE_SHOT, order_type=OrderType.MARKET, deadline=300)]
 
     def on_signal(
         self,
@@ -52,7 +53,7 @@ class StubStrategy(Strategy):
         if self.delay:
             time.sleep(self.delay)
         self.calls.append('on_signal')
-        return [Action(ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode='SingleShot', order_type='Market', deadline=300)]
+        return [Action(ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode=ExecutionMode.SINGLE_SHOT, order_type=OrderType.MARKET, deadline=300)]
 
     def on_outcome(
         self,

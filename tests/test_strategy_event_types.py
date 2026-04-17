@@ -9,6 +9,7 @@ from decimal import Decimal
 import pytest
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.core.domain.position import Position
 from nexus.strategy import Action, ActionType, StrategyContext, StrategyParams
 from nexus.strategy.signal import Signal
@@ -253,8 +254,8 @@ class TestAction:
                 action_type=ActionType.ENTER,
                 direction=OrderSide.BUY,
                 size=Decimal('1'),
-                execution_mode='SingleShot',
-                order_type='Market',
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
                 deadline=300,
             ),
             ActionType.EXIT: Action(

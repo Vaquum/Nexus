@@ -7,8 +7,10 @@ from decimal import Decimal
 
 import pytest
 
+from nexus.core.capital_controller.reservation import Reservation
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 from nexus.core.stp_mode import STPMode
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
@@ -16,10 +18,10 @@ from nexus.core.validator.pipeline_models import (
     ValidationRequestContext,
     ValidationStage,
 )
-from nexus.core.capital_controller.reservation import Reservation
 from nexus.infrastructure.praxis_connector.trade_command_type import TradeCommandType
 from nexus.infrastructure.praxis_connector.translate import translate_to_trade_command
 from nexus.instance_config import InstanceConfig
+from nexus.strategy.action import Action, ActionType
 
 
 def _config(stp_mode: STPMode = STPMode.CANCEL_TAKER) -> InstanceConfig:
@@ -49,6 +51,40 @@ def _reservation() -> Reservation:
         created_at=now,
         expires_at=now + timedelta(minutes=1),
     )
+
+
+def _enter_action() -> Action:
+    return Action(
+        action_type=ActionType.ENTER,
+        direction=OrderSide.BUY,
+        size=Decimal('0.01'),
+        execution_mode=ExecutionMode.SINGLE_SHOT,
+        order_type=OrderType.MARKET,
+        deadline=300,
+        maker_preference=MakerPreference.NO_PREFERENCE,
+        reference_price=Decimal('100000'),
+        execution_params={'foo': 'bar'},
+    )
+
+
+def _exit_action() -> Action:
+    return Action(
+        action_type=ActionType.EXIT,
+        trade_id='trade_001',
+        size=Decimal('0.01'),
+    )
+
+
+def _modify_action() -> Action:
+    return Action(action_type=ActionType.MODIFY, command_id='cmd_003')
+
+
+def _abort_action() -> Action:
+    return Action(action_type=ActionType.ABORT, command_id='cmd_004')
+
+
+def _cancel_action() -> Action:
+    return Action(action_type=ActionType.ABORT, command_id='cmd_005')
 
 
 def _enter_context() -> ValidationRequestContext:
@@ -128,12 +164,13 @@ def _cancel_context() -> ValidationRequestContext:
 
 
 def test_enter_translation() -> None:
+    action = _enter_action()
     context = _enter_context()
     decision = ValidationDecision(allowed=True, reservation=_reservation())
     config = _config()
     now = _now()
 
-    cmd = translate_to_trade_command(context, decision, config, now)
+    cmd = translate_to_trade_command(action, context, decision, config, now)
 
     assert cmd.command_type == TradeCommandType.NEW_ORDER
     assert cmd.command_id == 'cmd_001'
@@ -146,15 +183,22 @@ def test_enter_translation() -> None:
     assert cmd.stp_mode == STPMode.CANCEL_TAKER
     assert cmd.reservation_id == 'res_001'
     assert cmd.created_at == now
+    assert cmd.execution_mode == ExecutionMode.SINGLE_SHOT
+    assert cmd.order_type == OrderType.MARKET
+    assert cmd.deadline == 300
+    assert cmd.maker_preference == MakerPreference.NO_PREFERENCE
+    assert cmd.reference_price == Decimal('100000')
+    assert cmd.execution_params == {'foo': 'bar'}
 
 
 def test_exit_translation() -> None:
+    action = _exit_action()
     context = _exit_context()
     decision = ValidationDecision(allowed=True)
     config = _config(stp_mode=STPMode.CANCEL_MAKER)
     now = _now()
 
-    cmd = translate_to_trade_command(context, decision, config, now)
+    cmd = translate_to_trade_command(action, context, decision, config, now)
 
     assert cmd.command_type == TradeCommandType.NEW_ORDER
     assert cmd.side == OrderSide.SELL
@@ -164,12 +208,13 @@ def test_exit_translation() -> None:
 
 
 def test_modify_translation() -> None:
+    action = _modify_action()
     context = _modify_context()
     decision = ValidationDecision(allowed=True)
     config = _config()
     now = _now()
 
-    cmd = translate_to_trade_command(context, decision, config, now)
+    cmd = translate_to_trade_command(action, context, decision, config, now)
 
     assert cmd.command_type == TradeCommandType.AMEND_ORDER
     assert cmd.command_id == 'cmd_003'
@@ -177,28 +222,39 @@ def test_modify_translation() -> None:
     assert cmd.side is None
     assert cmd.size is None
     assert cmd.stp_mode is None
+    assert cmd.execution_mode is None
+    assert cmd.order_type is None
+    assert cmd.execution_params is None
+    assert cmd.deadline is None
+    assert cmd.maker_preference is None
+    assert cmd.reference_price is None
 
 
 def test_abort_translation() -> None:
+    action = _abort_action()
     context = _abort_context()
     decision = ValidationDecision(allowed=True)
     config = _config()
     now = _now()
 
-    cmd = translate_to_trade_command(context, decision, config, now)
+    cmd = translate_to_trade_command(action, context, decision, config, now)
 
     assert cmd.command_type == TradeCommandType.CANCEL_ORDER
     assert cmd.command_id == 'cmd_004'
     assert cmd.stp_mode is None
+    assert cmd.execution_mode is None
+    assert cmd.order_type is None
+    assert cmd.maker_preference is None
 
 
 def test_cancel_translation() -> None:
+    action = _cancel_action()
     context = _cancel_context()
     decision = ValidationDecision(allowed=True)
     config = _config()
     now = _now()
 
-    cmd = translate_to_trade_command(context, decision, config, now)
+    cmd = translate_to_trade_command(action, context, decision, config, now)
 
     assert cmd.command_type == TradeCommandType.CANCEL_ORDER
     assert cmd.command_id == 'cmd_005'
@@ -206,49 +262,54 @@ def test_cancel_translation() -> None:
 
 
 def test_naive_datetime_rejected() -> None:
+    action = _enter_action()
     context = _enter_context()
     decision = ValidationDecision(allowed=True, reservation=_reservation())
     config = _config()
     now = datetime.now()
 
     with pytest.raises(ValueError, match='requires UTC'):
-        translate_to_trade_command(context, decision, config, now)
+        translate_to_trade_command(action, context, decision, config, now)
 
 
 def test_non_utc_datetime_rejected() -> None:
+    action = _enter_action()
     context = _enter_context()
     decision = ValidationDecision(allowed=True, reservation=_reservation())
     config = _config()
     non_utc = datetime(2026, 3, 25, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
 
     with pytest.raises(ValueError, match='requires UTC'):
-        translate_to_trade_command(context, decision, config, non_utc)
+        translate_to_trade_command(action, context, decision, config, non_utc)
 
 
 def test_deterministic_output() -> None:
+    action = _enter_action()
     context = _enter_context()
     decision = ValidationDecision(allowed=True, reservation=_reservation())
     config = _config()
     now = datetime(2026, 3, 25, 12, 0, 0, tzinfo=timezone.utc)
 
-    cmd1 = translate_to_trade_command(context, decision, config, now)
-    cmd2 = translate_to_trade_command(context, decision, config, now)
+    cmd1 = translate_to_trade_command(action, context, decision, config, now)
+    cmd2 = translate_to_trade_command(action, context, decision, config, now)
 
     assert cmd1 == cmd2
 
 
 def test_stp_mode_from_config() -> None:
+    action = _enter_action()
     context = _enter_context()
     decision = ValidationDecision(allowed=True, reservation=_reservation())
     now = _now()
 
     for mode in STPMode:
         config = _config(stp_mode=mode)
-        cmd = translate_to_trade_command(context, decision, config, now)
+        cmd = translate_to_trade_command(action, context, decision, config, now)
         assert cmd.stp_mode == mode
 
 
 def test_denied_decision_rejected() -> None:
+    action = _enter_action()
     context = _enter_context()
     decision = ValidationDecision(
         allowed=False,
@@ -260,10 +321,11 @@ def test_denied_decision_rejected() -> None:
     now = _now()
 
     with pytest.raises(ValueError, match='decision must be allowed'):
-        translate_to_trade_command(context, decision, config, now)
+        translate_to_trade_command(action, context, decision, config, now)
 
 
 def test_missing_command_id_rejected() -> None:
+    action = _exit_action()
     context = ValidationRequestContext(
         strategy_id='strat_001',
         action=ValidationAction.EXIT,
@@ -283,4 +345,4 @@ def test_missing_command_id_rejected() -> None:
     now = _now()
 
     with pytest.raises(ValueError, match='non-empty command_id'):
-        translate_to_trade_command(context, decision, config, now)
+        translate_to_trade_command(action, context, decision, config, now)

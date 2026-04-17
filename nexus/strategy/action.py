@@ -7,6 +7,7 @@ from decimal import Decimal
 from enum import Enum
 
 from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 
 __all__ = ['Action', 'ActionType']
 
@@ -50,13 +51,13 @@ class Action:
     action_type: ActionType
     direction: OrderSide | None = None
     size: Decimal | None = None
-    execution_mode: str | None = None
-    order_type: str | None = None
+    execution_mode: ExecutionMode | None = None
+    order_type: OrderType | None = None
     execution_params: dict[str, object] | None = None
     deadline: int | None = None
     trade_id: str | None = None
     command_id: str | None = None
-    maker_preference: str | None = None
+    maker_preference: MakerPreference | None = None
     reference_price: Decimal | None = None
 
     def __post_init__(self) -> None:
@@ -76,18 +77,14 @@ class Action:
             msg = 'size must be a finite positive Decimal or None'
             raise ValueError(msg)
 
-        if self.execution_mode is not None and (
-            not isinstance(self.execution_mode, str)
-            or not self.execution_mode.strip()
+        if self.execution_mode is not None and not isinstance(
+            self.execution_mode, ExecutionMode
         ):
-            msg = 'execution_mode must be a non-empty string or None'
+            msg = 'execution_mode must be an ExecutionMode member or None'
             raise ValueError(msg)
 
-        if self.order_type is not None and (
-            not isinstance(self.order_type, str)
-            or not self.order_type.strip()
-        ):
-            msg = 'order_type must be a non-empty string or None'
+        if self.order_type is not None and not isinstance(self.order_type, OrderType):
+            msg = 'order_type must be an OrderType member or None'
             raise ValueError(msg)
 
         if self.execution_params is not None and not isinstance(
@@ -118,11 +115,10 @@ class Action:
             msg = 'command_id must be a non-empty string or None'
             raise ValueError(msg)
 
-        if self.maker_preference is not None and (
-            not isinstance(self.maker_preference, str)
-            or not self.maker_preference.strip()
+        if self.maker_preference is not None and not isinstance(
+            self.maker_preference, MakerPreference
         ):
-            msg = 'maker_preference must be a non-empty string or None'
+            msg = 'maker_preference must be a MakerPreference member or None'
             raise ValueError(msg)
 
         if self.reference_price is not None and (
