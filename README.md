@@ -1,41 +1,74 @@
-<h1 align="center">
-  <br>
-  <a href="https://github.com/Vaquum"><img src="https://github.com/Vaquum/Home/raw/main/assets/Logo.png" alt="Vaquum" width="150"></a>
-  <br>
-</h1>
+<div align="center">
+  <br />
+  <a href="https://github.com/Vaquum"><img src="https://github.com/Vaquum/Home/raw/main/assets/Logo.png" alt="Vaquum" width="150" /></a>
+  <br />
+</div>
+<br />
+<div align="center"><strong>Vaquum Nexus turns signals and strategy intent into execution-safe trading decisions, controlled capital deployment, and recoverable manager state.</strong></div>
 
-<h3 align="center">New Repository Template</h3>
+<div align="center">
+  <a href="#nexus">Nexus</a> •
+  <a href="#what-nexus-is-not">What Nexus Is Not</a> •
+  <a href="#capabilities">Capabilities</a> •
+  <a href="#learn-more">Learn More</a>
+</div>
+<br />
+<div align="center">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/Vaquum/Nexus"><img src="https://img.shields.io/ossf-scorecard/github.com/Vaquum/Nexus?label=openssf+scorecard&amp;style=flat" alt="OpenSSF Scorecard" /></a>
+</div>
 
-<!-- Replace the title of the repository -->
+<hr />
 
-<p align="center">
-  <a href="#description">Description</a> •
-  <a href="#owner">Owner</a> •
-  <a href="#integrations">Integrations</a> •
-  <a href="#docs">Docs</a>
-</p>
-<hr>
+# Nexus
 
-## Description
+Nexus is the decision-making layer between Limen and Praxis. It separates user-defined decision logic from non-negotiable controls for capital, risk, price, health, and platform safety.
 
-The template for creating new repositories.
+Each Nexus instance manages one trading account with durable state, deterministic validation, and crash-safe recovery. In the wider Vaquum architecture, Limen sits upstream for research and signal generation, while Praxis sits downstream for execution.
 
-<!-- This section provides a high-level overview for the repo -->
+## What Nexus Is Not
 
-## Owner
+Nexus is not:
 
-- [@mikkokotila](https://github.com/mikkokotila)
+- a market-data research engine
+- a generic strategy backtesting platform
+- a venue execution adapter
+- a monitoring or oversight layer
 
-<!-- This section lists the owners of the repo -->
+Its role is narrower and stricter: take strategy actions, validate them against account and platform constraints, and translate only admissible decisions into execution commands.
 
-## Integrations
+## Capabilities
 
-- No integrations with other repos.
+- Per-account Manager instances with isolated venue identity, capital limits, and runtime state
+- Multi-stage validation pipeline for intake, risk, price, capital, health, and platform limits
+- Atomic capital reservation and order lifecycle control to prevent over-deployment and race conditions
+- Strategy-level capital budgets and deployed-capital accounting within a shared account pool
+- Instance-level drawdown, realized and unrealized P&L, and rolling loss tracking
+- Safety modes for active, reduce-only, and halted operation
+- Deterministic handling of enter, exit, modify, abort, and cancel actions through one control plane
+- Translation of validated actions into Praxis trade commands, including self-trade-prevention controls
+- Durable persistence with write-ahead logging, snapshots, replay, and crash recovery
 
-<!-- This section must list as bulleted list how this repo depends or is integrated with other repos -->
+## Learn More
 
-## Docs
+- Start with the developer docs in [docs/Developer/README.md](docs/Developer/README.md)
+- Review current cleanup and follow-up items in [docs/TechnicalDebt.md](docs/TechnicalDebt.md)
 
-No documentations.
+## Contributing
 
-<!-- This section must link to the docs which are in the root of the repository in /docs -->
+The most useful early contributions are documentation improvements, focused bug fixes, and clarifications to runtime and decisioning behavior.
+
+Before contributing, start with [docs/Developer/README.md](docs/Developer/README.md).
+
+## Vulnerabilities
+
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/Vaquum/Nexus/security/advisories/new).
+
+## Citations
+
+If you use Nexus for published work, please cite:
+
+Vaquum Nexus [Computer software]. (2026). Retrieved from https://github.com/Vaquum/Nexus.
+
+## License
+
+[MIT License](https://github.com/Vaquum/Nexus/blob/main/LICENSE).
