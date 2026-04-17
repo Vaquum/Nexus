@@ -9,7 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from nexus.core.domain.enums import OperationalMode
+from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
@@ -281,6 +282,69 @@ class TestExternalIntegrationStubs:
         sequencer = _make_sequencer()
 
         sequencer._reconcile_capital()
+
+    def test_reconcile_capital_imports_praxis_only_position(self) -> None:
+        '''A Praxis position Nexus does not know about is imported into InstanceState.'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'trade_xyz'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('0.5')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'trade_xyz'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._account_id = 'acc_001'
+        sequencer._state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+
+        sequencer._reconcile_capital()
+
+        imported = sequencer._state.positions.get('trade_xyz')
+        assert imported is not None
+        assert imported.strategy_id == 'momentum'
+        assert imported.symbol == 'BTCUSDT'
+        assert imported.side == OrderSide.BUY
+        assert imported.size == Decimal('0.5')
+        assert imported.entry_price == Decimal('50000')
+        assert sequencer._state.capital.position_notional == Decimal('25000')
+
+    def test_reconcile_capital_skips_praxis_position_without_strategy_id(self) -> None:
+        '''Praxis positions lacking strategy_id are not imported.'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'trade_xyz'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('0.5')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = None
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'trade_xyz'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._account_id = 'acc_001'
+        sequencer._state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+
+        sequencer._reconcile_capital()
+
+        assert 'trade_xyz' not in sequencer._state.positions
 
     def test_restore_strategy_state_without_path_logs_warning(self) -> None:
         sequencer = _make_sequencer()
