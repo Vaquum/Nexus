@@ -7,8 +7,10 @@ from decimal import Decimal
 import pytest
 
 from nexus.core.domain.capital_state import CapitalState
-from nexus.core.domain.enums import OperationalMode
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.operational_mode import StrategyModeState
+from nexus.core.domain.position import Position
 from nexus.instance_config import InstanceConfig
 
 
@@ -44,9 +46,6 @@ def test_from_config() -> None:
 def test_positions_key_mismatch_rejected() -> None:
     '''Verify positions dict key not matching trade_id raises ValueError.'''
 
-    from nexus.core.domain.enums import OrderSide
-    from nexus.core.domain.position import Position
-
     with pytest.raises(ValueError, match='does not match trade_id'):
         InstanceState(
             capital=CapitalState(capital_pool=Decimal('10000')),
@@ -65,8 +64,6 @@ def test_positions_key_mismatch_rejected() -> None:
 
 def test_strategy_modes_key_mismatch_rejected() -> None:
     '''Verify strategy_modes dict key not matching strategy_id raises ValueError.'''
-
-    from nexus.core.domain.operational_mode import StrategyModeState
 
     with pytest.raises(ValueError, match='does not match strategy_id'):
         InstanceState(

@@ -12,12 +12,17 @@ from unittest.mock import MagicMock
 import pytest
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.order_types import ExecutionMode, OrderType
+from nexus.core.domain.position import Position
+from nexus.core.stp_mode import STPMode
 from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
+from nexus.instance_config import InstanceConfig
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
@@ -146,7 +151,7 @@ class TestDispatchShutdown:
 
     def test_dispatch_shutdown_collects_actions(self) -> None:
         runner = _make_mock_runner()
-        action = Action(action_type=ActionType.EXIT)
+        action = Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1'))
         runner.dispatch_shutdown.return_value = [action]
         sequencer = _make_sequencer(runner=runner)
 
@@ -171,10 +176,10 @@ class TestSubmitActions:
         sequencer = _make_sequencer()
         sequencer._shutdown_actions = {
             'test': [
-                Action(action_type=ActionType.EXIT),
-                Action(action_type=ActionType.ABORT),
-                Action(action_type=ActionType.ENTER),
-                Action(action_type=ActionType.MODIFY),
+                Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1')),
+                Action(action_type=ActionType.ABORT, command_id='cmd-2'),
+                Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode=ExecutionMode.SINGLE_SHOT, order_type=OrderType.MARKET, deadline=300),
+                Action(action_type=ActionType.MODIFY, command_id='cmd-3'),
             ],
         }
 
@@ -188,6 +193,206 @@ class TestSubmitActions:
 
         sequencer._submit_actions()
 
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_actions_routes_exit_and_abort(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-1': Position(
+                    trade_id='t-1',
+                    strategy_id='test',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.5'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+        sequencer = _make_sequencer(state=state)
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('0.5')),
+                Action(action_type=ActionType.ABORT, command_id='cmd-99'),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert outbound.send_command.call_count == 1
+        assert outbound.send_abort.call_count == 1
+        assert sequencer._submitted_command_ids == ['praxis_cmd_42', 'cmd-99']
+
+        abort_kwargs = outbound.send_abort.call_args.kwargs
+        assert abort_kwargs['command_id'] == 'cmd-99'
+        assert abort_kwargs['account_id'] == 'acc_001'
+        assert abort_kwargs['reason'] == 'shutdown'
+
+    def test_exit_side_derived_from_position_side(self) -> None:
+        '''_build_exit_context picks the opposite side of the open position.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-buy': Position(
+                    trade_id='t-buy',
+                    strategy_id='s',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.1'),
+                    entry_price=Decimal('50000'),
+                ),
+                't-sell': Position(
+                    trade_id='t-sell',
+                    strategy_id='s',
+                    symbol='BTCUSDT',
+                    side=OrderSide.SELL,
+                    size=Decimal('0.1'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+        sequencer = _make_sequencer(state=state)
+        sequencer._config = config
+
+        ctx_buy = sequencer._build_exit_context(
+            's',
+            Action(action_type=ActionType.EXIT, trade_id='t-buy', size=Decimal('0.1')),
+        )
+        ctx_sell = sequencer._build_exit_context(
+            's',
+            Action(action_type=ActionType.EXIT, trade_id='t-sell', size=Decimal('0.1')),
+        )
+
+        assert ctx_buy is not None and ctx_buy.order_side == OrderSide.SELL
+        assert ctx_sell is not None and ctx_sell.order_side == OrderSide.BUY
+
+    def test_submit_actions_skips_when_outbound_missing(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        sequencer = _make_sequencer()
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.ABORT, command_id='cmd-1')],
+        }
+
+        sequencer._submit_actions()
+
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_actions_skips_when_config_missing(self) -> None:
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.ABORT, command_id='cmd-1')],
+        }
+
+        sequencer._submit_actions()
+
+        outbound.send_command.assert_not_called()
+        outbound.send_abort.assert_not_called()
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_exit_skips_unknown_trade_id(self) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.EXIT, trade_id='missing', size=Decimal('1'))],
+        }
+
+        sequencer._submit_actions()
+
+        outbound.send_command.assert_not_called()
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_exit_swallows_send_command_errors(self) -> None:
+        '''send_command exceptions do not abort shutdown or record a command_id.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-1': Position(
+                    trade_id='t-1',
+                    strategy_id='test',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.5'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.side_effect = RuntimeError('praxis down')
+        sequencer = _make_sequencer(state=state)
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('0.5')),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert outbound.send_command.call_count == 1
+        assert sequencer._submitted_command_ids == []
+
+    def test_submit_abort_swallows_send_abort_errors(self) -> None:
+        '''send_abort exceptions do not abort shutdown or record a command_id.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_abort.side_effect = RuntimeError('abort not supported')
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        sequencer._config = config
+        sequencer._shutdown_actions = {
+            'test': [Action(action_type=ActionType.ABORT, command_id='cmd-1')],
+        }
+
+        sequencer._submit_actions()
+
+        assert outbound.send_abort.call_count == 1
         assert sequencer._submitted_command_ids == []
 
 
@@ -446,6 +651,95 @@ class TestWaitTerminal:
         sequencer._wait_terminal()
 
         assert q.empty()
+
+    def test_wait_terminal_escalates_abort_on_timeout(self) -> None:
+        '''On first-round timeout, _wait_terminal sends ABORT for each pending command.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            praxis_outbound=outbound,
+            config=config,
+            shutdown_timeout=0.05,
+        )
+        sequencer._submitted_command_ids.extend(['cmd_a', 'cmd_b'])
+
+        sequencer._wait_terminal()
+
+        assert outbound.send_abort.call_count == 2
+        reasons = {call.kwargs['reason'] for call in outbound.send_abort.call_args_list}
+        command_ids = {call.kwargs['command_id'] for call in outbound.send_abort.call_args_list}
+        assert reasons == {'shutdown_escalation'}
+        assert command_ids == {'cmd_a', 'cmd_b'}
+
+    def test_wait_terminal_escalation_noop_when_outbound_missing(self) -> None:
+        '''Escalation is a no-op (logged) when outbound or config is missing.'''
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.05,
+        )
+        sequencer._submitted_command_ids.append('cmd_a')
+
+        sequencer._wait_terminal()
+
+    def test_wait_terminal_no_escalation_when_all_terminal(self) -> None:
+        '''Escalation does not fire when all commands terminate before timeout.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(TradeOutcome(
+            outcome_id='out_a',
+            command_id='cmd_a',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+        ))
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            praxis_inbound=inbound,
+            praxis_outbound=outbound,
+            config=config,
+            shutdown_timeout=5.0,
+        )
+        sequencer._submitted_command_ids.append('cmd_a')
+
+        sequencer._wait_terminal()
+
+        outbound.send_abort.assert_not_called()
 
 
 class TestStopTimers:

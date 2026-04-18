@@ -13,10 +13,11 @@ import structlog
 from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.position import Position
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
-from nexus.core.domain.enums import OperationalMode
-from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.manifest import Manifest, TimerSpec, load_manifest
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.error import StartupError
@@ -195,6 +196,89 @@ class StartupSequencer:
         except Exception as e:
             raise StartupError('register_with_trading', str(e)) from e
 
+    def _import_praxis_position(
+        self,
+        trade_id: str,
+        praxis_pos: Any,
+        qty: Decimal,
+        price: Decimal,
+    ) -> Position | None:
+        '''Build a Nexus Position from a Praxis-only position when possible.
+
+        Returns the imported Position, or None if the Praxis position lacks
+        the fields Nexus requires (e.g. strategy_id, symbol, side).
+        '''
+
+        resolved = self._resolve_imported_position_fields(trade_id, praxis_pos, qty)
+        if resolved is None:
+            return None
+        strategy_id, symbol, side = resolved
+
+        try:
+            imported = Position(
+                trade_id=trade_id,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                side=side,
+                size=qty,
+                entry_price=price,
+            )
+        except ValueError as e:
+            _log.warning(
+                'cannot import Praxis-only position with invalid fields',
+                trade_id=trade_id,
+                error=str(e),
+            )
+            return None
+
+        _log.info(
+            'imported Praxis-only position',
+            trade_id=trade_id,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            size=str(qty),
+        )
+        return imported
+
+    def _resolve_imported_position_fields(
+        self,
+        trade_id: str,
+        praxis_pos: Any,
+        qty: Decimal,
+    ) -> tuple[str, str, OrderSide] | None:
+        '''Extract and validate strategy_id / symbol / side from a Praxis position.'''
+
+        strategy_id = getattr(praxis_pos, 'strategy_id', None)
+        if not isinstance(strategy_id, str) or not strategy_id.strip():
+            _log.warning(
+                'cannot import Praxis-only position without strategy_id',
+                trade_id=trade_id,
+                praxis_qty=str(qty),
+            )
+            return None
+
+        symbol = getattr(praxis_pos, 'symbol', None)
+        if not isinstance(symbol, str) or not symbol.strip():
+            _log.warning(
+                'cannot import Praxis-only position without symbol',
+                trade_id=trade_id,
+            )
+            return None
+
+        praxis_side = getattr(praxis_pos, 'side', None)
+        side_value = getattr(praxis_side, 'value', None)
+        try:
+            side = OrderSide(side_value)
+        except ValueError:
+            _log.warning(
+                'cannot import Praxis-only position with invalid side',
+                trade_id=trade_id,
+                side=repr(praxis_side),
+            )
+            return None
+
+        return strategy_id, symbol, side
+
     def _reconcile_capital(self) -> None:
         '''Reconcile capital state against Trading positions.
 
@@ -247,11 +331,9 @@ class StartupSequencer:
             nexus_pos = self._state.positions.get(trade_id)
 
             if nexus_pos is None:
-                _log.warning(
-                    'position in Praxis but not in Nexus',
-                    trade_id=trade_id,
-                    praxis_qty=str(praxis_pos.qty),
-                )
+                imported = self._import_praxis_position(trade_id, praxis_pos, qty, price)
+                if imported is not None:
+                    self._state.positions[trade_id] = imported
                 continue
 
             if nexus_pos.size != qty:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
     ValidationDecision,
@@ -12,6 +13,7 @@ from nexus.core.validator.pipeline_models import (
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 from nexus.infrastructure.praxis_connector.trade_command_type import TradeCommandType
 from nexus.instance_config import InstanceConfig
+from nexus.strategy.action import Action
 
 __all__ = ['translate_to_trade_command']
 
@@ -23,8 +25,13 @@ _ACTION_TO_COMMAND_TYPE: dict[ValidationAction, TradeCommandType] = {
     ValidationAction.CANCEL: TradeCommandType.CANCEL_ORDER,
 }
 
+_EXIT_DEFAULT_EXECUTION_MODE = ExecutionMode.SINGLE_SHOT
+_EXIT_DEFAULT_ORDER_TYPE = OrderType.MARKET
+_EXIT_DEFAULT_DEADLINE_SECONDS = 60
+
 
 def translate_to_trade_command(
+    action: Action,
     context: ValidationRequestContext,
     decision: ValidationDecision,
     config: InstanceConfig,
@@ -33,6 +40,13 @@ def translate_to_trade_command(
     '''Translate validated action to TradeCommand for Trading sub-system.
 
     Args:
+        action: Strategy-layer action being translated. Execution-mode,
+            order-type, maker-preference, deadline, execution-params, and
+            reference-price flow from this source for ENTER. For EXIT,
+            the translate layer honors any provided execution fields and
+            fills missing values with `execution_mode=SINGLE_SHOT`,
+            `order_type=MARKET`, and `deadline=60s` so submission to
+            Praxis cannot pass `None` to required parameters.
         context: Validated action request context.
         decision: Validation pipeline decision (must be allowed).
         config: Instance configuration for account/venue/stp_mode.
@@ -60,10 +74,27 @@ def translate_to_trade_command(
 
     command_type = _ACTION_TO_COMMAND_TYPE[context.action]
     is_new_order = command_type == TradeCommandType.NEW_ORDER
+    is_exit = context.action == ValidationAction.EXIT
 
     reservation_id = None
     if decision.reservation is not None:
         reservation_id = decision.reservation.reservation_id
+
+    if not is_new_order:
+        execution_mode = None
+        order_type = None
+        deadline = None
+    else:
+        execution_mode = action.execution_mode
+        order_type = action.order_type
+        deadline = action.deadline
+        if is_exit:
+            if execution_mode is None:
+                execution_mode = _EXIT_DEFAULT_EXECUTION_MODE
+            if order_type is None:
+                order_type = _EXIT_DEFAULT_ORDER_TYPE
+            if deadline is None:
+                deadline = _EXIT_DEFAULT_DEADLINE_SECONDS
 
     return TradeCommand(
         command_id=context.command_id,
@@ -78,4 +109,10 @@ def translate_to_trade_command(
         stp_mode=config.stp_mode if is_new_order else None,
         trade_id=context.trade_id,
         reservation_id=reservation_id,
+        execution_mode=execution_mode,
+        order_type=order_type,
+        execution_params=action.execution_params if is_new_order else None,
+        deadline=deadline,
+        maker_preference=action.maker_preference if is_new_order else None,
+        reference_price=action.reference_price if is_new_order else None,
     )

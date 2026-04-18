@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
 
 from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
+from nexus.core.health_evaluator import HealthSnapshot
 from nexus.core.stp_mode import STPMode
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
@@ -43,6 +45,12 @@ def _make_command(command_id: str = 'cmd_001') -> TradeCommand:
         size=Decimal('0.01'),
         stp_mode=STPMode.CANCEL_TAKER,
         trade_id='trade_001',
+        execution_mode=ExecutionMode.SINGLE_SHOT,
+        order_type=OrderType.MARKET,
+        execution_params={'slippage_bps': 10},
+        deadline=300,
+        maker_preference=MakerPreference.NO_PREFERENCE,
+        reference_price=Decimal('100000'),
     )
 
 
@@ -95,6 +103,12 @@ class TestPraxisOutbound:
         assert received_kwargs['side'] == OrderSide.BUY
         assert received_kwargs['trade_id'] == 'trade_001'
         assert received_kwargs['stp_mode'] == STPMode.CANCEL_TAKER
+        assert received_kwargs['order_type'] == OrderType.MARKET
+        assert received_kwargs['execution_mode'] == ExecutionMode.SINGLE_SHOT
+        assert received_kwargs['execution_params'] == {'slippage_bps': 10}
+        assert received_kwargs['maker_preference'] == MakerPreference.NO_PREFERENCE
+        assert received_kwargs['reference_price'] == Decimal('100000')
+        assert received_kwargs['timeout'] == 300
 
     def test_timeout_raises(
         self,
@@ -140,3 +154,218 @@ class TestPraxisOutbound:
 
         with pytest.raises(ValueError, match='account not registered'):
             outbound.send_command(command)
+
+
+class TestPraxisOutboundSendAbort:
+
+    def test_sends_abort_with_fields(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort bridges to async submit_abort_fn with named fields.'''
+
+        loop, _ = event_loop_thread
+        received: dict[str, object] = {}
+
+        async def mock_submit_abort(**kwargs: object) -> None:
+            received.update(kwargs)
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=mock_submit_abort,
+        )
+
+        created_at = datetime.now(tz=timezone.utc)
+        outbound.send_abort(
+            command_id='cmd_42',
+            account_id='acc_001',
+            reason='shutdown',
+            created_at=created_at,
+        )
+
+        assert received['command_id'] == 'cmd_42'
+        assert received['account_id'] == 'acc_001'
+        assert received['reason'] == 'shutdown'
+        assert received['created_at'] == created_at
+
+    def test_raises_when_fn_not_configured(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort raises RuntimeError if submit_abort_fn is None.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(submit_fn=mock_submit, loop=loop)
+
+        with pytest.raises(RuntimeError, match='submit_abort_fn not configured'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=datetime.now(tz=timezone.utc),
+            )
+
+    def test_async_error_propagates(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''Async submit_abort_fn exception propagates to sync caller.'''
+
+        loop, _ = event_loop_thread
+
+        async def failing_abort(**_kwargs: object) -> None:
+            msg = 'unknown command'
+            raise ValueError(msg)
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=failing_abort,
+        )
+
+        with pytest.raises(ValueError, match='unknown command'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=datetime.now(tz=timezone.utc),
+            )
+
+    def test_naive_created_at_rejected(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort rejects naive datetime.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit_abort(**_kwargs: object) -> None:
+            return
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=mock_submit_abort,
+        )
+
+        with pytest.raises(ValueError, match='must be timezone-aware UTC'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=datetime(2026, 4, 18, 12, 0, 0),
+            )
+
+    def test_non_utc_created_at_rejected(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort rejects non-UTC timezone.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit_abort(**_kwargs: object) -> None:
+            return
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=mock_submit_abort,
+        )
+
+        non_utc = datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be timezone-aware UTC'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=non_utc,
+            )
+
+
+class TestPraxisOutboundGetHealthSnapshot:
+
+    def test_pulls_snapshot(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''get_health_snapshot bridges to async fn and returns the snapshot.'''
+
+        loop, _ = event_loop_thread
+        target = HealthSnapshot(latency_p99_ms=42.0, consecutive_failures=1)
+        received: dict[str, object] = {}
+
+        async def fake_get_snapshot(account_id: str) -> HealthSnapshot:
+            received['account_id'] = account_id
+            return target
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            get_health_snapshot_fn=fake_get_snapshot,
+        )
+
+        result = outbound.get_health_snapshot('acc-1')
+
+        assert result is target
+        assert received['account_id'] == 'acc-1'
+
+    def test_raises_when_fn_not_configured(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''get_health_snapshot raises RuntimeError when fn is None.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(submit_fn=mock_submit, loop=loop)
+
+        with pytest.raises(RuntimeError, match='get_health_snapshot_fn not configured'):
+            outbound.get_health_snapshot('acc-1')
+
+    def test_async_error_propagates(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''Exception from get_health_snapshot_fn propagates.'''
+
+        loop, _ = event_loop_thread
+
+        async def failing_get_snapshot(_account_id: str) -> object:
+            msg = 'praxis not started'
+            raise RuntimeError(msg)
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            get_health_snapshot_fn=failing_get_snapshot,
+        )
+
+        with pytest.raises(RuntimeError, match='praxis not started'):
+            outbound.get_health_snapshot('acc-1')

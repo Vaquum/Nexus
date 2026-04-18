@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -122,7 +123,6 @@ class TestTimerLoop:
 
         runner.dispatch_timer.reset_mock()
 
-        import time
         time.sleep(1.5)
 
         assert not runner.dispatch_timer.called

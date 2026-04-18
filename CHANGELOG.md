@@ -284,3 +284,20 @@
 - Replace O(N) dictionary scan in `make_duplicate_order_hook` with `collections.deque`-based chronological expiry (TD-018)
 - Add `docs/TechnicalDebt.md` entries TD-025 (thread churn) and TD-026 (health data source)
 - Add 28 tests across new modules (972 total)
+
+## v0.27.0 on 18th of April, 2026
+
+- Promote all inline imports across `nexus/` and `tests/` to top-of-file (`health_evaluator.py`, test files for `wal_codec`, `signal_producer`, `wire_sensors`, `instance_state`, `timer_loop`, `startup_sequencer`, `strategy_event_types`, `strategy_base`)
+- Add Action trade fields per RFC §Action Parameters in [`action.py`](nexus/strategy/action.py): `direction`, `size`, `execution_mode`, `order_type`, `execution_params`, `deadline`, `trade_id`, `command_id`, `maker_preference`, `reference_price`; per-action_type required-field validation in `__post_init__` via `_validate_action_type_requirements()` (TD-023.1)
+- Split Action reference fields per RFC-3001 Stage 1: EXIT requires `trade_id`; MODIFY/ABORT require `command_id` (was `trade_id`) (TD-023.2)
+- Mirror Praxis enums in [`order_types.py`](nexus/core/domain/order_types.py): `ExecutionMode`, `OrderType`, `MakerPreference`. Retype `Action.execution_mode/order_type/maker_preference` from free strings to these enums (TD-023.3)
+- Extend [`TradeCommand`](nexus/infrastructure/praxis_connector/trade_command.py) with `execution_mode`, `order_type`, `execution_params`, `deadline`, `maker_preference`, `reference_price`; AMEND/CANCEL invariants enforce these are absent. Update `translate_to_trade_command` to take an `Action` and populate these on NEW_ORDER (TD-023.3)
+- Wire real fields through [`PraxisOutbound.send_command`](nexus/infrastructure/praxis_connector/praxis_outbound.py): `order_type`, `execution_mode`, `execution_params`, `maker_preference`, `reference_price` flow from the TradeCommand instead of placeholder `None` values (TD-023.4)
+- Add `PraxisOutbound.send_abort` wrapping Praxis `Trading.submit_abort` via `asyncio.run_coroutine_threadsafe` (new `submit_abort_fn` parameter)
+- Wire [`ShutdownSequencer._submit_actions`](nexus/startup/shutdown_sequencer.py): EXIT actions translate through `translate_to_trade_command` and submit via `send_command`; ABORT actions submit via `send_abort` with reason `'shutdown'`; returned command_ids stored in `_submitted_command_ids`. Optional `config: InstanceConfig` parameter on `ShutdownSequencer` (TD-023.5)
+- Wire ABORT escalation in `_wait_terminal`: on first-round timeout, send ABORT for each pending command (reason `'shutdown_escalation'`) and re-poll with half the original `shutdown_timeout` before giving up. Refactor poll loop into `_poll_until_terminal` and abort fan-out into `_escalate_abort_pending` (TD-023.6)
+- Import Praxis-only positions during reconciliation: [`StartupSequencer._reconcile_capital`](nexus/startup/sequencer.py) now constructs a Nexus `Position` (strategy_id / symbol / side / size / entry_price) and inserts it into `instance_state.positions` when a Praxis position has no Nexus counterpart, provided required fields are present (TD-024)
+- Add `PraxisOutbound.get_health_snapshot(account_id)` wrapping Praxis `Trading.get_health_snapshot` via `asyncio.run_coroutine_threadsafe` (new `get_health_snapshot_fn` parameter) (TD-026.1)
+- Add [`health_loop.py`](nexus/core/health_loop.py) with `HealthLoop` — periodic timer pulls a `HealthSnapshot` from a configurable provider, evaluates via `HealthEvaluator`, and updates `instance_state.mode` on transition. Provider/evaluator exceptions are logged-and-swallowed; `start` is idempotent; `tick_once()` exposed for synchronous callers (TD-026.2)
+- Rename `_validate_required_fields` to `_validate_action_type_requirements` in `Action` (existing per-action_type checks; the rename reflects that field-shape validation already happened earlier in `__post_init__`)
+- Add 62 tests across new and updated modules (1034 total)

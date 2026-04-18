@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 import structlog
 
+from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.validator.pipeline_models import (
+    ValidationAction,
+    ValidationDecision,
+    ValidationRequestContext,
+)
 from nexus.infrastructure.manifest import Manifest
-from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
+from nexus.infrastructure.praxis_connector.translate import translate_to_trade_command
+from nexus.infrastructure.state_store import StateStore
+from nexus.instance_config import InstanceConfig
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
@@ -25,6 +35,10 @@ __all__ = ['ShutdownSequencer']
 
 _log = structlog.get_logger()
 _HUNDRED = Decimal('100')
+_ZERO = Decimal(0)
+_SHUTDOWN_ABORT_REASON = 'shutdown'
+_ESCALATION_ABORT_REASON = 'shutdown_escalation'
+_ESCALATION_TIMEOUT_RATIO = 0.5
 
 
 class ShutdownSequencer:
@@ -44,8 +58,12 @@ class ShutdownSequencer:
         timer_loop: Running TimerLoop to stop during shutdown.
         praxis_outbound: Outbound connector for deregistration.
         praxis_inbound: Inbound connector for outcome consumption.
-        account_id: Account identifier for Praxis deregistration.
+        account_id: Account identifier for Praxis deregistration. When config
+            is also provided, account_id must equal config.account_id.
         shutdown_timeout: Seconds to wait for commands to reach terminal state.
+        config: Instance configuration carrying account_id, venue, stp_mode
+            for shutdown command translation. When provided alongside
+            account_id, the two account_ids must match.
     '''
 
     def __init__(
@@ -61,6 +79,7 @@ class ShutdownSequencer:
         praxis_inbound: PraxisInbound | None = None,
         account_id: str | None = None,
         shutdown_timeout: float = 120.0,
+        config: InstanceConfig | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -82,6 +101,21 @@ class ShutdownSequencer:
             msg = 'strategy_state_path must be a Path'
             raise ValueError(msg)
 
+        if config is not None and not isinstance(config, InstanceConfig):
+            msg = 'config must be an InstanceConfig instance or None'
+            raise ValueError(msg)
+
+        if (
+            config is not None
+            and account_id is not None
+            and account_id != config.account_id
+        ):
+            msg = (
+                'account_id and config.account_id must match: '
+                f'{account_id!r} vs {config.account_id!r}'
+            )
+            raise ValueError(msg)
+
         self._runner = runner
         self._manifest = manifest
         self._state_store = state_store
@@ -93,6 +127,7 @@ class ShutdownSequencer:
         self._praxis_inbound = praxis_inbound
         self._account_id = account_id
         self._shutdown_timeout = shutdown_timeout
+        self._config = config
         self._shutdown_actions: dict[str, list[Action]] = {}
         self._submitted_command_ids: list[str] = []
         self._save_blobs: dict[str, bytes] = {}
@@ -179,11 +214,14 @@ class ShutdownSequencer:
                 _log.exception('on_shutdown failed', strategy_id=strategy_id)
 
     def _submit_actions(self) -> None:
-        '''Submit EXIT/ABORT actions through Validator to Praxis.
+        '''Submit EXIT/ABORT actions to Praxis.
 
         Filters actions returned by strategies from _dispatch_shutdown.
         Only EXIT/ABORT are allowed during shutdown; ENTER/MODIFY skipped.
-        Filtered actions are submitted via PraxisOutbound when available.
+        EXIT goes through translate → PraxisOutbound.send_command.
+        ABORT goes through PraxisOutbound.send_abort.
+        Returned command_ids are collected in _submitted_command_ids for
+        _wait_terminal to poll.
         '''
 
         allowed_types = (ActionType.EXIT, ActionType.ABORT)
@@ -218,18 +256,128 @@ class ShutdownSequencer:
             )
             return
 
-        _log.warning(
-            'shutdown action submission not yet functional — '
-            'Action fields (TD-023) required for TradeCommand translation',
-            action_count=len(filtered),
+        if self._config is None:
+            _log.warning(
+                'config not configured, cannot submit shutdown actions',
+                action_count=len(filtered),
+            )
+            return
+
+        for strategy_id, action in filtered:
+            if action.action_type == ActionType.EXIT:
+                self._submit_exit(strategy_id, action)
+            else:
+                self._submit_abort(action)
+
+    def _submit_exit(self, strategy_id: str, action: Action) -> None:
+        '''Translate an EXIT Action and submit it as a NEW_ORDER.'''
+
+        if self._praxis_outbound is None or self._config is None:
+            return
+
+        context = self._build_exit_context(strategy_id, action)
+        if context is None:
+            return
+
+        cmd = translate_to_trade_command(
+            action,
+            context,
+            ValidationDecision(allowed=True),
+            self._config,
+            datetime.now(tz=timezone.utc),
         )
+
+        try:
+            returned_id = self._praxis_outbound.send_command(cmd)
+        except Exception:  # noqa: BLE001 - outbound failure must not abort shutdown
+            _log.exception(
+                'exit submission failed',
+                strategy_id=strategy_id,
+                trade_id=action.trade_id,
+            )
+            return
+
+        self._submitted_command_ids.append(returned_id)
+        _log.info(
+            'exit submitted',
+            strategy_id=strategy_id,
+            trade_id=action.trade_id,
+            command_id=returned_id,
+        )
+
+    def _build_exit_context(
+        self,
+        strategy_id: str,
+        action: Action,
+    ) -> ValidationRequestContext | None:
+        '''Build a ValidationRequestContext for an EXIT action or return None.'''
+
+        if action.trade_id is None:
+            _log.warning('exit action missing trade_id', strategy_id=strategy_id)
+            return None
+
+        position = self._state.positions.get(action.trade_id)
+        if position is None:
+            _log.warning(
+                'exit action references unknown trade_id',
+                strategy_id=strategy_id,
+                trade_id=action.trade_id,
+            )
+            return None
+
+        if self._config is None:
+            return None
+
+        exit_side = (
+            OrderSide.SELL if position.side == OrderSide.BUY else OrderSide.BUY
+        )
+        command_id = f'shutdown-{strategy_id}-{uuid.uuid4().hex[:8]}'
+        return ValidationRequestContext(
+            strategy_id=strategy_id,
+            action=ValidationAction.EXIT,
+            symbol=position.symbol,
+            order_side=exit_side,
+            order_size=action.size,
+            command_id=command_id,
+            trade_id=action.trade_id,
+            order_notional=_ZERO,
+            estimated_fees=_ZERO,
+            strategy_budget=_ZERO,
+            state=self._state,
+            config=self._config,
+        )
+
+    def _submit_abort(self, action: Action) -> None:
+        '''Submit an ABORT Action via PraxisOutbound.send_abort.'''
+
+        if self._praxis_outbound is None or self._config is None:
+            return
+
+        if action.command_id is None:
+            _log.warning('abort action missing command_id')
+            return
+
+        try:
+            self._praxis_outbound.send_abort(
+                command_id=action.command_id,
+                account_id=self._config.account_id,
+                reason=_SHUTDOWN_ABORT_REASON,
+                created_at=datetime.now(tz=timezone.utc),
+            )
+        except Exception:  # noqa: BLE001 - outbound failure must not abort shutdown
+            _log.exception('abort submission failed', command_id=action.command_id)
+            return
+
+        self._submitted_command_ids.append(action.command_id)
+        _log.info('abort submitted', command_id=action.command_id)
 
     def _wait_terminal(self) -> None:
         '''Wait for all submitted commands to reach terminal state.
 
         Polls PraxisInbound for outcomes matching submitted commands.
-        Returns when all commands are terminal or timeout expires.
-        Full ABORT escalation requires Action fields (TD-023).
+        On first-round timeout, escalates by issuing ABORT for each still-
+        pending command via PraxisOutbound, then polls again with a shorter
+        deadline before giving up.
         '''
 
         if not self._submitted_command_ids:
@@ -242,29 +390,86 @@ class ShutdownSequencer:
             )
             return
 
-        deadline = time.monotonic() + self._shutdown_timeout
-        pending = set(self._submitted_command_ids)
+        pending = self._poll_until_terminal(
+            set(self._submitted_command_ids),
+            self._shutdown_timeout,
+        )
 
-        while pending and time.monotonic() < deadline:
+        if not pending:
+            return
+
+        self._escalate_abort_pending(pending)
+
+        pending = self._poll_until_terminal(
+            pending,
+            self._shutdown_timeout * _ESCALATION_TIMEOUT_RATIO,
+        )
+
+        if pending:
+            _log.warning(
+                'shutdown timeout after escalation: commands still pending',
+                pending_count=len(pending),
+                pending_ids=sorted(pending),
+            )
+
+    def _poll_until_terminal(
+        self,
+        pending: set[str],
+        timeout: float,
+    ) -> set[str]:
+        '''Poll PraxisInbound until pending is empty or deadline expires.'''
+
+        if self._praxis_inbound is None or timeout <= 0:
+            return pending
+
+        remaining = set(pending)
+        deadline = time.monotonic() + timeout
+
+        while remaining and time.monotonic() < deadline:
             outcome = self._praxis_inbound.receive_outcome()
 
             if outcome is None:
                 continue
 
-            if outcome.command_id in pending and outcome.outcome_type.is_terminal:
-                pending.discard(outcome.command_id)
+            if outcome.command_id in remaining and outcome.outcome_type.is_terminal:
+                remaining.discard(outcome.command_id)
                 _log.info(
                     'command reached terminal state',
                     command_id=outcome.command_id,
                     outcome_type=outcome.outcome_type.value,
                 )
 
-        if pending:
+        return remaining
+
+    def _escalate_abort_pending(self, pending: set[str]) -> None:
+        '''Send ABORT for each still-pending command and log outcomes.'''
+
+        if self._praxis_outbound is None or self._config is None:
             _log.warning(
-                'shutdown timeout: commands still pending',
+                'praxis_outbound or config not configured, cannot escalate aborts',
                 pending_count=len(pending),
-                pending_ids=sorted(pending),
             )
+            return
+
+        _log.warning(
+            'shutdown timeout: escalating aborts for pending commands',
+            pending_count=len(pending),
+            pending_ids=sorted(pending),
+        )
+
+        for command_id in sorted(pending):
+            try:
+                self._praxis_outbound.send_abort(
+                    command_id=command_id,
+                    account_id=self._config.account_id,
+                    reason=_ESCALATION_ABORT_REASON,
+                    created_at=datetime.now(tz=timezone.utc),
+                )
+            except Exception:  # noqa: BLE001 - outbound failure must not abort shutdown
+                _log.exception(
+                    'escalation abort failed',
+                    command_id=command_id,
+                )
 
     def _dispatch_save(self) -> None:
         '''Dispatch on_save to all strategies.
