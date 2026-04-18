@@ -207,6 +207,26 @@ def test_exit_translation() -> None:
     assert cmd.reservation_id is None
 
 
+def test_exit_translation_fills_submission_defaults() -> None:
+    '''EXIT action without execution_mode/order_type/deadline gets safe defaults.'''
+
+    action = _exit_action()
+    context = _exit_context()
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    assert action.execution_mode is None
+    assert action.order_type is None
+    assert action.deadline is None
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.execution_mode == ExecutionMode.SINGLE_SHOT
+    assert cmd.order_type == OrderType.MARKET
+    assert cmd.deadline == 60
+
+
 def test_modify_translation() -> None:
     action = _modify_action()
     context = _modify_context()
