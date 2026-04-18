@@ -469,15 +469,43 @@ class TestAction:
                 reference_price=Decimal('0'),
             )
 
-    def test_execution_params_must_be_dict(self) -> None:
-        '''execution_params must be a dict when provided.'''
+    def test_execution_params_must_be_mapping(self) -> None:
+        '''execution_params must be a Mapping when provided.'''
 
-        with pytest.raises(ValueError, match='execution_params must be a dict'):
+        with pytest.raises(ValueError, match='execution_params must be a Mapping'):
             Action(
                 action_type=ActionType.ABORT,
                 command_id='cmd-1',
                 execution_params='not a dict',  # type: ignore[arg-type]
             )
+
+    def test_execution_params_defensive_copy(self) -> None:
+        '''Mutating the source dict after construction must not change the Action.'''
+
+        source: dict[str, object] = {'slippage_bps': 10}
+        action = Action(
+            action_type=ActionType.ABORT,
+            command_id='cmd-1',
+            execution_params=source,
+        )
+
+        source['slippage_bps'] = 999
+
+        assert action.execution_params is not None
+        assert action.execution_params['slippage_bps'] == 10
+
+    def test_execution_params_read_only(self) -> None:
+        '''The stored execution_params is read-only (MappingProxyType).'''
+
+        action = Action(
+            action_type=ActionType.ABORT,
+            command_id='cmd-1',
+            execution_params={'slippage_bps': 10},
+        )
+
+        assert action.execution_params is not None
+        with pytest.raises(TypeError):
+            action.execution_params['slippage_bps'] = 999  # type: ignore[index]
 
 
 class TestStrategyContext:

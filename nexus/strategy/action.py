@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
+from types import MappingProxyType
 
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
@@ -53,7 +55,7 @@ class Action:
     size: Decimal | None = None
     execution_mode: ExecutionMode | None = None
     order_type: OrderType | None = None
-    execution_params: dict[str, object] | None = None
+    execution_params: Mapping[str, object] | None = None
     deadline: int | None = None
     trade_id: str | None = None
     command_id: str | None = None
@@ -87,11 +89,15 @@ class Action:
             msg = 'order_type must be an OrderType member or None'
             raise ValueError(msg)
 
-        if self.execution_params is not None and not isinstance(
-            self.execution_params, dict
-        ):
-            msg = 'execution_params must be a dict or None'
-            raise ValueError(msg)
+        if self.execution_params is not None:
+            if not isinstance(self.execution_params, Mapping):
+                msg = 'execution_params must be a Mapping or None'
+                raise ValueError(msg)
+            object.__setattr__(
+                self,
+                'execution_params',
+                MappingProxyType(dict(self.execution_params)),
+            )
 
         if self.deadline is not None and (
             isinstance(self.deadline, bool)

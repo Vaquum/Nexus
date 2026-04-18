@@ -452,3 +452,50 @@ def test_cancel_order_with_size_rejected() -> None:
             created_at=_now(),
             size=Decimal('0.01'),
         )
+
+
+def test_execution_params_defensive_copy() -> None:
+    '''TradeCommand stores a defensive copy of execution_params.'''
+
+    source: dict[str, object] = {'slippage_bps': 10}
+    cmd = TradeCommand(
+        command_id='cmd_001',
+        command_type=TradeCommandType.NEW_ORDER,
+        account_id='acc_001',
+        venue='binance_spot',
+        symbol='BTCUSDT',
+        notional=Decimal('1000'),
+        created_at=_now(),
+        side=OrderSide.BUY,
+        size=Decimal('0.01'),
+        stp_mode=STPMode.CANCEL_TAKER,
+        execution_params=source,
+    )
+
+    source['slippage_bps'] = 999
+
+    assert cmd.execution_params is not None
+    assert cmd.execution_params['slippage_bps'] == 10
+
+
+def test_execution_params_read_only() -> None:
+    '''Stored execution_params is a read-only mapping.'''
+
+    cmd = TradeCommand(
+        command_id='cmd_001',
+        command_type=TradeCommandType.NEW_ORDER,
+        account_id='acc_001',
+        venue='binance_spot',
+        symbol='BTCUSDT',
+        notional=Decimal('1000'),
+        created_at=_now(),
+        side=OrderSide.BUY,
+        size=Decimal('0.01'),
+        stp_mode=STPMode.CANCEL_TAKER,
+        execution_params={'slippage_bps': 10},
+    )
+
+    assert cmd.execution_params is not None
+    with pytest.raises(TypeError):
+        cmd.execution_params['slippage_bps'] = 999  # type: ignore[index]
+

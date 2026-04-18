@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from types import MappingProxyType
 
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
@@ -33,15 +35,18 @@ class TradeCommand:
         stp_mode: Self-trade prevention; required for NEW_ORDER, None otherwise.
         trade_id: Position reference for EXIT actions.
         reservation_id: Capital lock reference for ENTER and size-increasing MODIFY.
-        execution_mode: How to execute; populated for NEW_ORDER from Action.execution_mode,
-            None for AMEND/CANCEL. May be None on a NEW_ORDER built from an EXIT Action,
-            which currently does not carry execution_mode.
-        order_type: Order type; populated for NEW_ORDER from Action.order_type, None for
-            AMEND/CANCEL. May be None on a NEW_ORDER built from an EXIT Action.
+        execution_mode: How to execute; populated for NEW_ORDER from
+            Action.execution_mode when provided. For EXIT actions, the Action may
+            omit this value and translation fills a safe default before submission.
+            None for AMEND/CANCEL.
+        order_type: Order type; populated for NEW_ORDER from Action.order_type when
+            provided. For EXIT actions, the Action may omit this value and
+            translation fills a safe default before submission. None for AMEND/CANCEL.
         execution_params: Mode-specific parameters; populated for NEW_ORDER from
             Action.execution_params, None for AMEND/CANCEL.
-        deadline: Timeout in seconds; populated for NEW_ORDER from Action.deadline, None
-            for AMEND/CANCEL. May be None on a NEW_ORDER built from an EXIT Action.
+        deadline: Timeout in seconds; populated for NEW_ORDER from Action.deadline
+            when provided. For EXIT actions, the Action may omit this value and
+            translation fills a safe default before submission. None for AMEND/CANCEL.
         maker_preference: Maker/taker preference; populated for NEW_ORDER from
             Action.maker_preference, None for AMEND/CANCEL.
         reference_price: Strategy reference price; populated for NEW_ORDER from
@@ -62,7 +67,7 @@ class TradeCommand:
     reservation_id: str | None = None
     execution_mode: ExecutionMode | None = None
     order_type: OrderType | None = None
-    execution_params: dict[str, object] | None = None
+    execution_params: Mapping[str, object] | None = None
     deadline: int | None = None
     maker_preference: MakerPreference | None = None
     reference_price: Decimal | None = None
@@ -144,11 +149,15 @@ class TradeCommand:
             msg = 'TradeCommand.order_type must be an OrderType member or None'
             raise ValueError(msg)
 
-        if self.execution_params is not None and not isinstance(
-            self.execution_params, dict
-        ):
-            msg = 'TradeCommand.execution_params must be a dict or None'
-            raise ValueError(msg)
+        if self.execution_params is not None:
+            if not isinstance(self.execution_params, Mapping):
+                msg = 'TradeCommand.execution_params must be a Mapping or None'
+                raise ValueError(msg)
+            object.__setattr__(
+                self,
+                'execution_params',
+                MappingProxyType(dict(self.execution_params)),
+            )
 
         if self.deadline is not None and (
             isinstance(self.deadline, bool)
