@@ -2,6 +2,11 @@
 
 Pulls a HealthSnapshot via the configured source on each tick, evaluates
 it through HealthEvaluator, and updates instance_state.mode on transition.
+
+Note on `rate_limit_headroom` semantics: the field carries utilisation
+semantics (higher is worse) for parity with the Praxis-side HealthSnapshot.
+The misnomer is intentional and predates this loop; HealthEvaluator
+already evaluates it as higher-is-worse.
 '''
 
 from __future__ import annotations
@@ -12,6 +17,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.operational_mode import ModeState
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 
 __all__ = ['HealthLoop']
@@ -121,9 +127,11 @@ class HealthLoop:
         if new_mode == current_mode:
             return
 
-        self._state.mode.mode = new_mode
-        self._state.mode.trigger = _HEALTH_TRIGGER
-        self._state.mode.transitioned_at = datetime.now(tz=timezone.utc)
+        self._state.mode = ModeState(
+            mode=new_mode,
+            trigger=_HEALTH_TRIGGER,
+            transitioned_at=datetime.now(tz=timezone.utc),
+        )
         _log.info(
             'operational mode transition (health)',
             extra={'from': current_mode.value, 'to': new_mode.value},
