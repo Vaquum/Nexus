@@ -58,8 +58,12 @@ class ShutdownSequencer:
         timer_loop: Running TimerLoop to stop during shutdown.
         praxis_outbound: Outbound connector for deregistration.
         praxis_inbound: Inbound connector for outcome consumption.
-        account_id: Account identifier for Praxis deregistration.
+        account_id: Account identifier for Praxis deregistration. When config
+            is also provided, account_id must equal config.account_id.
         shutdown_timeout: Seconds to wait for commands to reach terminal state.
+        config: Instance configuration carrying account_id, venue, stp_mode
+            for shutdown command translation. When provided alongside
+            account_id, the two account_ids must match.
     '''
 
     def __init__(
@@ -99,6 +103,17 @@ class ShutdownSequencer:
 
         if config is not None and not isinstance(config, InstanceConfig):
             msg = 'config must be an InstanceConfig instance or None'
+            raise ValueError(msg)
+
+        if (
+            config is not None
+            and account_id is not None
+            and account_id != config.account_id
+        ):
+            msg = (
+                'account_id and config.account_id must match: '
+                f'{account_id!r} vs {config.account_id!r}'
+            )
             raise ValueError(msg)
 
         self._runner = runner

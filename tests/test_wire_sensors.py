@@ -8,13 +8,13 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup import StartupError, StartupSequencer
 
 limen = pytest.importorskip('limen')
+np = pytest.importorskip('numpy')
 
 
 def _find_limen_root() -> Path | None:

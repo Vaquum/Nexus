@@ -10,7 +10,7 @@ import asyncio
 import concurrent.futures
 import logging
 from collections.abc import Callable, Coroutine
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from nexus.core.health_evaluator import HealthSnapshot
@@ -71,6 +71,11 @@ class PraxisOutbound:
             Exception: Propagates the original exception raised by submit_fn.
         '''
 
+        order_timeout = (
+            command.deadline
+            if command.deadline is not None
+            else max(1, round(self._timeout))
+        )
         future: concurrent.futures.Future[str] = asyncio.run_coroutine_threadsafe(
             self._submit_fn(
                 trade_id=command.trade_id or command.command_id,
@@ -81,7 +86,7 @@ class PraxisOutbound:
                 order_type=command.order_type,
                 execution_mode=command.execution_mode,
                 execution_params=command.execution_params,
-                timeout=max(1, round(self._timeout)),
+                timeout=order_timeout,
                 reference_price=command.reference_price,
                 maker_preference=command.maker_preference,
                 stp_mode=command.stp_mode,
@@ -135,6 +140,10 @@ class PraxisOutbound:
         if self._submit_abort_fn is None:
             msg = 'submit_abort_fn not configured'
             raise RuntimeError(msg)
+
+        if created_at.tzinfo is None or created_at.utcoffset() != timezone.utc.utcoffset(None):
+            msg = 'send_abort.created_at must be timezone-aware UTC'
+            raise ValueError(msg)
 
         future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
             self._submit_abort_fn(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -108,6 +108,7 @@ class TestPraxisOutbound:
         assert received_kwargs['execution_params'] == {'slippage_bps': 10}
         assert received_kwargs['maker_preference'] == MakerPreference.NO_PREFERENCE
         assert received_kwargs['reference_price'] == Decimal('100000')
+        assert received_kwargs['timeout'] == 300
 
     def test_timeout_raises(
         self,
@@ -239,6 +240,63 @@ class TestPraxisOutboundSendAbort:
                 account_id='acc_001',
                 reason='shutdown',
                 created_at=datetime.now(tz=timezone.utc),
+            )
+
+    def test_naive_created_at_rejected(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort rejects naive datetime.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit_abort(**_kwargs: object) -> None:
+            return
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=mock_submit_abort,
+        )
+
+        with pytest.raises(ValueError, match='must be timezone-aware UTC'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=datetime(2026, 4, 18, 12, 0, 0),
+            )
+
+    def test_non_utc_created_at_rejected(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_abort rejects non-UTC timezone.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit_abort(**_kwargs: object) -> None:
+            return
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            submit_abort_fn=mock_submit_abort,
+        )
+
+        non_utc = datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
+        with pytest.raises(ValueError, match='must be timezone-aware UTC'):
+            outbound.send_abort(
+                command_id='cmd_42',
+                account_id='acc_001',
+                reason='shutdown',
+                created_at=non_utc,
             )
 
 
