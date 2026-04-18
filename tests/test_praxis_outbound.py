@@ -12,6 +12,7 @@ import pytest
 
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
+from nexus.core.health_evaluator import HealthSnapshot
 from nexus.core.stp_mode import STPMode
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
@@ -239,3 +240,74 @@ class TestPraxisOutboundSendAbort:
                 reason='shutdown',
                 created_at=datetime.now(tz=timezone.utc),
             )
+
+
+class TestPraxisOutboundGetHealthSnapshot:
+
+    def test_pulls_snapshot(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''get_health_snapshot bridges to async fn and returns the snapshot.'''
+
+        loop, _ = event_loop_thread
+        target = HealthSnapshot(latency_p99_ms=42.0, consecutive_failures=1)
+        received: dict[str, object] = {}
+
+        async def fake_get_snapshot(account_id: str) -> HealthSnapshot:
+            received['account_id'] = account_id
+            return target
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            get_health_snapshot_fn=fake_get_snapshot,
+        )
+
+        result = outbound.get_health_snapshot('acc-1')
+
+        assert result is target
+        assert received['account_id'] == 'acc-1'
+
+    def test_raises_when_fn_not_configured(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''get_health_snapshot raises RuntimeError when fn is None.'''
+
+        loop, _ = event_loop_thread
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(submit_fn=mock_submit, loop=loop)
+
+        with pytest.raises(RuntimeError, match='get_health_snapshot_fn not configured'):
+            outbound.get_health_snapshot('acc-1')
+
+    def test_async_error_propagates(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''Exception from get_health_snapshot_fn propagates.'''
+
+        loop, _ = event_loop_thread
+
+        async def failing_get_snapshot(_account_id: str) -> object:
+            msg = 'praxis not started'
+            raise RuntimeError(msg)
+
+        async def mock_submit(**_kwargs: object) -> str:
+            return 'unused'
+
+        outbound = PraxisOutbound(
+            submit_fn=mock_submit,
+            loop=loop,
+            get_health_snapshot_fn=failing_get_snapshot,
+        )
+
+        with pytest.raises(RuntimeError, match='praxis not started'):
+            outbound.get_health_snapshot('acc-1')

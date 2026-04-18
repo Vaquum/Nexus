@@ -13,6 +13,7 @@ from collections.abc import Callable, Coroutine
 from datetime import datetime
 from typing import Any
 
+from nexus.core.health_evaluator import HealthSnapshot
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 
 __all__ = ['PraxisOutbound']
@@ -31,6 +32,7 @@ class PraxisOutbound:
         unregister_fn: Async callable matching Praxis Trading.unregister_account.
         pull_positions_fn: Sync callable matching Praxis Trading.pull_positions.
         submit_abort_fn: Async callable wrapping Praxis Trading.submit_abort.
+        get_health_snapshot_fn: Async callable wrapping Praxis Trading.get_health_snapshot.
         loop: Asyncio event loop running in the Praxis thread.
         timeout: Seconds to wait for async calls to complete.
     '''
@@ -43,6 +45,7 @@ class PraxisOutbound:
         unregister_fn: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         pull_positions_fn: Callable[[str], dict[tuple[str, str], Any]] | None = None,
         submit_abort_fn: Callable[..., Coroutine[Any, Any, None]] | None = None,
+        get_health_snapshot_fn: Callable[[str], Coroutine[Any, Any, HealthSnapshot]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
@@ -51,6 +54,7 @@ class PraxisOutbound:
         self._unregister_fn = unregister_fn
         self._pull_positions_fn = pull_positions_fn
         self._submit_abort_fn = submit_abort_fn
+        self._get_health_snapshot_fn = get_health_snapshot_fn
         self._timeout = timeout
 
     def send_command(self, command: TradeCommand) -> str:
@@ -197,6 +201,40 @@ class PraxisOutbound:
             raise
 
         _log.info('account deregistered', extra={'account_id': account_id})
+
+    def get_health_snapshot(self, account_id: str) -> HealthSnapshot:
+        '''Pull a HealthSnapshot from Praxis via async bridge.
+
+        Args:
+            account_id: Account whose snapshot is requested.
+
+        Returns:
+            HealthSnapshot composed by the Trading sub-system. Returns
+            default-valued snapshot when Praxis has no samples yet.
+
+        Raises:
+            RuntimeError: If get_health_snapshot_fn is not configured.
+            TimeoutError: If Praxis does not respond within timeout.
+            Exception: Propagates the original exception raised by the fn.
+        '''
+
+        if self._get_health_snapshot_fn is None:
+            msg = 'get_health_snapshot_fn not configured'
+            raise RuntimeError(msg)
+
+        future: concurrent.futures.Future[HealthSnapshot] = (
+            asyncio.run_coroutine_threadsafe(
+                self._get_health_snapshot_fn(account_id),
+                self._loop,
+            )
+        )
+
+        try:
+            return future.result(timeout=self._timeout)
+        except (TimeoutError, concurrent.futures.TimeoutError):
+            future.cancel()
+            _log.error('get_health_snapshot timed out: account_id=%s', account_id)
+            raise
 
     def pull_positions(self, account_id: str) -> dict[tuple[str, str], Any]:
         '''Pull positions snapshot from Praxis Trading.
