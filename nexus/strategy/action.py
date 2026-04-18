@@ -36,7 +36,7 @@ class Action:
 
     Args:
         action_type: Type of action requested.
-        direction: BUY or SELL. Required for ENTER and EXIT.
+        direction: BUY or SELL. Required for ENTER.
         size: Base asset quantity. Required for ENTER and EXIT.
         execution_mode: How to execute (e.g. SingleShot). Required for ENTER.
         order_type: Order type (e.g. Market, Limit). Required for ENTER.

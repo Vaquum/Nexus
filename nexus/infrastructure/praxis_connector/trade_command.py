@@ -33,12 +33,19 @@ class TradeCommand:
         stp_mode: Self-trade prevention; required for NEW_ORDER, None otherwise.
         trade_id: Position reference for EXIT actions.
         reservation_id: Capital lock reference for ENTER and size-increasing MODIFY.
-        execution_mode: How to execute; required for NEW_ORDER, None otherwise.
-        order_type: Order type; required for NEW_ORDER, None otherwise.
-        execution_params: Mode-specific parameters; only meaningful for NEW_ORDER.
-        deadline: Timeout in seconds; required for NEW_ORDER, None otherwise.
-        maker_preference: Maker/taker preference; only meaningful for NEW_ORDER.
-        reference_price: Strategy reference price; only meaningful for NEW_ORDER.
+        execution_mode: How to execute; populated for NEW_ORDER from Action.execution_mode,
+            None for AMEND/CANCEL. May be None on a NEW_ORDER built from an EXIT Action,
+            which currently does not carry execution_mode.
+        order_type: Order type; populated for NEW_ORDER from Action.order_type, None for
+            AMEND/CANCEL. May be None on a NEW_ORDER built from an EXIT Action.
+        execution_params: Mode-specific parameters; populated for NEW_ORDER from
+            Action.execution_params, None for AMEND/CANCEL.
+        deadline: Timeout in seconds; populated for NEW_ORDER from Action.deadline, None
+            for AMEND/CANCEL. May be None on a NEW_ORDER built from an EXIT Action.
+        maker_preference: Maker/taker preference; populated for NEW_ORDER from
+            Action.maker_preference, None for AMEND/CANCEL.
+        reference_price: Strategy reference price; populated for NEW_ORDER from
+            Action.reference_price, None for AMEND/CANCEL.
     '''
 
     command_id: str
