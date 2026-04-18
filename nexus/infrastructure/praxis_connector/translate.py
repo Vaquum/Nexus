@@ -42,9 +42,9 @@ def translate_to_trade_command(
     Args:
         action: Strategy-layer action being translated. Execution-mode,
             order-type, maker-preference, deadline, execution-params, and
-            reference-price flow from this source for ENTER. For EXIT
-            (which carries only trade_id + size per TD-023.1), the
-            translate layer fills `execution_mode=SINGLE_SHOT`,
+            reference-price flow from this source for ENTER. For EXIT,
+            the translate layer honors any provided execution fields and
+            fills missing values with `execution_mode=SINGLE_SHOT`,
             `order_type=MARKET`, and `deadline=60s` so submission to
             Praxis cannot pass `None` to required parameters.
         context: Validated action request context.
