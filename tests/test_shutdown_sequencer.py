@@ -238,6 +238,51 @@ class TestSubmitActions:
         assert abort_kwargs['account_id'] == 'acc_001'
         assert abort_kwargs['reason'] == 'shutdown'
 
+    def test_exit_side_derived_from_position_side(self) -> None:
+        '''_build_exit_context picks the opposite side of the open position.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            allocated_capital=Decimal('10000'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-buy': Position(
+                    trade_id='t-buy',
+                    strategy_id='s',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.1'),
+                    entry_price=Decimal('50000'),
+                ),
+                't-sell': Position(
+                    trade_id='t-sell',
+                    strategy_id='s',
+                    symbol='BTCUSDT',
+                    side=OrderSide.SELL,
+                    size=Decimal('0.1'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+        sequencer = _make_sequencer(state=state)
+        sequencer._config = config
+
+        ctx_buy = sequencer._build_exit_context(
+            's',
+            Action(action_type=ActionType.EXIT, trade_id='t-buy', size=Decimal('0.1')),
+        )
+        ctx_sell = sequencer._build_exit_context(
+            's',
+            Action(action_type=ActionType.EXIT, trade_id='t-sell', size=Decimal('0.1')),
+        )
+
+        assert ctx_buy is not None and ctx_buy.order_side == OrderSide.SELL
+        assert ctx_sell is not None and ctx_sell.order_side == OrderSide.BUY
+
     def test_submit_actions_skips_when_outbound_missing(self) -> None:
         config = InstanceConfig(
             account_id='acc_001',

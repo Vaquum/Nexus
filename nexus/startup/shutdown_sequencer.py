@@ -313,12 +313,15 @@ class ShutdownSequencer:
         if self._config is None:
             return None
 
+        exit_side = (
+            OrderSide.SELL if position.side == OrderSide.BUY else OrderSide.BUY
+        )
         command_id = f'shutdown-{strategy_id}-{uuid.uuid4().hex[:8]}'
         return ValidationRequestContext(
             strategy_id=strategy_id,
             action=ValidationAction.EXIT,
             symbol=position.symbol,
-            order_side=OrderSide.SELL,
+            order_side=exit_side,
             order_size=action.size,
             command_id=command_id,
             trade_id=action.trade_id,
