@@ -209,6 +209,45 @@ class StartupSequencer:
         the fields Nexus requires (e.g. strategy_id, symbol, side).
         '''
 
+        resolved = self._resolve_imported_position_fields(trade_id, praxis_pos, qty)
+        if resolved is None:
+            return None
+        strategy_id, symbol, side = resolved
+
+        try:
+            imported = Position(
+                trade_id=trade_id,
+                strategy_id=strategy_id,
+                symbol=symbol,
+                side=side,
+                size=qty,
+                entry_price=price,
+            )
+        except ValueError as e:
+            _log.warning(
+                'cannot import Praxis-only position with invalid fields',
+                trade_id=trade_id,
+                error=str(e),
+            )
+            return None
+
+        _log.info(
+            'imported Praxis-only position',
+            trade_id=trade_id,
+            strategy_id=strategy_id,
+            symbol=symbol,
+            size=str(qty),
+        )
+        return imported
+
+    def _resolve_imported_position_fields(
+        self,
+        trade_id: str,
+        praxis_pos: Any,
+        qty: Decimal,
+    ) -> tuple[str, str, OrderSide] | None:
+        '''Extract and validate strategy_id / symbol / side from a Praxis position.'''
+
         strategy_id = getattr(praxis_pos, 'strategy_id', None)
         if not isinstance(strategy_id, str) or not strategy_id.strip():
             _log.warning(
@@ -238,31 +277,7 @@ class StartupSequencer:
             )
             return None
 
-        try:
-            imported = Position(
-                trade_id=trade_id,
-                strategy_id=strategy_id,
-                symbol=symbol,
-                side=side,
-                size=qty,
-                entry_price=price,
-            )
-        except ValueError as e:
-            _log.warning(
-                'cannot import Praxis-only position with invalid fields',
-                trade_id=trade_id,
-                error=str(e),
-            )
-            return None
-
-        _log.info(
-            'imported Praxis-only position',
-            trade_id=trade_id,
-            strategy_id=strategy_id,
-            symbol=symbol,
-            size=str(qty),
-        )
-        return imported
+        return strategy_id, symbol, side
 
     def _reconcile_capital(self) -> None:
         '''Reconcile capital state against Trading positions.

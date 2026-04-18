@@ -260,39 +260,14 @@ class ShutdownSequencer:
         if self._praxis_outbound is None or self._config is None:
             return
 
-        if action.trade_id is None:
-            _log.warning('exit action missing trade_id', strategy_id=strategy_id)
+        context = self._build_exit_context(strategy_id, action)
+        if context is None:
             return
 
-        position = self._state.positions.get(action.trade_id)
-        if position is None:
-            _log.warning(
-                'exit action references unknown trade_id',
-                strategy_id=strategy_id,
-                trade_id=action.trade_id,
-            )
-            return
-
-        command_id = f'shutdown-{strategy_id}-{uuid.uuid4().hex[:8]}'
-        context = ValidationRequestContext(
-            strategy_id=strategy_id,
-            action=ValidationAction.EXIT,
-            symbol=position.symbol,
-            order_side=OrderSide.SELL,
-            order_size=action.size,
-            command_id=command_id,
-            trade_id=action.trade_id,
-            order_notional=_ZERO,
-            estimated_fees=_ZERO,
-            strategy_budget=_ZERO,
-            state=self._state,
-            config=self._config,
-        )
-        decision = ValidationDecision(allowed=True)
         cmd = translate_to_trade_command(
             action,
             context,
-            decision,
+            ValidationDecision(allowed=True),
             self._config,
             datetime.now(tz=timezone.utc),
         )
@@ -313,6 +288,45 @@ class ShutdownSequencer:
             strategy_id=strategy_id,
             trade_id=action.trade_id,
             command_id=returned_id,
+        )
+
+    def _build_exit_context(
+        self,
+        strategy_id: str,
+        action: Action,
+    ) -> ValidationRequestContext | None:
+        '''Build a ValidationRequestContext for an EXIT action or return None.'''
+
+        if action.trade_id is None:
+            _log.warning('exit action missing trade_id', strategy_id=strategy_id)
+            return None
+
+        position = self._state.positions.get(action.trade_id)
+        if position is None:
+            _log.warning(
+                'exit action references unknown trade_id',
+                strategy_id=strategy_id,
+                trade_id=action.trade_id,
+            )
+            return None
+
+        if self._config is None:
+            return None
+
+        command_id = f'shutdown-{strategy_id}-{uuid.uuid4().hex[:8]}'
+        return ValidationRequestContext(
+            strategy_id=strategy_id,
+            action=ValidationAction.EXIT,
+            symbol=position.symbol,
+            order_side=OrderSide.SELL,
+            order_size=action.size,
+            command_id=command_id,
+            trade_id=action.trade_id,
+            order_notional=_ZERO,
+            estimated_fees=_ZERO,
+            strategy_budget=_ZERO,
+            state=self._state,
+            config=self._config,
         )
 
     def _submit_abort(self, action: Action) -> None:

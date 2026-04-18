@@ -205,6 +205,11 @@ class PraxisOutbound:
     def get_health_snapshot(self, account_id: str) -> HealthSnapshot:
         '''Pull a HealthSnapshot from Praxis via async bridge.
 
+        Unlike send_command and send_abort, this does not require the
+        account to be ready: Praxis intentionally serves a default zeroed
+        snapshot for unknown accounts so a Manager can poll across the
+        whole lifecycle.
+
         Args:
             account_id: Account whose snapshot is requested.
 
