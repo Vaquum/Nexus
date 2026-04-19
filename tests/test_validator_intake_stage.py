@@ -31,7 +31,6 @@ def _make_context(**overrides: Any) -> ValidationRequestContext:
     config = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
     )
     defaults: dict[str, Any] = {
         'strategy_id': 'strat_a',
@@ -43,7 +42,7 @@ def _make_context(**overrides: Any) -> ValidationRequestContext:
         'order_notional': Decimal('100'),
         'estimated_fees': Decimal('1'),
         'strategy_budget': Decimal('5000'),
-        'state': InstanceState.from_config(config),
+        'state': InstanceState.fresh(Decimal('10000')),
         'config': config,
     }
     defaults.update(overrides)
@@ -397,7 +396,7 @@ class TestRfcStageOneHooks:
         assert decision.reason_code == 'INTAKE_TRADE_REFERENCE_INVALID'
 
     def test_reference_integrity_exit_size_bound(self) -> None:
-        state = InstanceState.from_config(_make_context().config)
+        state = InstanceState.fresh(Decimal('10000'))
         state.positions['t1'] = Position(
             trade_id='t1',
             strategy_id='strat_a',
@@ -516,10 +515,9 @@ class TestRfcStageOneHooks:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             duplicate_window_ms=1000,
         )
-        state = InstanceState.from_config(config)
+        state = InstanceState.fresh(Decimal('10000'))
 
         times = [
             datetime(2026, 3, 23, 10, 0, 0, tzinfo=timezone.utc),
@@ -548,7 +546,6 @@ class TestRfcStageOneHooks:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
         )
         active_command_ids: set[str] = set()
         hooks = build_default_intake_hooks(
@@ -573,7 +570,6 @@ class TestRfcStageOneHooks:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
         )
         active_command_ids = {'cmd_mod', 'cmd_done'}
         modifiable_command_ids: set[str] = set()
@@ -610,7 +606,6 @@ class TestRfcStageOneHooks:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_order_rate=1,
         )
 
@@ -639,7 +634,6 @@ class TestRfcStageOneHooks:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_order_rate=2,
         )
 

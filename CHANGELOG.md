@@ -301,3 +301,14 @@
 - Add [`health_loop.py`](nexus/core/health_loop.py) with `HealthLoop` — periodic timer pulls a `HealthSnapshot` from a configurable provider, evaluates via `HealthEvaluator`, and updates `instance_state.mode` on transition. Provider/evaluator exceptions are logged-and-swallowed; `start` is idempotent; `tick_once()` exposed for synchronous callers (TD-026.2)
 - Rename `_validate_required_fields` to `_validate_action_type_requirements` in `Action` (existing per-action_type checks; the rename reflects that field-shape validation already happened earlier in `__post_init__`)
 - Add 62 tests across new and updated modules (1034 total)
+
+## v0.28.0 on 19th of April, 2026
+
+- BREAKING: Move instance identity and capital ceiling into the strategy manifest. `Manifest` gains required `account_id: str` and `allocated_capital: Decimal` fields, with internal validation that `capital_pool ≤ allocated_capital`. Manifest YAML files must now declare `account_id:` and `allocated_capital:` alongside the existing `capital_pool:` and `strategies:` blocks
+- BREAKING: `load_manifest(path)` — drop the `allocated_capital` parameter; the ceiling is sourced from the manifest itself
+- BREAKING: [`StartupSequencer`](nexus/startup/sequencer.py) drops `allocated_capital` and `account_id` constructor parameters. Both are derived from the loaded manifest at runtime
+- Reorder startup sequence to call `_load_manifest` first (was step 4); `_recover_state`, `_register_with_trading`, and `_reconcile_capital` all read identity and capital from `self._manifest`
+- BREAKING: Remove `allocated_capital` field from [`InstanceConfig`](nexus/instance_config.py) — the ceiling no longer belongs in runtime/validator config, it is per-account manifest state
+- Rename `InstanceState.from_config(config)` → [`InstanceState.fresh(allocated_capital)`](nexus/core/domain/instance_state.py) — the factory never needed `config`, only the ceiling; drops the unused `InstanceConfig` dependency from `nexus.core.domain`
+- Update manifest YAML fixtures, direct `Manifest(...)` constructions, `InstanceConfig(...)` callers, and `InstanceState.fresh(...)` callers across all tests
+- Add `load_manifest` validation tests for missing / invalid / non-positive `allocated_capital` and for blank `account_id`

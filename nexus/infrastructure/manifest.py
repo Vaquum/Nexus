@@ -172,15 +172,36 @@ class Manifest:
     '''Immutable manifest for a Manager instance.
 
     Args:
-        capital_pool: Total capital in quote asset for this instance.
+        account_id: Trading account this Manager instance is bound to.
+        allocated_capital: Hard infrastructure ceiling on capital this
+            instance can use, in quote asset. The manifest's capital_pool
+            must not exceed this value.
+        capital_pool: Operational allocation in quote asset for this instance.
         strategies: Strategy specifications for this instance.
     '''
 
+    account_id: str
+    allocated_capital: Decimal
     capital_pool: Decimal
     strategies: tuple[StrategySpec, ...]
 
     def __post_init__(self) -> None:
         '''Validate manifest invariants.'''
+
+        if not isinstance(self.account_id, str) or not self.account_id.strip():
+            msg = 'Manifest.account_id must be a non-empty string'
+            raise ValueError(msg)
+
+        if (
+            not isinstance(self.allocated_capital, Decimal)
+            or not self.allocated_capital.is_finite()
+        ):
+            msg = 'Manifest.allocated_capital must be a finite Decimal'
+            raise ValueError(msg)
+
+        if self.allocated_capital <= _ZERO:
+            msg = 'Manifest.allocated_capital must be positive'
+            raise ValueError(msg)
 
         if (
             not isinstance(self.capital_pool, Decimal)
@@ -191,6 +212,13 @@ class Manifest:
 
         if self.capital_pool <= _ZERO:
             msg = 'Manifest.capital_pool must be positive'
+            raise ValueError(msg)
+
+        if self.capital_pool > self.allocated_capital:
+            msg = (
+                f'Manifest.capital_pool {self.capital_pool} exceeds '
+                f'allocated_capital {self.allocated_capital}'
+            )
             raise ValueError(msg)
 
         if not isinstance(self.strategies, tuple) or not self.strategies:
@@ -217,18 +245,18 @@ class Manifest:
             raise ValueError(msg)
 
 
-def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
+def load_manifest(path: Path) -> Manifest:
     '''Load and validate a manifest from a YAML file.
 
     Args:
         path: Path to the YAML manifest file.
-        allocated_capital: Hard ceiling for capital_pool validation.
 
     Returns:
         Validated Manifest instance.
 
     Raises:
-        ValueError: If manifest is invalid or capital_pool exceeds allocated_capital.
+        ValueError: If manifest is invalid (missing fields, capital_pool >
+            allocated_capital, etc.).
         FileNotFoundError: If manifest file does not exist.
         yaml.YAMLError: If the file contains malformed YAML.
     '''
@@ -244,6 +272,34 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
         msg = 'Manifest must be a YAML mapping'
         raise ValueError(msg)
 
+    raw_account_id = data.get('account_id')
+    if not isinstance(raw_account_id, str) or not raw_account_id.strip():
+        msg = 'Manifest missing or invalid required field: account_id'
+        raise ValueError(msg)
+
+    account_id = raw_account_id.strip()
+
+    raw_allocated_capital = data.get('allocated_capital')
+    if raw_allocated_capital is None:
+        msg = 'Manifest missing required field: allocated_capital'
+        raise ValueError(msg)
+
+    try:
+        allocated_capital = Decimal(str(raw_allocated_capital))
+    except InvalidOperation as e:
+        msg = (
+            f'Manifest allocated_capital is not a valid number: '
+            f'{raw_allocated_capital!r}'
+        )
+        raise ValueError(msg) from e
+
+    if not allocated_capital.is_finite() or allocated_capital <= _ZERO:
+        msg = (
+            f'Manifest allocated_capital must be a finite positive number: '
+            f'{allocated_capital}'
+        )
+        raise ValueError(msg)
+
     raw_capital_pool = data.get('capital_pool')
     if raw_capital_pool is None:
         msg = 'Manifest missing required field: capital_pool'
@@ -257,13 +313,6 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
 
     if not capital_pool.is_finite() or capital_pool <= _ZERO:
         msg = f'Manifest capital_pool must be a finite positive number: {capital_pool}'
-        raise ValueError(msg)
-
-    if (
-        not isinstance(allocated_capital, Decimal)
-        or not allocated_capital.is_finite()
-    ):
-        msg = 'allocated_capital must be a finite Decimal'
         raise ValueError(msg)
 
     if capital_pool > allocated_capital:
@@ -399,7 +448,12 @@ def load_manifest(path: Path, allocated_capital: Decimal) -> Manifest:
             )
         )
 
-    manifest = Manifest(capital_pool=capital_pool, strategies=tuple(specs))
+    manifest = Manifest(
+        account_id=account_id,
+        allocated_capital=allocated_capital,
+        capital_pool=capital_pool,
+        strategies=tuple(specs),
+    )
 
     _validate_strategy_files(manifest, path.parent)
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -121,6 +120,8 @@ def _make_manifest_yaml(
 
     pid_str = ', '.join(str(p) for p in pids)
     manifest_path.write_text(
+        f'account_id: test_acct\n'
+        f'allocated_capital: 10000\n'
         f'capital_pool: 10000\n'
         f'strategies:\n'
         f'  - id: test_strat\n'
@@ -146,11 +147,10 @@ class TestWireSensors:
             state_store=_make_mock_state_store(),
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
-            allocated_capital=Decimal('10000'),
         )
 
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._wire_sensors()
 
@@ -172,11 +172,10 @@ class TestWireSensors:
             state_store=_make_mock_state_store(),
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
-            allocated_capital=Decimal('10000'),
         )
 
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._wire_sensors()
 
@@ -197,11 +196,10 @@ class TestWireSensors:
             state_store=_make_mock_state_store(),
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
-            allocated_capital=Decimal('10000'),
         )
 
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
 
         with pytest.raises(StartupError, match='wire_sensors'):
@@ -217,11 +215,10 @@ class TestWireSensors:
             state_store=_make_mock_state_store(),
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
-            allocated_capital=Decimal('10000'),
         )
 
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
 
         with pytest.raises(StartupError, match='wire_sensors'):
@@ -237,11 +234,10 @@ class TestWireSensors:
             state_store=_make_mock_state_store(),
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
-            allocated_capital=Decimal('10000'),
         )
 
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._wire_sensors()
 

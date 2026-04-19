@@ -28,9 +28,8 @@ def _make_context(
     config = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
     )
-    state = InstanceState.from_config(config)
+    state = InstanceState.fresh(Decimal('10000'))
     state.risk = risk_state or RiskState()
 
     defaults: dict[str, Any] = {

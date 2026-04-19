@@ -29,9 +29,6 @@ class InstanceConfig:
     Args:
         account_id: Unique identifier for this instance's trading account.
         venue: Which venue to trade on (e.g. ``binance_spot``).
-        allocated_capital: Hard ceiling on capital this instance can use,
-            denominated in quote asset. The manifest's ``capital_pool``
-            must not exceed this value.
         duplicate_window_ms: Duplicate-order detection window for intake
             checks, in milliseconds.
         max_order_rate: Optional per-process cap on ENTER actions per second
@@ -58,7 +55,6 @@ class InstanceConfig:
 
     account_id: str
     venue: str
-    allocated_capital: Decimal
     duplicate_window_ms: int = 1000
     max_order_rate: int | None = None
     book_staleness_max_seconds: int | None = None
@@ -79,10 +75,6 @@ class InstanceConfig:
 
         if not self.venue or not self.venue.strip():
             msg = 'InstanceConfig.venue must be a non-empty string'
-            raise ValueError(msg)
-
-        if not self.allocated_capital.is_finite() or self.allocated_capital <= 0:
-            msg = 'InstanceConfig.allocated_capital must be a finite positive value'
             raise ValueError(msg)
 
         if isinstance(self.duplicate_window_ms, bool) or not isinstance(

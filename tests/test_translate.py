@@ -28,13 +28,12 @@ def _config(stp_mode: STPMode = STPMode.CANCEL_TAKER) -> InstanceConfig:
     return InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         stp_mode=stp_mode,
     )
 
 
 def _state() -> InstanceState:
-    return InstanceState.from_config(_config())
+    return InstanceState.fresh(Decimal('10000'))
 
 
 def _now() -> datetime:

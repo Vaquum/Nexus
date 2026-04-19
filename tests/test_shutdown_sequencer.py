@@ -60,6 +60,8 @@ def _make_strategy_spec(strategy_id: str = 'test_strategy') -> StrategySpec:
 
 def _make_manifest(strategies: tuple[StrategySpec, ...] | None = None) -> Manifest:
     return Manifest(
+        account_id='test_acct',
+        allocated_capital=Decimal('100000'),
         capital_pool=Decimal('10000'),
         strategies=strategies or (_make_strategy_spec(),),
     )
@@ -199,7 +201,6 @@ class TestSubmitActions:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         state = InstanceState(
@@ -244,7 +245,6 @@ class TestSubmitActions:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         state = InstanceState(
@@ -287,7 +287,6 @@ class TestSubmitActions:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         sequencer = _make_sequencer()
@@ -318,7 +317,6 @@ class TestSubmitActions:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         outbound = MagicMock(spec=['send_command', 'send_abort'])
@@ -340,7 +338,6 @@ class TestSubmitActions:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         state = InstanceState(
@@ -378,7 +375,6 @@ class TestSubmitActions:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         outbound = MagicMock(spec=['send_command', 'send_abort'])
@@ -658,7 +654,6 @@ class TestWaitTerminal:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         q: queue.Queue[TradeOutcome] = queue.Queue()
@@ -711,7 +706,6 @@ class TestWaitTerminal:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=STPMode.CANCEL_TAKER,
         )
         q: queue.Queue[TradeOutcome] = queue.Queue()

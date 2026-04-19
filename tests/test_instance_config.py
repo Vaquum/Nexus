@@ -17,11 +17,9 @@ def test_valid_creation() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
     )
     assert cfg.account_id == 'acc_001'
     assert cfg.venue == 'binance_spot'
-    assert cfg.allocated_capital == Decimal('10000')
     assert cfg.duplicate_window_ms == 1000
     assert cfg.max_order_rate is None
     assert cfg.book_staleness_max_seconds is None
@@ -38,7 +36,6 @@ def test_valid_creation_with_duplicate_window_ms() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         duplicate_window_ms=250,
     )
     assert cfg.duplicate_window_ms == 250
@@ -48,7 +45,6 @@ def test_valid_creation_with_max_order_rate() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         max_order_rate=7,
     )
     assert cfg.max_order_rate == 7
@@ -58,7 +54,6 @@ def test_valid_creation_with_price_validation_fields() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         book_staleness_max_seconds=3,
         max_spread_bps=Decimal('7.5'),
         price_deviation_max_bps=Decimal('12.0'),
@@ -75,7 +70,6 @@ def test_reference_price_source_is_normalized() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         price_deviation_max_bps=Decimal('5'),
         reference_price_source='  ORIGO_MID ',
     )
@@ -89,7 +83,6 @@ def test_valid_creation_with_capital_pct() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         capital_pct={'momentum': Decimal('60'), 'mean_rev': Decimal('40')},
     )
 
@@ -103,7 +96,6 @@ def test_capital_pct_mapping_is_immutable() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         capital_pct={'momentum': Decimal('60')},
     )
 
@@ -118,7 +110,6 @@ def test_frozen() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
     )
     with pytest.raises(AttributeError):
         cfg.account_id = 'acc_002'  # type: ignore[misc]
@@ -131,7 +122,6 @@ def test_empty_account_id_rejected() -> None:
         InstanceConfig(
             account_id='',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
         )
 
 
@@ -142,7 +132,6 @@ def test_whitespace_account_id_rejected() -> None:
         InstanceConfig(
             account_id='   ',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
         )
 
 
@@ -153,40 +142,6 @@ def test_empty_venue_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='',
-            allocated_capital=Decimal('10000'),
-        )
-
-
-def test_zero_capital_rejected() -> None:
-    '''Verify zero allocated_capital raises ValueError.'''
-
-    with pytest.raises(ValueError, match='allocated_capital'):
-        InstanceConfig(
-            account_id='acc_001',
-            venue='binance_spot',
-            allocated_capital=Decimal('0'),
-        )
-
-
-def test_negative_capital_rejected() -> None:
-    '''Verify negative allocated_capital raises ValueError.'''
-
-    with pytest.raises(ValueError, match='allocated_capital'):
-        InstanceConfig(
-            account_id='acc_001',
-            venue='binance_spot',
-            allocated_capital=Decimal('-100'),
-        )
-
-
-def test_nan_capital_rejected() -> None:
-    '''Verify NaN allocated_capital raises ValueError.'''
-
-    with pytest.raises(ValueError, match='allocated_capital'):
-        InstanceConfig(
-            account_id='acc_001',
-            venue='binance_spot',
-            allocated_capital=Decimal('NaN'),
         )
 
 
@@ -197,7 +152,6 @@ def test_non_int_duplicate_window_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             duplicate_window_ms=cast(int, cast(object, '1000')),
         )
 
@@ -207,7 +161,6 @@ def test_bool_duplicate_window_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             duplicate_window_ms=cast(int, cast(object, True)),
         )
 
@@ -219,7 +172,6 @@ def test_non_positive_duplicate_window_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             duplicate_window_ms=0,
         )
 
@@ -229,7 +181,6 @@ def test_non_int_max_order_rate_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_order_rate=cast(int, cast(object, '5')),
         )
 
@@ -239,7 +190,6 @@ def test_bool_max_order_rate_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_order_rate=cast(int, cast(object, True)),
         )
 
@@ -249,7 +199,6 @@ def test_non_positive_max_order_rate_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_order_rate=0,
         )
 
@@ -259,7 +208,6 @@ def test_non_int_book_staleness_max_seconds_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             book_staleness_max_seconds=cast(int, cast(object, '3')),
         )
 
@@ -269,7 +217,6 @@ def test_bool_book_staleness_max_seconds_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             book_staleness_max_seconds=cast(int, cast(object, True)),
         )
 
@@ -279,7 +226,6 @@ def test_non_positive_book_staleness_max_seconds_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             book_staleness_max_seconds=0,
         )
 
@@ -289,7 +235,6 @@ def test_non_decimal_max_spread_bps_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_spread_bps=cast(Decimal, cast(object, 5)),
         )
 
@@ -299,7 +244,6 @@ def test_negative_max_spread_bps_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_spread_bps=Decimal('-0.1'),
         )
 
@@ -309,7 +253,6 @@ def test_nan_max_spread_bps_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             max_spread_bps=Decimal('NaN'),
         )
 
@@ -319,7 +262,6 @@ def test_non_decimal_price_deviation_max_bps_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             price_deviation_max_bps=cast(Decimal, cast(object, 5)),
             reference_price_source='origo_mid',
         )
@@ -330,7 +272,6 @@ def test_negative_price_deviation_max_bps_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('-0.1'),
             reference_price_source='origo_mid',
         )
@@ -341,7 +282,6 @@ def test_nan_price_deviation_max_bps_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('NaN'),
             reference_price_source='origo_mid',
         )
@@ -352,7 +292,6 @@ def test_price_deviation_without_reference_source_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('5'),
         )
 
@@ -362,7 +301,6 @@ def test_empty_reference_price_source_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('5'),
             reference_price_source='   ',
         )
@@ -373,7 +311,6 @@ def test_invalid_reference_price_source_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             price_deviation_max_bps=Decimal('5'),
             reference_price_source='origo_last',
         )
@@ -383,7 +320,6 @@ def test_valid_creation_with_stp_mode_cancel_maker() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         stp_mode=STPMode.CANCEL_MAKER,
     )
     assert cfg.stp_mode == STPMode.CANCEL_MAKER
@@ -393,7 +329,6 @@ def test_valid_creation_with_stp_mode_cancel_both() -> None:
     cfg = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
         stp_mode=STPMode.CANCEL_BOTH,
     )
     assert cfg.stp_mode == STPMode.CANCEL_BOTH
@@ -404,19 +339,7 @@ def test_invalid_stp_mode_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             stp_mode=cast(STPMode, cast(object, 'CANCEL_TAKER')),
-        )
-
-
-def test_infinity_capital_rejected() -> None:
-    '''Verify Infinity allocated_capital raises ValueError.'''
-
-    with pytest.raises(ValueError, match='allocated_capital'):
-        InstanceConfig(
-            account_id='acc_001',
-            venue='binance_spot',
-            allocated_capital=Decimal('Infinity'),
         )
 
 
@@ -427,7 +350,6 @@ def test_empty_capital_pct_key_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct={'': Decimal('10')},
         )
 
@@ -439,7 +361,6 @@ def test_non_string_capital_pct_key_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct=cast(dict[str, Decimal], {1: Decimal('10')}),
         )
 
@@ -451,7 +372,6 @@ def test_duplicate_capital_pct_key_after_normalization_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct={'momentum': Decimal('10'), ' momentum ': Decimal('20')},
         )
 
@@ -463,7 +383,6 @@ def test_non_mapping_capital_pct_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct=cast(dict[str, Decimal], cast(object, None)),
         )
 
@@ -475,7 +394,6 @@ def test_nan_capital_pct_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct={'momentum': Decimal('NaN')},
         )
 
@@ -487,7 +405,6 @@ def test_non_positive_capital_pct_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct={'momentum': Decimal('0')},
         )
 
@@ -499,7 +416,6 @@ def test_capital_pct_above_100_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct={'momentum': Decimal('120')},
         )
 
@@ -511,7 +427,6 @@ def test_capital_pct_total_above_100_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             capital_pct={'momentum': Decimal('70'), 'mean_rev': Decimal('40')},
         )
 
@@ -523,7 +438,6 @@ def test_shutdown_wait_timeout_bool_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             shutdown_wait_timeout_seconds=True,
         )
 
@@ -535,7 +449,6 @@ def test_shutdown_abort_timeout_bool_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             shutdown_abort_timeout_seconds=False,
         )
 
@@ -547,7 +460,6 @@ def test_shutdown_wait_timeout_zero_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             shutdown_wait_timeout_seconds=0,
         )
 
@@ -559,6 +471,5 @@ def test_shutdown_abort_timeout_negative_rejected() -> None:
         InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             shutdown_abort_timeout_seconds=-5.0,
         )
