@@ -12,7 +12,6 @@ import structlog
 
 from limen.experiment.trainer.trainer import Trainer
 
-from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.position import Position
@@ -59,19 +58,18 @@ class WiredSensor:
 class StartupSequencer:
     '''Orchestrates the startup sequence for a Manager instance.
 
-    Executes steps in order: recover state (snapshot + WAL) → register with Trading →
-    reconcile capital → load manifest → instantiate strategies → restore strategy state →
-    replay strategy events → wire sensors → register timers →
-    determine mode → dispatch on_startup.
+    Executes steps in order: load manifest (source of account_id and
+    allocated_capital) → recover state (snapshot + WAL) → register with
+    Trading → reconcile capital → instantiate strategies → restore
+    strategy state → replay strategy events → wire sensors → register
+    timers → determine mode → dispatch on_startup.
 
     Args:
         state_store: Persistence facade for state recovery.
         manifest_path: Path to the strategy manifest YAML file.
         strategies_base_path: Base path for resolving strategy file paths.
-        allocated_capital: Hard ceiling for manifest capital_pool validation.
         strategy_state_path: Directory for strategy state blob files.
         praxis_outbound: Outbound connector for Praxis Trading operations.
-        account_id: Account identifier for Praxis registration.
     '''
 
     def __init__(
@@ -79,10 +77,8 @@ class StartupSequencer:
         state_store: StateStore,
         manifest_path: Path,
         strategies_base_path: Path,
-        allocated_capital: Decimal,
         strategy_state_path: Path | None = None,
         praxis_outbound: PraxisOutbound | None = None,
-        account_id: str | None = None,
         health_evaluator: HealthEvaluator | None = None,
         health_snapshot: HealthSnapshot | None = None,
     ) -> None:
@@ -98,14 +94,6 @@ class StartupSequencer:
             msg = 'strategies_base_path must be a Path'
             raise ValueError(msg)
 
-        if (
-            not isinstance(allocated_capital, Decimal)
-            or not allocated_capital.is_finite()
-            or allocated_capital <= 0
-        ):
-            msg = 'allocated_capital must be a finite positive Decimal'
-            raise ValueError(msg)
-
         if strategy_state_path is not None and not isinstance(strategy_state_path, Path):
             msg = 'strategy_state_path must be a Path or None'
             raise ValueError(msg)
@@ -113,10 +101,8 @@ class StartupSequencer:
         self._state_store = state_store
         self._manifest_path = manifest_path
         self._strategies_base_path = strategies_base_path
-        self._allocated_capital = allocated_capital
         self._strategy_state_path = strategy_state_path
         self._praxis_outbound = praxis_outbound
-        self._account_id = account_id
         self._health_evaluator = health_evaluator
         self._health_snapshot = health_snapshot
 
@@ -149,10 +135,10 @@ class StartupSequencer:
             StartupError: If any step fails.
         '''
 
+        self._load_manifest()
         self._recover_state()
         self._register_with_trading()
         self._reconcile_capital()
-        self._load_manifest()
         self._instantiate_strategies()
         self._restore_strategy_state()
         self._replay_strategy_events()
@@ -172,27 +158,34 @@ class StartupSequencer:
         Delegates to StateStore.recover() which loads the latest snapshot
         and replays STATE_MUTATION entries from WAL atomically. If no
         persisted state exists (fresh start), creates initial state from
-        allocated capital. Same code path for fresh start and crash recovery.
+        manifest capital_pool (the operational allocation — NOT
+        allocated_capital, which is the infrastructure ceiling). Same
+        code path for fresh start and crash recovery.
         '''
 
         try:
             self._state = self._state_store.recover()
             if self._state is None:
-                self._state = InstanceState(
-                    capital=CapitalState(capital_pool=self._allocated_capital),
-                )
+                if self._manifest is None:
+                    raise StartupError(
+                        'recover_state',
+                        'manifest not loaded; cannot bootstrap fresh InstanceState',
+                    )
+                self._state = InstanceState.fresh(self._manifest.capital_pool)
+        except StartupError:
+            raise
         except Exception as e:
             raise StartupError('recover_state', str(e)) from e
 
     def _register_with_trading(self) -> None:
         '''Register this account with Trading sub-system via PraxisOutbound.'''
 
-        if self._praxis_outbound is None or self._account_id is None:
-            _log.warning('praxis_outbound or account_id not configured, skipping registration')
+        if self._praxis_outbound is None or self._manifest is None:
+            _log.warning('praxis_outbound or manifest not configured, skipping registration')
             return
 
         try:
-            self._praxis_outbound.register_account(self._account_id)
+            self._praxis_outbound.register_account(self._manifest.account_id)
         except Exception as e:
             raise StartupError('register_with_trading', str(e)) from e
 
@@ -286,15 +279,15 @@ class StartupSequencer:
         updates position_notional to match actual venue state. Logs discrepancies.
         '''
 
-        if self._praxis_outbound is None or self._account_id is None:
-            _log.warning('praxis_outbound or account_id not configured, skipping reconciliation')
+        if self._praxis_outbound is None or self._manifest is None:
+            _log.warning('praxis_outbound or manifest not configured, skipping reconciliation')
             return
 
         if self._state is None:
             raise StartupError('reconcile_capital', 'state not recovered')
 
         try:
-            praxis_positions = self._praxis_outbound.pull_positions(self._account_id)
+            praxis_positions = self._praxis_outbound.pull_positions(self._manifest.account_id)
         except Exception as e:
             raise StartupError('reconcile_capital', str(e)) from e
 
@@ -377,7 +370,7 @@ class StartupSequencer:
         '''Load and validate strategy manifest.'''
 
         try:
-            self._manifest = load_manifest(self._manifest_path, self._allocated_capital)
+            self._manifest = load_manifest(self._manifest_path)
         except Exception as e:
             raise StartupError('load_manifest', str(e)) from e
 

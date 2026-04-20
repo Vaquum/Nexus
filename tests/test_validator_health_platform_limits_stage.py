@@ -35,7 +35,6 @@ def _make_context() -> ValidationRequestContext:
     config = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
     )
     return ValidationRequestContext(
         strategy_id='strat_a',
@@ -43,7 +42,7 @@ def _make_context() -> ValidationRequestContext:
         order_notional=Decimal('100'),
         estimated_fees=Decimal('1'),
         strategy_budget=Decimal('5000'),
-        state=InstanceState.from_config(config),
+        state=InstanceState.fresh(Decimal('10000')),
         config=config,
     )
 

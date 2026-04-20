@@ -25,7 +25,6 @@ def _make_context(**overrides: Any) -> ValidationRequestContext:
     config = InstanceConfig(
         account_id='acc_001',
         venue='binance_spot',
-        allocated_capital=Decimal('10000'),
     )
     defaults: dict[str, Any] = {
         'strategy_id': 'strat_a',
@@ -33,7 +32,7 @@ def _make_context(**overrides: Any) -> ValidationRequestContext:
         'order_notional': Decimal('100'),
         'estimated_fees': Decimal('1'),
         'strategy_budget': Decimal('5000'),
-        'state': InstanceState.from_config(config),
+        'state': InstanceState.fresh(Decimal('10000')),
         'config': config,
     }
     defaults.update(overrides)
@@ -76,7 +75,6 @@ class TestPriceContracts:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
             book_staleness_max_seconds=3,
             max_spread_bps=Decimal('7'),
             price_deviation_max_bps=Decimal('9'),
@@ -94,7 +92,6 @@ class TestPriceContracts:
         config = InstanceConfig(
             account_id='acc_001',
             venue='binance_spot',
-            allocated_capital=Decimal('10000'),
         )
 
         limits = build_price_stage_limits_from_config(config)

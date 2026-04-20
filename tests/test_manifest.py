@@ -71,6 +71,8 @@ class TestManifest:
         spec2 = _make_spec(tmp_path, 'strategy_b', Decimal('40'))
 
         manifest = Manifest(
+            account_id='test_acct',
+            allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(spec1, spec2),
         )
@@ -82,6 +84,8 @@ class TestManifest:
         '''Manifest is immutable.'''
 
         manifest = Manifest(
+            account_id='test_acct',
+            allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(_make_spec(tmp_path),),
         )
@@ -94,6 +98,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=10000,  # type: ignore[arg-type]
                 strategies=(_make_spec(tmp_path),),
             )
@@ -103,6 +109,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('inf'),
                 strategies=(_make_spec(tmp_path),),
             )
@@ -112,6 +120,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('nan'),
                 strategies=(_make_spec(tmp_path),),
             )
@@ -121,6 +131,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='capital_pool must be positive'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('0'),
                 strategies=(_make_spec(tmp_path),),
             )
@@ -130,6 +142,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='capital_pool must be positive'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('-1000'),
                 strategies=(_make_spec(tmp_path),),
             )
@@ -139,6 +153,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='strategies must be a non-empty tuple'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=(),
             )
@@ -148,6 +164,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='strategies must be a non-empty tuple'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=[_make_spec(tmp_path)],  # type: ignore[arg-type]
             )
@@ -157,6 +175,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='strategies must contain StrategySpec'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=(_make_spec(tmp_path), 'not a spec'),  # type: ignore[arg-type]
             )
@@ -166,6 +186,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match='duplicate strategy_id'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=(
                     _make_spec(tmp_path, 'same_id', Decimal('50')),
@@ -178,6 +200,8 @@ class TestManifest:
 
         with pytest.raises(ValueError, match=r'capital_pct sum .* exceeds 100'):
             Manifest(
+                account_id='test_acct',
+                allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=(
                     _make_spec(tmp_path, 'a', Decimal('60')),
@@ -189,6 +213,8 @@ class TestManifest:
         '''capital_pct sum of exactly 100 is allowed.'''
 
         manifest = Manifest(
+            account_id='test_acct',
+            allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(
                 _make_spec(tmp_path, 'a', Decimal('60')),
@@ -198,10 +224,24 @@ class TestManifest:
 
         assert manifest.capital_pool == Decimal('10000')
 
+    def test_account_id_is_normalized(self, tmp_path: Path) -> None:
+        '''account_id is stripped of surrounding whitespace at construction.'''
+
+        manifest = Manifest(
+            account_id='  test_acct  ',
+            allocated_capital=Decimal('100000'),
+            capital_pool=Decimal('10000'),
+            strategies=(_make_spec(tmp_path),),
+        )
+
+        assert manifest.account_id == 'test_acct'
+
     def test_capital_pct_sum_under_100_allowed(self, tmp_path: Path) -> None:
         '''capital_pct sum under 100 is allowed.'''
 
         manifest = Manifest(
+            account_id='test_acct',
+            allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(
                 _make_spec(tmp_path, 'a', Decimal('30')),
@@ -215,6 +255,8 @@ class TestManifest:
         '''Single strategy in manifest is allowed.'''
 
         manifest = Manifest(
+            account_id='test_acct',
+            allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(_make_spec(tmp_path, 'only_one', Decimal('100')),),
         )
@@ -236,6 +278,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: momentum\n'
@@ -254,7 +298,7 @@ class TestLoadManifest:
             f'    capital_pct: 40\n',
         )
 
-        manifest = load_manifest(path, Decimal('20000'))
+        manifest = load_manifest(path)
 
         assert manifest.capital_pool == Decimal('10000')
         assert len(manifest.strategies) == 2
@@ -267,7 +311,7 @@ class TestLoadManifest:
         '''Missing manifest file raises FileNotFoundError.'''
 
         with pytest.raises(FileNotFoundError, match='Manifest file not found'):
-            load_manifest(Path('/nonexistent/manifest.yaml'), Decimal('10000'))
+            load_manifest(Path('/nonexistent/manifest.yaml'))
 
     def test_capital_pool_exceeds_allocated_raises(self, tmp_path: Path) -> None:
         '''capital_pool > allocated_capital raises ValueError.'''
@@ -278,6 +322,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 15000\n'
             f'strategies:\n'
             f'  - id: test\n'
@@ -290,35 +336,69 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='exceeds allocated_capital'):
-            load_manifest(path, Decimal('10000'))
+            load_manifest(path)
 
-    def test_non_finite_allocated_capital_raises(self, tmp_path: Path) -> None:
-        '''Non-finite allocated_capital raises ValueError.'''
+    def test_missing_allocated_capital_raises(self, tmp_path: Path) -> None:
+        '''Missing allocated_capital raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
-        strategy = tmp_path / 'test.py'
-        strategy.write_text('pass')
-
         _write_yaml(
             path,
-            f'capital_pool: 5000\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'capital_pool: 5000\n'
+            'strategies: []\n',
         )
 
-        with pytest.raises(ValueError, match='allocated_capital must be a finite'):
-            load_manifest(path, Decimal('NaN'))
+        with pytest.raises(ValueError, match='missing required field: allocated_capital'):
+            load_manifest(path)
 
-        with pytest.raises(ValueError, match='allocated_capital must be a finite'):
-            load_manifest(path, Decimal('Infinity'))
+    def test_invalid_allocated_capital_raises(self, tmp_path: Path) -> None:
+        '''Non-numeric allocated_capital raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: not_a_number\n'
+            'capital_pool: 5000\n'
+            'strategies: []\n',
+        )
+
+        with pytest.raises(ValueError, match='allocated_capital is not a valid number'):
+            load_manifest(path)
+
+    def test_non_positive_allocated_capital_raises(self, tmp_path: Path) -> None:
+        '''Zero or negative allocated_capital raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 0\n'
+            'capital_pool: 5000\n'
+            'strategies: []\n',
+        )
+
+        with pytest.raises(ValueError, match='allocated_capital must be a finite positive'):
+            load_manifest(path)
+
+    def test_missing_account_id_raises(self, tmp_path: Path) -> None:
+        '''Missing account_id raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(path, 'capital_pool: 10000\nstrategies: []\n')
+
+        with pytest.raises(ValueError, match='missing or invalid required field: account_id'):
+            load_manifest(path)
+
+    def test_blank_account_id_raises(self, tmp_path: Path) -> None:
+        '''Blank account_id raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+        _write_yaml(path, 'account_id: \'   \'\ncapital_pool: 10000\nstrategies: []\n')
+
+        with pytest.raises(ValueError, match='missing or invalid required field: account_id'):
+            load_manifest(path)
 
     def test_missing_capital_pool_raises(self, tmp_path: Path) -> None:
         '''Missing capital_pool raises ValueError.'''
@@ -329,6 +409,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'strategies:\n'
             f'  - id: test\n'
             f'    file: test.py\n'
@@ -340,25 +422,36 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='missing required field: capital_pool'):
-            load_manifest(path, Decimal('10000'))
+            load_manifest(path)
 
     def test_missing_strategies_raises(self, tmp_path: Path) -> None:
         '''Missing strategies raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        _write_yaml(path, 'capital_pool: 10000\n')
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n',
+        )
 
         with pytest.raises(ValueError, match='missing or empty strategies'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_empty_strategies_raises(self, tmp_path: Path) -> None:
         '''Empty strategies list raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        _write_yaml(path, 'capital_pool: 10000\nstrategies: []\n')
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies: []\n',
+        )
 
         with pytest.raises(ValueError, match='missing or empty strategies'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_strategy_missing_id_raises(self, tmp_path: Path) -> None:
         '''Strategy missing id raises ValueError.'''
@@ -369,6 +462,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - file: test.py\n'
@@ -380,7 +475,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='missing required field: id'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_strategy_missing_file_raises(self, tmp_path: Path) -> None:
         '''Strategy missing file raises ValueError.'''
@@ -391,6 +486,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: test\n'
@@ -402,7 +499,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='missing required field: file'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_strategy_missing_sensors_raises(self, tmp_path: Path) -> None:
         '''Strategy missing sensors raises ValueError.'''
@@ -411,6 +508,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test\n'
@@ -419,7 +518,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='missing or empty sensors'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_strategy_missing_capital_pct_raises(self, tmp_path: Path) -> None:
         '''Strategy missing capital_pct raises ValueError.'''
@@ -430,6 +529,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: test\n'
@@ -441,7 +542,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='missing required field: capital_pct'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_malformed_yaml_raises(self, tmp_path: Path) -> None:
         '''Malformed YAML raises yaml.YAMLError.'''
@@ -450,7 +551,7 @@ class TestLoadManifest:
         _write_yaml(path, 'capital_pool: [unclosed')
 
         with pytest.raises(yaml.YAMLError):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_non_mapping_yaml_raises(self, tmp_path: Path) -> None:
         '''Non-mapping YAML raises ValueError.'''
@@ -459,7 +560,7 @@ class TestLoadManifest:
         _write_yaml(path, '- item1\n- item2\n')
 
         with pytest.raises(ValueError, match='must be a YAML mapping'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_duplicate_strategy_id_raises(self, tmp_path: Path) -> None:
         '''Duplicate strategy_id raises ValueError.'''
@@ -470,6 +571,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: same\n'
@@ -489,7 +592,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='duplicate strategy_id'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_capital_pct_sum_over_100_raises(self, tmp_path: Path) -> None:
         '''capital_pct sum > 100 raises ValueError.'''
@@ -502,6 +605,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: a\n'
@@ -521,7 +626,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='exceeds 100'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_strategy_file_not_found_raises(self, tmp_path: Path) -> None:
         '''Missing strategy .py file raises ValueError with path.'''
@@ -532,6 +637,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: missing_file\n'
@@ -544,7 +651,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match=r"file not found.*nonexistent/strategy\.py"):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_strategy_file_syntax_error_raises(self, tmp_path: Path) -> None:
         '''Invalid Python syntax in strategy file raises ValueError.'''
@@ -558,6 +665,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: bad_syntax\n'
@@ -570,7 +679,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match=r'syntax error.*bad_syntax\.py'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_invalid_capital_pool_decimal_raises(self, tmp_path: Path) -> None:
         '''Non-numeric capital_pool raises ValueError.'''
@@ -582,6 +691,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: not_a_number\n'
             f'strategies:\n'
             f'  - id: test\n'
@@ -594,7 +705,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='capital_pool is not a valid number'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_invalid_capital_pct_decimal_raises(self, tmp_path: Path) -> None:
         '''Non-numeric capital_pct raises ValueError.'''
@@ -606,6 +717,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: test\n'
@@ -618,7 +731,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='capital_pct is not a valid number'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_absolute_file_path_raises(self, tmp_path: Path) -> None:
         '''Absolute strategy file path raises ValueError.'''
@@ -629,6 +742,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: absolute\n'
@@ -641,7 +756,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='file must be relative'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_path_traversal_raises(self, tmp_path: Path) -> None:
         '''Strategy file path escaping base raises ValueError.'''
@@ -652,6 +767,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: escape\n'
@@ -664,7 +781,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='escapes base path'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_directory_instead_of_file_raises(self, tmp_path: Path) -> None:
         '''Directory path instead of file raises ValueError.'''
@@ -676,6 +793,8 @@ class TestLoadManifest:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: dir_not_file\n'
@@ -688,7 +807,7 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='file not found'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
 
 class TestLoadManifestTimers:
@@ -703,6 +822,8 @@ class TestLoadManifestTimers:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: strat1\n'
@@ -719,7 +840,7 @@ class TestLoadManifestTimers:
             f'        interval_seconds: 300\n',
         )
 
-        manifest = load_manifest(path, Decimal('20000'))
+        manifest = load_manifest(path)
 
         assert len(manifest.strategies[0].timers) == 2
         assert manifest.strategies[0].timers[0].timer_id == 'trailing_stop'
@@ -735,6 +856,8 @@ class TestLoadManifestTimers:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: strat1\n'
@@ -746,7 +869,7 @@ class TestLoadManifestTimers:
             f'    capital_pct: 100\n',
         )
 
-        manifest = load_manifest(path, Decimal('20000'))
+        manifest = load_manifest(path)
 
         assert manifest.strategies[0].timers == ()
 
@@ -760,6 +883,8 @@ class TestLoadManifestTimers:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: strat1\n'
@@ -774,7 +899,7 @@ class TestLoadManifestTimers:
         )
 
         with pytest.raises(ValueError, match='timer missing required field: id'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_timer_bool_interval_raises(self, tmp_path: Path) -> None:
         '''Timer with bool interval_seconds raises ValueError.'''
@@ -786,6 +911,8 @@ class TestLoadManifestTimers:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: strat1\n'
@@ -801,7 +928,7 @@ class TestLoadManifestTimers:
         )
 
         with pytest.raises(ValueError, match='interval_seconds must be an int'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)
 
     def test_duplicate_timer_id_raises(self, tmp_path: Path) -> None:
         '''Duplicate timer_id raises ValueError.'''
@@ -813,6 +940,8 @@ class TestLoadManifestTimers:
 
         _write_yaml(
             path,
+            f'account_id: test_acct\n'
+            f'allocated_capital: 10000\n'
             f'capital_pool: 10000\n'
             f'strategies:\n'
             f'  - id: strat1\n'
@@ -830,4 +959,4 @@ class TestLoadManifestTimers:
         )
 
         with pytest.raises(ValueError, match='duplicate timer_id'):
-            load_manifest(path, Decimal('20000'))
+            load_manifest(path)

@@ -54,18 +54,34 @@ _PLACEHOLDER_MANIFEST = Path('/placeholder/manifest.yaml')
 _PLACEHOLDER_STRATEGIES = Path('/placeholder/strategies')
 
 
+def _attach_stub_manifest(
+    sequencer: StartupSequencer,
+    *,
+    account_id: str = 'test_acct',
+    allocated_capital: Decimal = Decimal('50000'),
+    capital_pool: Decimal | None = None,
+) -> MagicMock:
+    '''Inject a mocked Manifest onto a sequencer to bypass _load_manifest.'''
+
+    manifest = MagicMock()
+    manifest.account_id = account_id
+    manifest.allocated_capital = allocated_capital
+    manifest.capital_pool = capital_pool if capital_pool is not None else allocated_capital
+    manifest.strategies = ()
+    sequencer._manifest = manifest
+    return manifest
+
+
 def _make_sequencer(
     state_store: StateStore | None = None,
     manifest_path: Path | None = None,
     strategies_base_path: Path | None = None,
-    allocated_capital: Decimal | None = None,
     strategy_state_path: Path | None = None,
 ) -> StartupSequencer:
     return StartupSequencer(
         state_store=state_store or _make_mock_state_store(),
         manifest_path=manifest_path or _PLACEHOLDER_MANIFEST,
         strategies_base_path=strategies_base_path or _PLACEHOLDER_STRATEGIES,
-        allocated_capital=allocated_capital or Decimal('10000'),
         strategy_state_path=strategy_state_path,
     )
 
@@ -83,7 +99,6 @@ class TestStartupSequencerConstruction:
                 state_store='not a state store',  # type: ignore[arg-type]
                 manifest_path=_PLACEHOLDER_MANIFEST,
                 strategies_base_path=_PLACEHOLDER_STRATEGIES,
-                allocated_capital=Decimal('10000'),
             )
 
     def test_invalid_manifest_path_rejected(self) -> None:
@@ -92,7 +107,6 @@ class TestStartupSequencerConstruction:
                 state_store=_make_mock_state_store(),
                 manifest_path='/placeholder/manifest.yaml',  # type: ignore[arg-type]
                 strategies_base_path=_PLACEHOLDER_STRATEGIES,
-                allocated_capital=Decimal('10000'),
             )
 
     def test_invalid_strategies_base_path_rejected(self) -> None:
@@ -101,43 +115,6 @@ class TestStartupSequencerConstruction:
                 state_store=_make_mock_state_store(),
                 manifest_path=_PLACEHOLDER_MANIFEST,
                 strategies_base_path='/placeholder/strategies',  # type: ignore[arg-type]
-                allocated_capital=Decimal('10000'),
-            )
-
-    def test_invalid_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
-            StartupSequencer(
-                state_store=_make_mock_state_store(),
-                manifest_path=_PLACEHOLDER_MANIFEST,
-                strategies_base_path=_PLACEHOLDER_STRATEGIES,
-                allocated_capital=10000,  # type: ignore[arg-type]
-            )
-
-    def test_non_finite_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
-            StartupSequencer(
-                state_store=_make_mock_state_store(),
-                manifest_path=_PLACEHOLDER_MANIFEST,
-                strategies_base_path=_PLACEHOLDER_STRATEGIES,
-                allocated_capital=Decimal('Infinity'),
-            )
-
-    def test_zero_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
-            StartupSequencer(
-                state_store=_make_mock_state_store(),
-                manifest_path=_PLACEHOLDER_MANIFEST,
-                strategies_base_path=_PLACEHOLDER_STRATEGIES,
-                allocated_capital=Decimal('0'),
-            )
-
-    def test_negative_allocated_capital_rejected(self) -> None:
-        with pytest.raises(ValueError, match='must be a finite positive Decimal'):
-            StartupSequencer(
-                state_store=_make_mock_state_store(),
-                manifest_path=_PLACEHOLDER_MANIFEST,
-                strategies_base_path=_PLACEHOLDER_STRATEGIES,
-                allocated_capital=Decimal('-1000'),
             )
 
 
@@ -148,6 +125,8 @@ class TestStartupSequencerStart:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -180,6 +159,8 @@ class TestStartupSequencerStart:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -205,6 +186,8 @@ class TestStartupSequencerStart:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -231,6 +214,7 @@ class TestStateRecovery:
         mock_store = _make_mock_state_store()
         mock_store.recover.return_value = None
         sequencer = _make_sequencer(state_store=mock_store)
+        _attach_stub_manifest(sequencer)
 
         sequencer._recover_state()
 
@@ -241,6 +225,7 @@ class TestStateRecovery:
         mock_state = MagicMock()
         mock_store.recover.return_value = mock_state
         sequencer = _make_sequencer(state_store=mock_store)
+        _attach_stub_manifest(sequencer)
 
         sequencer._recover_state()
 
@@ -251,8 +236,8 @@ class TestStateRecovery:
         mock_store.recover.return_value = None
         sequencer = _make_sequencer(
             state_store=mock_store,
-            allocated_capital=Decimal('50000'),
         )
+        _attach_stub_manifest(sequencer, allocated_capital=Decimal('50000'))
 
         sequencer._recover_state()
 
@@ -264,6 +249,7 @@ class TestStateRecovery:
         mock_store = _make_mock_state_store()
         mock_store.recover.side_effect = RuntimeError('disk error')
         sequencer = _make_sequencer(state_store=mock_store)
+        _attach_stub_manifest(sequencer)
 
         with pytest.raises(StartupError, match='recover_state') as exc_info:
             sequencer._recover_state()
@@ -302,7 +288,7 @@ class TestExternalIntegrationStubs:
 
         sequencer = _make_sequencer()
         sequencer._praxis_outbound = outbound
-        sequencer._account_id = 'acc_001'
+        _attach_stub_manifest(sequencer, account_id='acc_001')
         sequencer._state = InstanceState(
             capital=CapitalState(capital_pool=Decimal('10000')),
         )
@@ -337,7 +323,7 @@ class TestExternalIntegrationStubs:
 
         sequencer = _make_sequencer()
         sequencer._praxis_outbound = outbound
-        sequencer._account_id = 'acc_001'
+        _attach_stub_manifest(sequencer, account_id='acc_001')
         sequencer._state = InstanceState(
             capital=CapitalState(capital_pool=Decimal('10000')),
         )
@@ -407,6 +393,8 @@ class TestStrategyStateRestoration:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -422,8 +410,8 @@ class TestStrategyStateRestoration:
             strategies_base_path=tmp_path,
             strategy_state_path=strategy_state_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
 
         sequencer._restore_strategy_state()
@@ -436,6 +424,8 @@ class TestStrategyStateRestoration:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -451,8 +441,8 @@ class TestStrategyStateRestoration:
             strategies_base_path=tmp_path,
             strategy_state_path=strategy_state_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
 
         sequencer._restore_strategy_state()
@@ -478,6 +468,8 @@ class TestStrategyStateRestoration:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: ../evil\n'
@@ -493,8 +485,8 @@ class TestStrategyStateRestoration:
             strategies_base_path=tmp_path,
             strategy_state_path=strategy_state_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._runner = MagicMock()
 
         sequencer._restore_strategy_state()
@@ -509,6 +501,8 @@ class TestEventReplay:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -524,8 +518,8 @@ class TestEventReplay:
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
 
         sequencer._replay_strategy_events()
@@ -535,6 +529,8 @@ class TestEventReplay:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -556,8 +552,8 @@ class TestEventReplay:
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._runner.dispatch_event_replay = MagicMock()
 
@@ -570,6 +566,8 @@ class TestEventReplay:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -591,8 +589,8 @@ class TestEventReplay:
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._runner.dispatch_event_replay = MagicMock()
 
@@ -608,6 +606,8 @@ class TestStartupDispatch:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -652,6 +652,8 @@ class TestStartupDispatch:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -676,6 +678,8 @@ class TestStartupDispatch:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -735,6 +739,8 @@ class TestManifestLoading:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 5000\n'
             'capital_pool: 5000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -769,6 +775,8 @@ class TestStrategyInstantiation:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 5000\n'
             'capital_pool: 5000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -801,6 +809,8 @@ class TestStrategyInstantiation:
         strategy_file = tmp_path / 'bad_import.py'
         strategy_file.write_text('import nonexistent_module_xyz_123\n')
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 5000\n'
             'capital_pool: 5000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -838,6 +848,8 @@ class TestCrashOnlyDesign:
         strategy_file = tmp_path / 'strat.py'
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -867,6 +879,8 @@ class TestCrashOnlyDesign:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -883,8 +897,8 @@ class TestCrashOnlyDesign:
             strategies_base_path=tmp_path,
             strategy_state_path=strategy_state_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._runner.dispatch_load = MagicMock()
 
@@ -902,6 +916,8 @@ class TestCrashOnlyDesign:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -918,8 +934,8 @@ class TestCrashOnlyDesign:
             strategies_base_path=tmp_path,
             strategy_state_path=strategy_state_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._runner.dispatch_load = MagicMock()
 
@@ -933,6 +949,8 @@ class TestCrashOnlyDesign:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'
@@ -954,8 +972,8 @@ class TestCrashOnlyDesign:
             manifest_path=manifest_path,
             strategies_base_path=tmp_path,
         )
-        sequencer._recover_state()
         sequencer._load_manifest()
+        sequencer._recover_state()
         sequencer._instantiate_strategies()
         sequencer._runner.dispatch_event_replay = MagicMock()
 
@@ -971,6 +989,8 @@ class TestCrashOnlyDesign:
 
         strategy_file.write_text(VALID_STRATEGY)
         manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
             'capital_pool: 10000\n'
             'strategies:\n'
             '  - id: test_strat\n'

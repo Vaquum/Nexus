@@ -1,18 +1,20 @@
 '''Composite runtime state for a Manager instance.
 
 Composes capital, risk, positions, and operational mode into a
-single top-level container. Created from InstanceConfig at startup.
+single top-level container. Created with `capital_pool` (the operational
+allocation sourced from `Manifest.capital_pool`) at fresh startup via
+`InstanceState.fresh()`.
 '''
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState
-from nexus.instance_config import InstanceConfig
 
 __all__ = ['InstanceState']
 
@@ -57,16 +59,31 @@ class InstanceState:
                 raise ValueError(msg)
 
     @classmethod
-    def from_config(cls, config: InstanceConfig) -> InstanceState:
-        '''Create initial state from instance configuration.
+    def fresh(cls, capital_pool: Decimal) -> InstanceState:
+        '''Create an initial empty state for a freshly-started instance.
 
         Args:
-            config: Identity and capital ceiling for this instance.
+            capital_pool: Operational capital allocation in quote asset,
+                sourced from `Manifest.capital_pool`. Becomes the initial
+                `CapitalState.capital_pool` — NOT `Manifest.allocated_capital`,
+                which is the infrastructure ceiling, not the operational
+                allocation.
 
         Returns:
             Fresh InstanceState with capital pool set and everything else zeroed.
+
+        Raises:
+            ValueError: If `capital_pool` is not a finite positive Decimal.
         '''
 
+        if not isinstance(capital_pool, Decimal) or not capital_pool.is_finite():
+            msg = 'InstanceState.fresh(capital_pool) must receive a finite Decimal'
+            raise ValueError(msg)
+
+        if capital_pool <= 0:
+            msg = 'InstanceState.fresh(capital_pool) must receive a positive value'
+            raise ValueError(msg)
+
         return cls(
-            capital=CapitalState(capital_pool=config.allocated_capital),
+            capital=CapitalState(capital_pool=capital_pool),
         )
