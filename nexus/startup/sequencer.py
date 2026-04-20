@@ -12,7 +12,6 @@ import structlog
 
 from limen.experiment.trainer.trainer import Trainer
 
-from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.position import Position
@@ -172,9 +171,7 @@ class StartupSequencer:
                         'recover_state',
                         'manifest not loaded; cannot bootstrap fresh InstanceState',
                     )
-                self._state = InstanceState(
-                    capital=CapitalState(capital_pool=self._manifest.capital_pool),
-                )
+                self._state = InstanceState.fresh(self._manifest.capital_pool)
         except StartupError:
             raise
         except Exception as e:

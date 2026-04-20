@@ -1,7 +1,9 @@
 '''Composite runtime state for a Manager instance.
 
 Composes capital, risk, positions, and operational mode into a
-single top-level container. Created with allocated_capital at startup.
+single top-level container. Created with `capital_pool` (the operational
+allocation sourced from `Manifest.capital_pool`) at fresh startup via
+`InstanceState.fresh()`.
 '''
 
 from __future__ import annotations
