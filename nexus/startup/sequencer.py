@@ -59,10 +59,11 @@ class WiredSensor:
 class StartupSequencer:
     '''Orchestrates the startup sequence for a Manager instance.
 
-    Executes steps in order: recover state (snapshot + WAL) → register with Trading →
-    reconcile capital → load manifest → instantiate strategies → restore strategy state →
-    replay strategy events → wire sensors → register timers →
-    determine mode → dispatch on_startup.
+    Executes steps in order: load manifest (source of account_id and
+    allocated_capital) → recover state (snapshot + WAL) → register with
+    Trading → reconcile capital → instantiate strategies → restore
+    strategy state → replay strategy events → wire sensors → register
+    timers → determine mode → dispatch on_startup.
 
     Args:
         state_store: Persistence facade for state recovery.

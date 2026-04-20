@@ -305,8 +305,8 @@
 ## v0.28.0 on 19th of April, 2026
 
 - BREAKING: Move instance identity and capital ceiling into the strategy manifest. `Manifest` gains required `account_id: str` and `allocated_capital: Decimal` fields, with internal validation that `capital_pool ≤ allocated_capital`. Manifest YAML files must now declare `account_id:` and `allocated_capital:` alongside the existing `capital_pool:` and `strategies:` blocks
-- BREAKING: `load_manifest(path)` — drop the `allocated_capital` parameter; the ceiling is sourced from the manifest itself
-- BREAKING: [`StartupSequencer`](nexus/startup/sequencer.py) drops `allocated_capital` and `account_id` constructor parameters. Both are derived from the loaded manifest at runtime
+- BREAKING: Drop the `allocated_capital` parameter from `load_manifest(path)`; the ceiling is sourced from the manifest itself
+- BREAKING: Drop `allocated_capital` and `account_id` constructor parameters from [`StartupSequencer`](nexus/startup/sequencer.py); both are derived from the loaded manifest at runtime
 - Reorder startup sequence to call `_load_manifest` first (was step 4); `_recover_state`, `_register_with_trading`, and `_reconcile_capital` all read identity and capital from `self._manifest`
 - BREAKING: Remove `allocated_capital` field from [`InstanceConfig`](nexus/instance_config.py) — the ceiling no longer belongs in runtime/validator config, it is per-account manifest state
 - Rename `InstanceState.from_config(config)` → [`InstanceState.fresh(allocated_capital)`](nexus/core/domain/instance_state.py) — the factory never needed `config`, only the ceiling; drops the unused `InstanceConfig` dependency from `nexus.core.domain`
