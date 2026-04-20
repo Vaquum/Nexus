@@ -27,7 +27,7 @@ def test_direct_creation() -> None:
 
 
 def test_fresh() -> None:
-    '''Verify factory creates initial empty state with given capital ceiling.'''
+    '''Verify factory creates initial empty state seeded with the given capital_pool (operational allocation, not ceiling).'''
 
     state = InstanceState.fresh(Decimal('50000'))
     assert state.capital.capital_pool == Decimal('50000')
@@ -35,6 +35,39 @@ def test_fresh() -> None:
     assert state.risk.realized_pnl == Decimal(0)
     assert state.positions == {}
     assert state.mode.mode == OperationalMode.ACTIVE
+
+
+def test_fresh_rejects_non_decimal() -> None:
+    '''int/float/str capital_pool raises ValueError, not AttributeError.'''
+
+    with pytest.raises(ValueError, match='must receive a finite Decimal'):
+        InstanceState.fresh(10000)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match='must receive a finite Decimal'):
+        InstanceState.fresh(10000.0)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match='must receive a finite Decimal'):
+        InstanceState.fresh('10000')  # type: ignore[arg-type]
+
+
+def test_fresh_rejects_non_finite() -> None:
+    '''NaN/Infinity capital_pool raises ValueError.'''
+
+    with pytest.raises(ValueError, match='must receive a finite Decimal'):
+        InstanceState.fresh(Decimal('NaN'))
+
+    with pytest.raises(ValueError, match='must receive a finite Decimal'):
+        InstanceState.fresh(Decimal('Infinity'))
+
+
+def test_fresh_rejects_non_positive() -> None:
+    '''Zero or negative capital_pool raises ValueError.'''
+
+    with pytest.raises(ValueError, match='must receive a positive'):
+        InstanceState.fresh(Decimal('0'))
+
+    with pytest.raises(ValueError, match='must receive a positive'):
+        InstanceState.fresh(Decimal('-1000'))
 
 
 def test_positions_key_mismatch_rejected() -> None:

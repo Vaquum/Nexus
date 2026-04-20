@@ -71,7 +71,18 @@ class InstanceState:
 
         Returns:
             Fresh InstanceState with capital pool set and everything else zeroed.
+
+        Raises:
+            ValueError: If `capital_pool` is not a finite positive Decimal.
         '''
+
+        if not isinstance(capital_pool, Decimal) or not capital_pool.is_finite():
+            msg = 'InstanceState.fresh(capital_pool) must receive a finite Decimal'
+            raise ValueError(msg)
+
+        if capital_pool <= 0:
+            msg = 'InstanceState.fresh(capital_pool) must receive a positive value'
+            raise ValueError(msg)
 
         return cls(
             capital=CapitalState(capital_pool=capital_pool),
