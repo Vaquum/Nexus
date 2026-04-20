@@ -224,6 +224,18 @@ class TestManifest:
 
         assert manifest.capital_pool == Decimal('10000')
 
+    def test_account_id_is_normalized(self, tmp_path: Path) -> None:
+        '''account_id is stripped of surrounding whitespace at construction.'''
+
+        manifest = Manifest(
+            account_id='  test_acct  ',
+            allocated_capital=Decimal('100000'),
+            capital_pool=Decimal('10000'),
+            strategies=(_make_spec(tmp_path),),
+        )
+
+        assert manifest.account_id == 'test_acct'
+
     def test_capital_pct_sum_under_100_allowed(self, tmp_path: Path) -> None:
         '''capital_pct sum under 100 is allowed.'''
 
@@ -383,7 +395,7 @@ class TestLoadManifest:
         '''Blank account_id raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        _write_yaml(path, "account_id: '   '\ncapital_pool: 10000\nstrategies: []\n")
+        _write_yaml(path, 'account_id: \'   \'\ncapital_pool: 10000\nstrategies: []\n')
 
         with pytest.raises(ValueError, match='missing or invalid required field: account_id'):
             load_manifest(path)

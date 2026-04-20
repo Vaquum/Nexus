@@ -1,8 +1,12 @@
 '''Runtime configuration for a Manager instance.
 
-Frozen dataclass holding identity and capital ceiling for a single
-Manager instance. Additional fields (risk limits, health policy, etc.)
-are added as their respective phases land.
+Frozen dataclass holding identity and validator-level tunables for a
+single Manager instance (intake thresholds, STP mode, capital-pct
+mapping, shutdown timeouts). Capital ceiling and operational allocation
+are NOT tracked here — both `allocated_capital` and `capital_pool`
+live on the strategy `Manifest` (see
+`nexus.infrastructure.manifest.Manifest`). Additional fields (risk
+limits, health policy, etc.) are added as their respective phases land.
 '''
 
 from __future__ import annotations
@@ -24,7 +28,12 @@ _ALLOWED_REFERENCE_PRICE_SOURCES = frozenset({'origo_mid'})
 
 @dataclass(frozen=True)
 class InstanceConfig:
-    '''Immutable configuration for one Manager instance.
+    '''Immutable runtime/validator config for one Manager instance.
+
+    Identity and validator-level tunables. The capital ceiling
+    (``allocated_capital``) and operational allocation (``capital_pool``)
+    are NOT fields here — both live on the strategy
+    `Manifest` and are sourced from YAML at startup.
 
     Args:
         account_id: Unique identifier for this instance's trading account.

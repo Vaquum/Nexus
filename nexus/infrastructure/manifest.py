@@ -192,6 +192,8 @@ class Manifest:
             msg = 'Manifest.account_id must be a non-empty string'
             raise ValueError(msg)
 
+        object.__setattr__(self, 'account_id', self.account_id.strip())
+
         if (
             not isinstance(self.allocated_capital, Decimal)
             or not self.allocated_capital.is_finite()

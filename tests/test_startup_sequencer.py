@@ -59,12 +59,14 @@ def _attach_stub_manifest(
     *,
     account_id: str = 'test_acct',
     allocated_capital: Decimal = Decimal('50000'),
+    capital_pool: Decimal | None = None,
 ) -> MagicMock:
     '''Inject a mocked Manifest onto a sequencer to bypass _load_manifest.'''
 
     manifest = MagicMock()
     manifest.account_id = account_id
     manifest.allocated_capital = allocated_capital
+    manifest.capital_pool = capital_pool if capital_pool is not None else allocated_capital
     manifest.strategies = ()
     sequencer._manifest = manifest
     return manifest
@@ -764,7 +766,6 @@ class TestManifestLoading:
             sequencer._load_manifest()
 
         assert 'not found' in exc_info.value.reason.lower()
-
 
 
 class TestStrategyInstantiation:

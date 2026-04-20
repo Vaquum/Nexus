@@ -159,8 +159,9 @@ class StartupSequencer:
         Delegates to StateStore.recover() which loads the latest snapshot
         and replays STATE_MUTATION entries from WAL atomically. If no
         persisted state exists (fresh start), creates initial state from
-        manifest allocated_capital. Same code path for fresh start and
-        crash recovery.
+        manifest capital_pool (the operational allocation — NOT
+        allocated_capital, which is the infrastructure ceiling). Same
+        code path for fresh start and crash recovery.
         '''
 
         try:
@@ -172,7 +173,7 @@ class StartupSequencer:
                         'manifest not loaded; cannot bootstrap fresh InstanceState',
                     )
                 self._state = InstanceState(
-                    capital=CapitalState(capital_pool=self._manifest.allocated_capital),
+                    capital=CapitalState(capital_pool=self._manifest.capital_pool),
                 )
         except StartupError:
             raise

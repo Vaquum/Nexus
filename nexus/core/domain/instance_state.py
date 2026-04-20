@@ -57,17 +57,20 @@ class InstanceState:
                 raise ValueError(msg)
 
     @classmethod
-    def fresh(cls, allocated_capital: Decimal) -> InstanceState:
+    def fresh(cls, capital_pool: Decimal) -> InstanceState:
         '''Create an initial empty state for a freshly-started instance.
 
         Args:
-            allocated_capital: Hard ceiling on capital this instance can
-                use, sourced from `Manifest.allocated_capital`.
+            capital_pool: Operational capital allocation in quote asset,
+                sourced from `Manifest.capital_pool`. Becomes the initial
+                `CapitalState.capital_pool` — NOT `Manifest.allocated_capital`,
+                which is the infrastructure ceiling, not the operational
+                allocation.
 
         Returns:
             Fresh InstanceState with capital pool set and everything else zeroed.
         '''
 
         return cls(
-            capital=CapitalState(capital_pool=allocated_capital),
+            capital=CapitalState(capital_pool=capital_pool),
         )
