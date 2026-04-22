@@ -304,28 +304,6 @@ class TestSubmitActions:
         assert outcome.status == SubmissionStatus.SUBMIT_FAILED
         assert 'praxis hung' in (outcome.error or '')
 
-    def test_non_action_input_marked_invalid(self) -> None:
-        '''Non-Action input is marked INVALID; iteration continues.'''
-
-        validator = MagicMock()
-        validator.validate.return_value = _allow_decision()
-        outbound = MagicMock()
-        outbound.send_command.return_value = 'cmd_204'
-
-        results = submit_actions(
-            ['not an action', _enter_action()],  # type: ignore[list-item]
-            strategy_id='strat_001',
-            config=_config(),
-            praxis_outbound=outbound,
-            validator=validator,
-            build_context=lambda _a, _s: _enter_context(),
-            now=_now,
-        )
-
-        assert results[0][1].status == SubmissionStatus.INVALID
-        assert 'expected Action' in (results[0][1].error or '')
-        assert results[1][1].status == SubmissionStatus.SUBMITTED
-
     def test_empty_actions_list_returns_empty(self) -> None:
         '''An empty action list yields an empty results list and touches nothing.'''
 

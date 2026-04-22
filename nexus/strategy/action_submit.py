@@ -105,16 +105,6 @@ def submit_actions(
     results: list[tuple[Action, SubmissionOutcome]] = []
 
     for action in actions:
-        if not isinstance(action, Action):
-            results.append((
-                action,
-                SubmissionOutcome(
-                    status=SubmissionStatus.INVALID,
-                    error=f'expected Action, got {type(action).__name__}',
-                ),
-            ))
-            continue
-
         if action.action_type == ActionType.ABORT:
             results.append((action, _submit_abort(action, config, praxis_outbound, now())))
             continue

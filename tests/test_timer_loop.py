@@ -242,9 +242,10 @@ class TestTimerLoop:
         )
 
         loop.start()
-        dispatched.wait(timeout=3)
+        did_dispatch = dispatched.wait(timeout=3)
         loop.stop()
 
+        assert did_dispatch is True
         assert submitter.call_count == 0
 
     def test_action_submit_exception_does_not_kill_loop(self) -> None:

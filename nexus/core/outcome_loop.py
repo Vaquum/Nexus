@@ -103,11 +103,13 @@ class OutcomeLoop:
     def stop(self, join_timeout: float = 5.0) -> None:
         '''Signal the worker to exit and join it. Idempotent.
 
-        Logs (and clears the slot) when the worker fails to exit within
-        `join_timeout`; a subsequent `start()` will spawn a fresh worker
-        even though the previous one is still alive. At MMVP scale the
-        worker exits within a single `PraxisInbound.poll_timeout` so
-        this branch should never fire in practice.
+        Logs an error and keeps `self._thread` pointing at the live
+        worker when `thread.join(timeout=...)` expires while the worker
+        is still alive. A subsequent `start()` therefore no-ops (rather
+        than spawning a second consumer that would race the orphan on
+        the same `PraxisInbound` queue). At MMVP scale the worker exits
+        within one `PraxisInbound.poll_timeout` after `stop_event` is
+        set, so this branch should never fire in practice.
         '''
 
         with self._lock:
@@ -121,10 +123,12 @@ class OutcomeLoop:
         thread.join(timeout=join_timeout)
 
         if thread.is_alive():
-            _log.warning(
-                'outcome loop worker did not exit within join_timeout',
+            _log.error(
+                'outcome loop worker did not exit within join_timeout; '
+                'keeping thread slot to block restart',
                 extra={'join_timeout': join_timeout},
             )
+            return
 
         with self._lock:
             if self._thread is thread:
