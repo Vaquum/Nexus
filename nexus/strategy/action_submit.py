@@ -109,7 +109,25 @@ def submit_actions(
             results.append((action, _submit_abort(action, config, praxis_outbound, now())))
             continue
 
-        ctx = build_context(action, strategy_id)
+        try:
+            ctx = build_context(action, strategy_id)
+        except Exception as e:  # noqa: BLE001 - context builder must not abort the tick
+            _log.exception(
+                'build_context raised',
+                extra={
+                    'strategy_id': strategy_id,
+                    'action_type': action.action_type.value,
+                },
+            )
+            results.append((
+                action,
+                SubmissionOutcome(
+                    status=SubmissionStatus.SUBMIT_FAILED,
+                    error=f'build_context: {e}',
+                ),
+            ))
+            continue
+
         if ctx is None:
             _log.warning(
                 'context unavailable, skipping action',

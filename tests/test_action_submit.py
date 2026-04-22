@@ -231,6 +231,36 @@ class TestSubmitActions:
         assert validator.validate.call_count == 0
         assert outbound.send_command.call_count == 0
 
+    def test_build_context_exception_is_isolated(self) -> None:
+        '''build_context raising yields SUBMIT_FAILED; iteration continues for remaining actions.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = _allow_decision()
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_301'
+
+        calls = {'n': 0}
+
+        def flaky_build_context(_action: Action, _sid: str) -> ValidationRequestContext:
+            calls['n'] += 1
+            if calls['n'] == 1:
+                raise KeyError('position lookup race')
+            return _enter_context()
+
+        results = submit_actions(
+            [_enter_action(), _enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=flaky_build_context,
+            now=_now,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        assert 'build_context' in (results[0][1].error or '')
+        assert results[1][1].status == SubmissionStatus.SUBMITTED
+
     def test_abort_bypasses_validator(self) -> None:
         '''ABORT goes directly to PraxisOutbound.send_abort without touching the validator.'''
 
