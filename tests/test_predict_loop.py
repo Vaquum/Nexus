@@ -12,8 +12,10 @@ from unittest.mock import MagicMock
 import numpy as np
 import polars as pl
 
-from nexus.core.domain.enums import OperationalMode
+from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.startup.sequencer import WiredSensor
+from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
@@ -203,10 +205,6 @@ class TestPredictLoop:
     def test_action_submit_called_with_returned_actions(self) -> None:
         '''Actions returned from dispatch_signal are forwarded to action_submit.'''
 
-        from nexus.core.domain.enums import OrderSide
-        from nexus.core.domain.order_types import ExecutionMode, OrderType
-        from nexus.strategy.action import Action, ActionType
-
         action = Action(
             action_type=ActionType.ENTER,
             direction=OrderSide.BUY,
@@ -276,8 +274,6 @@ class TestPredictLoop:
 
     def test_action_submit_exception_does_not_kill_loop(self) -> None:
         '''Submitter raising leaves the loop running and reschedules.'''
-
-        from nexus.strategy.action import Action, ActionType
 
         runner = MagicMock(spec=StrategyRunner)
         runner.dispatch_signal.return_value = [
