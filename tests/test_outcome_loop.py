@@ -157,7 +157,10 @@ class TestTickOnce:
             resolve_strategy_id=lambda _o: 'strat_a',
         )
 
-        loop.tick_once()  # must not raise
+        consumed = loop.tick_once()
+
+        assert consumed is True
+        runner.dispatch_outcome.assert_called_once()
 
 
 class TestStartStop:
