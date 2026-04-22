@@ -186,7 +186,25 @@ def submit_actions(
             ))
             continue
 
-        cmd = translate_to_trade_command(action, ctx, decision, config, now())
+        try:
+            cmd = translate_to_trade_command(action, ctx, decision, config, now())
+        except Exception as e:  # noqa: BLE001 - translator must not abort the tick
+            _log.exception(
+                'translate_to_trade_command raised',
+                extra={
+                    'strategy_id': strategy_id,
+                    'action_type': action.action_type.value,
+                },
+            )
+            results.append((
+                action,
+                SubmissionOutcome(
+                    status=SubmissionStatus.SUBMIT_FAILED,
+                    decision=decision,
+                    error=f'translate: {e}',
+                ),
+            ))
+            continue
 
         try:
             command_id = praxis_outbound.send_command(cmd)

@@ -45,9 +45,10 @@ _ESCALATION_TIMEOUT_RATIO = 0.5
 class ShutdownSequencer:
     '''Orchestrates the shutdown sequence for a Manager instance.
 
-    Executes steps in order: stop signals → stop timers → dispatch on_shutdown →
-    submit actions through Validator → wait for terminal outcomes → dispatch on_save →
-    persist strategy state → final checkpoint → deregister.
+    Executes steps in order: stop signals → stop timers → stop outcome loop →
+    dispatch on_shutdown → submit actions through Validator → wait for terminal
+    outcomes → dispatch on_save → persist strategy state → final checkpoint →
+    deregister.
 
     Args:
         runner: StrategyRunner with active strategy executors.

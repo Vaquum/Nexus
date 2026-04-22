@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -230,6 +230,35 @@ class TestSubmitActions:
         assert outcome.error == 'context unavailable'
         assert validator.validate.call_count == 0
         assert outbound.send_command.call_count == 0
+
+    def test_translate_exception_is_isolated(self) -> None:
+        '''translate raising yields SUBMIT_FAILED; iteration continues for remaining actions.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = _allow_decision()
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_303'
+
+        sentinel_cmd = MagicMock(name='TradeCommand')
+
+        with patch(
+            'nexus.strategy.action_submit.translate_to_trade_command',
+            side_effect=[ValueError('synthetic translate failure'), sentinel_cmd],
+        ):
+            results = submit_actions(
+                [_enter_action(), _enter_action()],
+                strategy_id='strat_001',
+                config=_config(),
+                praxis_outbound=outbound,
+                validator=validator,
+                build_context=lambda _a, _s: _enter_context(),
+                now=_now,
+            )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        assert 'translate' in (results[0][1].error or '')
+        assert results[1][1].status == SubmissionStatus.SUBMITTED
+        outbound.send_command.assert_called_once_with(sentinel_cmd)
 
     def test_build_context_exception_is_isolated(self) -> None:
         '''build_context raising yields SUBMIT_FAILED; iteration continues for remaining actions.'''
