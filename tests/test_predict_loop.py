@@ -12,8 +12,10 @@ from unittest.mock import MagicMock
 import numpy as np
 import polars as pl
 
-from nexus.core.domain.enums import OperationalMode
+from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.startup.sequencer import WiredSensor
+from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
@@ -199,6 +201,109 @@ class TestPredictLoop:
         time.sleep(1.5)
 
         assert not runner.dispatch_signal.called
+
+    def test_action_submit_called_with_returned_actions(self) -> None:
+        '''Actions returned from dispatch_signal are forwarded to action_submit.'''
+
+        action = Action(
+            action_type=ActionType.ENTER,
+            direction=OrderSide.BUY,
+            size=Decimal('0.01'),
+            execution_mode=ExecutionMode.SINGLE_SHOT,
+            order_type=OrderType.MARKET,
+            deadline=300,
+        )
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = [action]
+
+        submitted = threading.Event()
+        captured: list[tuple[list[Action], str]] = []
+
+        def submitter(actions: list[Action], strategy_id: str) -> None:
+            captured.append((actions, strategy_id))
+            submitted.set()
+
+        wired = _make_wired(strategy_id='strat_a', interval_seconds=1)
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+            action_submit=submitter,
+        )
+
+        loop.start()
+        submitted.wait(timeout=3)
+        loop.stop()
+
+        assert captured
+        actions_arg, strategy_id_arg = captured[0]
+        assert strategy_id_arg == 'strat_a'
+        assert actions_arg == [action]
+
+    def test_action_submit_not_called_for_empty_actions(self) -> None:
+        '''dispatch_signal returning [] does not invoke action_submit.'''
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+
+        dispatched = threading.Event()
+
+        def track(*_args: Any, **_kwargs: Any) -> list:
+            dispatched.set()
+            return []
+
+        runner.dispatch_signal.side_effect = track
+        submitter = MagicMock()
+
+        wired = _make_wired(interval_seconds=1)
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+            action_submit=submitter,
+        )
+
+        loop.start()
+        did_dispatch = dispatched.wait(timeout=3)
+        loop.stop()
+
+        assert did_dispatch is True
+        assert submitter.call_count == 0
+
+    def test_action_submit_exception_does_not_kill_loop(self) -> None:
+        '''Submitter raising leaves the loop running and reschedules.'''
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = [
+            Action(action_type=ActionType.ABORT, command_id='cmd_x'),
+        ]
+
+        call_count = threading.Event()
+        calls = {'n': 0}
+
+        def submitter(_actions: list[Action], _strategy_id: str) -> None:
+            calls['n'] += 1
+            if calls['n'] >= 2:
+                call_count.set()
+            raise RuntimeError('submitter blew up')
+
+        wired = _make_wired(interval_seconds=1)
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+            action_submit=submitter,
+        )
+
+        loop.start()
+        call_count.wait(timeout=5)
+        loop.stop()
+
+        assert calls['n'] >= 2
 
     def test_multiple_sensors(self) -> None:
         '''PredictLoop handles multiple sensors dispatching to different strategies.'''

@@ -760,3 +760,68 @@ class TestStopTimers:
 
         sequencer = _make_sequencer()
         sequencer._stop_timers()
+
+
+class TestStopOutcomeLoop:
+
+    def test_stop_outcome_loop_calls_stop(self) -> None:
+        '''_stop_outcome_loop calls outcome_loop.stop() when configured.'''
+
+        mock_loop = MagicMock()
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            outcome_loop=mock_loop,
+        )
+
+        sequencer._stop_outcome_loop()
+
+        mock_loop.stop.assert_called_once()
+
+    def test_stop_outcome_loop_without_loop(self) -> None:
+        '''_stop_outcome_loop completes without error when outcome_loop is None.'''
+
+        sequencer = _make_sequencer()
+        sequencer._stop_outcome_loop()
+
+    def test_outcome_loop_stopped_before_wait_terminal(self) -> None:
+        '''OutcomeLoop must halt before _wait_terminal polls the inbound queue.
+
+        Captures call ordering via a shared counter; asserts
+        outcome_loop.stop is invoked strictly before _wait_terminal
+        starts polling the shared PraxisInbound.
+        '''
+
+        call_order: list[str] = []
+
+        outcome_loop = MagicMock()
+        outcome_loop.stop.side_effect = lambda: call_order.append('outcome_stop')
+
+        inbound = MagicMock(spec=PraxisInbound)
+        inbound.receive_outcome.side_effect = lambda: (
+            call_order.append('inbound_poll') or None
+        )
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
+            strategy_state_path=_PLACEHOLDER_PATH,
+            outcome_loop=outcome_loop,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.01,
+        )
+        sequencer._submitted_command_ids = ['cmd_probe']
+
+        sequencer._stop_outcome_loop()
+        sequencer._wait_terminal()
+
+        assert 'outcome_stop' in call_order
+        if 'inbound_poll' in call_order:
+            assert call_order.index('outcome_stop') < call_order.index(
+                'inbound_poll',
+            )

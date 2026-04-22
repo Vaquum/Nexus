@@ -13,6 +13,7 @@ import structlog
 
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.outcome_loop import OutcomeLoop
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
     ValidationDecision,
@@ -44,9 +45,10 @@ _ESCALATION_TIMEOUT_RATIO = 0.5
 class ShutdownSequencer:
     '''Orchestrates the shutdown sequence for a Manager instance.
 
-    Executes steps in order: stop signals → stop timers → dispatch on_shutdown →
-    submit actions through Validator → wait for terminal outcomes → dispatch on_save →
-    persist strategy state → final checkpoint → deregister.
+    Executes steps in order: stop signals → stop timers → stop outcome loop →
+    dispatch on_shutdown → submit actions through Validator → wait for terminal
+    outcomes → dispatch on_save → persist strategy state → final checkpoint →
+    deregister.
 
     Args:
         runner: StrategyRunner with active strategy executors.
@@ -56,6 +58,10 @@ class ShutdownSequencer:
         strategy_state_path: Directory for strategy state blobs.
         predict_loop: Running PredictLoop to stop during shutdown.
         timer_loop: Running TimerLoop to stop during shutdown.
+        outcome_loop: Running OutcomeLoop to stop before
+            `_wait_terminal`. Both consume from the same
+            `PraxisInbound` queue, so the OutcomeLoop must halt first
+            to avoid two consumers racing on terminal outcomes.
         praxis_outbound: Outbound connector for deregistration.
         praxis_inbound: Inbound connector for outcome consumption.
         account_id: Account identifier for Praxis deregistration. When config
@@ -75,6 +81,7 @@ class ShutdownSequencer:
         strategy_state_path: Path,
         predict_loop: PredictLoop | None = None,
         timer_loop: TimerLoop | None = None,
+        outcome_loop: OutcomeLoop | None = None,
         praxis_outbound: PraxisOutbound | None = None,
         praxis_inbound: PraxisInbound | None = None,
         account_id: str | None = None,
@@ -123,6 +130,7 @@ class ShutdownSequencer:
         self._strategy_state_path = strategy_state_path
         self._predict_loop = predict_loop
         self._timer_loop = timer_loop
+        self._outcome_loop = outcome_loop
         self._praxis_outbound = praxis_outbound
         self._praxis_inbound = praxis_inbound
         self._account_id = account_id
@@ -141,6 +149,7 @@ class ShutdownSequencer:
 
         self._stop_signals()
         self._stop_timers()
+        self._stop_outcome_loop()
         self._dispatch_shutdown()
         self._submit_actions()
         self._wait_terminal()
@@ -179,6 +188,20 @@ class ShutdownSequencer:
 
         self._timer_loop.stop()
         _log.info('timer loop stopped')
+
+    def _stop_outcome_loop(self) -> None:
+        '''Stop the OutcomeLoop before `_wait_terminal` polls for outcomes.
+
+        OutcomeLoop and `_wait_terminal` both consume from the same
+        `PraxisInbound` queue; leaving the loop running would steal
+        terminal outcomes out of the shutdown-path poll.
+        '''
+
+        if self._outcome_loop is None:
+            return
+
+        self._outcome_loop.stop()
+        _log.info('outcome loop stopped')
 
     def _dispatch_shutdown(self) -> None:
         '''Dispatch on_shutdown to all strategies.

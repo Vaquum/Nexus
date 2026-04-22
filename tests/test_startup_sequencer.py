@@ -93,6 +93,34 @@ class TestStartupSequencerConstruction:
 
         assert sequencer is not None
 
+    def test_instance_state_none_before_recover(self) -> None:
+        sequencer = _make_sequencer()
+
+        assert sequencer.instance_state is None
+
+    def test_manifest_none_before_load(self) -> None:
+        sequencer = _make_sequencer()
+
+        assert sequencer.manifest is None
+
+    def test_instance_state_returns_live_object(self) -> None:
+        '''instance_state returns the live (mutable) state, not a copy.'''
+
+        sequencer = _make_sequencer()
+        manifest = _attach_stub_manifest(sequencer)
+        sequencer._state_store.recover.return_value = None
+        sequencer._recover_state()
+
+        state = sequencer.instance_state
+        assert state is not None
+        # Same identity across calls — confirms live object exposure
+        assert sequencer.instance_state is state
+        # Mutations to the returned object are visible on subsequent reads
+        state.capital.position_notional = state.capital.position_notional + 1
+        assert sequencer.instance_state.capital.position_notional == state.capital.position_notional
+        # Manifest is exposed
+        assert sequencer.manifest is manifest
+
     def test_invalid_state_store_rejected(self) -> None:
         with pytest.raises(ValueError, match='must be a StateStore'):
             StartupSequencer(

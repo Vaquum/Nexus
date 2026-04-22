@@ -125,6 +125,32 @@ class StartupSequencer:
 
         return list(self._wired_sensors)
 
+    @property
+    def instance_state(self) -> InstanceState | None:
+        '''Return the live `InstanceState` after `_recover_state` has run.
+
+        Returns the actual mutable state object — not a copy — so callers
+        (notably the launcher's runtime `context_provider` and OutcomeLoop)
+        observe reservations, position changes, and operational-mode
+        transitions made by validator stages and outcome processing.
+
+        `None` before `start()` (or before `_recover_state()`) has run.
+        '''
+
+        return self._state
+
+    @property
+    def manifest(self) -> Manifest | None:
+        '''Return the loaded `Manifest`, or `None` before `_load_manifest()`.
+
+        Exposed alongside `instance_state` so the launcher's runtime
+        `context_provider` can derive per-strategy budgets from
+        `manifest.capital_pool` × `strategy.capital_pct` without
+        reaching into private attrs.
+        '''
+
+        return self._manifest
+
     def start(self) -> StrategyRunner:
         '''Execute the full startup sequence.
 
