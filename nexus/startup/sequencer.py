@@ -508,28 +508,42 @@ class StartupSequencer:
 
         self._wired_sensors.clear()
 
+        trainer_cache: dict[Path, Trainer] = {}
+
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id
 
             for sensor_spec in spec.sensors:
+                resolved_dir = sensor_spec.experiment_dir.resolve()
                 path_hash = hashlib.sha256(
-                    str(sensor_spec.experiment_dir.resolve()).encode(),
+                    str(resolved_dir).encode(),
                 ).hexdigest()[:12]
 
                 try:
-                    trainer = Trainer(sensor_spec.experiment_dir)
+                    cached_trainer = trainer_cache.get(resolved_dir)
+                    if cached_trainer is None:
+                        trainer = Trainer(resolved_dir)
+                        trainer_cache[resolved_dir] = trainer
+                    else:
+                        # NOTE: cached_trainer._data is a private attribute on
+                        # Limen Trainer. No public accessor exists as of
+                        # vaquum_limen 2.4.3; re-validate on Limen upgrades.
+                        trainer = Trainer(
+                            resolved_dir,
+                            data=cached_trainer._data,
+                        )
                     sensors = trainer.train(list(sensor_spec.permutation_ids))
                 except Exception as e:
                     raise StartupError(
                         'wire_sensors',
                         f'strategy {strategy_id!r} experiment '
-                        f'{sensor_spec.experiment_dir}: {e}',
+                        f'{resolved_dir}: {e}',
                     ) from e
 
                 for sensor in sensors:
                     sensor_id = f'{path_hash}:{sensor.permutation_id}'
                     # NOTE: trainer._manifest is a private attribute on Limen Trainer.
-                    # No public accessor exists as of vaquum_limen 1.52.0.
+                    # No public accessor exists as of vaquum_limen 2.4.3.
                     wired = WiredSensor(
                         sensor_id=sensor_id,
                         sensor=sensor,

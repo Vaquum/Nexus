@@ -216,3 +216,77 @@ class TestStartStop:
             assert runner.dispatch_outcome.call_count == 1
         finally:
             loop.stop()
+
+
+class TestProcessOutcomeHook:
+
+    def test_process_outcome_invoked_before_dispatch_outcome(self) -> None:
+        inbound = _inbound_with(_ack_outcome())
+        runner = _runner_stub()
+
+        call_order: list[str] = []
+        runner.dispatch_outcome.side_effect = (
+            lambda *_a, **_kw: call_order.append('dispatch') or []
+        )
+
+        def process(_outcome: TradeOutcome) -> None:
+            call_order.append('process')
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda _o: 'strat_a',
+            process_outcome=process,
+        )
+
+        consumed = loop.tick_once()
+
+        assert consumed
+        assert call_order == ['process', 'dispatch']
+
+    def test_process_outcome_exception_is_swallowed_dispatch_still_runs(self) -> None:
+        inbound = _inbound_with(_ack_outcome())
+        runner = _runner_stub()
+
+        def boom(_outcome: TradeOutcome) -> None:
+            raise RuntimeError('processor blew up')
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda _o: 'strat_a',
+            process_outcome=boom,
+        )
+
+        consumed = loop.tick_once()
+
+        assert consumed
+        assert runner.dispatch_outcome.call_count == 1
+
+    def test_process_outcome_skipped_when_strategy_id_unresolved(self) -> None:
+        inbound = _inbound_with(_ack_outcome())
+        runner = _runner_stub()
+
+        process_called: list[TradeOutcome] = []
+
+        def process(outcome: TradeOutcome) -> None:
+            process_called.append(outcome)
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda _o: None,
+            process_outcome=process,
+        )
+
+        consumed = loop.tick_once()
+
+        assert consumed
+        assert process_called == []
+        assert runner.dispatch_outcome.call_count == 0
