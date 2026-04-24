@@ -525,6 +525,9 @@ class StartupSequencer:
                         trainer = Trainer(resolved_dir)
                         trainer_cache[resolved_dir] = trainer
                     else:
+                        # NOTE: cached_trainer._data is a private attribute on
+                        # Limen Trainer. No public accessor exists as of
+                        # vaquum_limen 2.4.3; re-validate on Limen upgrades.
                         trainer = Trainer(
                             resolved_dir,
                             data=cached_trainer._data,
