@@ -34,12 +34,18 @@ from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
 
-__all__ = ['ActionSubmitter', 'OutcomeLoop', 'StrategyIdResolver']
+__all__ = [
+    'ActionSubmitter',
+    'OutcomeLoop',
+    'OutcomeProcessorCallback',
+    'StrategyIdResolver',
+]
 
 _log = logging.getLogger(__name__)
 
 ActionSubmitter = Callable[[list[Action], str], None]
 StrategyIdResolver = Callable[[TradeOutcome], str | None]
+OutcomeProcessorCallback = Callable[[TradeOutcome], None]
 
 
 class OutcomeLoop:
@@ -57,6 +63,15 @@ class OutcomeLoop:
         action_submit: Optional callback invoked with
             `(actions, strategy_id)` after each dispatch_outcome. When
             `None`, returned actions are discarded.
+        process_outcome: Optional callback invoked with the outcome
+            after `resolve_strategy_id` succeeds but before
+            `dispatch_outcome` runs. The launcher uses this to apply
+            venue-lifecycle effects to the per-account
+            `CapitalController` via `OutcomeProcessor.process(...)` so
+            capital state is current when the strategy callback runs.
+            Exceptions are caught and logged; the strategy callback
+            still fires so the strategy stays in lockstep with the
+            outcome stream even if capital reconciliation degrades.
     '''
 
     def __init__(
@@ -67,6 +82,7 @@ class OutcomeLoop:
         context_provider: Callable[[str], StrategyContext],
         resolve_strategy_id: StrategyIdResolver,
         action_submit: ActionSubmitter | None = None,
+        process_outcome: OutcomeProcessorCallback | None = None,
     ) -> None:
         self._runner = runner
         self._praxis_inbound = praxis_inbound
@@ -74,6 +90,7 @@ class OutcomeLoop:
         self._context_provider = context_provider
         self._resolve_strategy_id = resolve_strategy_id
         self._action_submit = action_submit
+        self._process_outcome = process_outcome
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -170,6 +187,15 @@ class OutcomeLoop:
                 },
             )
             return
+
+        if self._process_outcome is not None:
+            try:
+                self._process_outcome(outcome)
+            except Exception:  # noqa: BLE001 - processor must not kill the loop
+                _log.exception(
+                    'process_outcome raised for command %s',
+                    outcome.command_id,
+                )
 
         try:
             context = self._context_provider(strategy_id)
