@@ -521,14 +521,14 @@ class StartupSequencer:
                 resolved_dir = sensor_spec.experiment_dir.resolve()
 
                 try:
-                    trainer = trainer_cache.get(resolved_dir)
-                    if trainer is None:
+                    cached_trainer = trainer_cache.get(resolved_dir)
+                    if cached_trainer is None:
                         trainer = Trainer(sensor_spec.experiment_dir)
                         trainer_cache[resolved_dir] = trainer
                     else:
                         trainer = Trainer(
                             sensor_spec.experiment_dir,
-                            data=trainer._data,
+                            data=cached_trainer._data,
                         )
                     sensors = trainer.train(list(sensor_spec.permutation_ids))
                 except Exception as e:

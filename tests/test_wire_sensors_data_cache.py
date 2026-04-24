@@ -13,8 +13,8 @@ Post-fix: `_wire_sensors` caches the first `Trainer` per resolved
 permutation reconstructed from that experiment directory.
 
 These tests exercise the cache by patching
-`limen.experiment.trainer.trainer.Trainer` so they do not depend on
-the live Hugging Face dataset.
+`nexus.startup.sequencer.Trainer` (the import site `_wire_sensors`
+binds against) so they do not depend on the live Hugging Face dataset.
 '''
 
 from __future__ import annotations
