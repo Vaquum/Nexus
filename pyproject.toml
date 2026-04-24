@@ -12,7 +12,7 @@ authors = [
 ]
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0", "pyyaml>=6.0", "vaquum_limen @ git+https://github.com/Vaquum/Limen"]
+dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0", "pyyaml>=6.0", "vaquum_limen @ git+https://github.com/Vaquum/Limen@v2.4.3"]
 
 [project.optional-dependencies]
 dev = [
