@@ -514,20 +514,19 @@ class StartupSequencer:
             strategy_id = spec.strategy_id
 
             for sensor_spec in spec.sensors:
-                path_hash = hashlib.sha256(
-                    str(sensor_spec.experiment_dir.resolve()).encode(),
-                ).hexdigest()[:12]
-
                 resolved_dir = sensor_spec.experiment_dir.resolve()
+                path_hash = hashlib.sha256(
+                    str(resolved_dir).encode(),
+                ).hexdigest()[:12]
 
                 try:
                     cached_trainer = trainer_cache.get(resolved_dir)
                     if cached_trainer is None:
-                        trainer = Trainer(sensor_spec.experiment_dir)
+                        trainer = Trainer(resolved_dir)
                         trainer_cache[resolved_dir] = trainer
                     else:
                         trainer = Trainer(
-                            sensor_spec.experiment_dir,
+                            resolved_dir,
                             data=cached_trainer._data,
                         )
                     sensors = trainer.train(list(sensor_spec.permutation_ids))
@@ -535,7 +534,7 @@ class StartupSequencer:
                     raise StartupError(
                         'wire_sensors',
                         f'strategy {strategy_id!r} experiment '
-                        f'{sensor_spec.experiment_dir}: {e}',
+                        f'{resolved_dir}: {e}',
                     ) from e
 
                 for sensor in sensors:
