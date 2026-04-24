@@ -325,7 +325,7 @@
 
 ## v0.30.0 on 24th of April, 2026
 
-- Pin `vaquum_limen @ git+https://github.com/Vaquum/Limen@v2.4.3` in `pyproject.toml` so Nexus and Praxis venvs converge on a single Limen release; without a version constraint the two venvs drifted (Nexus 1.52.0 vs Praxis 2.0.0) and an experiment trained in one could not be loaded by the other's `Trainer` (PT-FIX-4)
+- Pin `vaquum_limen @ git+https://github.com/Vaquum/Limen@v2.4.3` in `pyproject.toml` so the Nexus and Praxis venvs converge on a single Limen release; without a version constraint the two venvs drifted (`vaquum_limen` 1.52.0 in the Nexus venv vs 2.0.0 in the Praxis venv) and an experiment trained in one could not be loaded by the other's `Trainer` (PT-FIX-4)
 - Add optional `process_outcome: Callable[[TradeOutcome], None] | None` parameter to [`OutcomeLoop`](nexus/core/outcome_loop.py); the launcher uses it to apply venue-lifecycle effects to `CapitalController` via `OutcomeProcessor.process(...)` before `runner.dispatch_outcome` runs, so capital state is current when the strategy callback fires. Processor exceptions are caught and logged; the strategy callback still fires (PT-FIX-8)
 - Cache one `Trainer` per resolved `experiment_dir` inside [`StartupSequencer._wire_sensors`](nexus/startup/sequencer.py); subsequent `Trainer` constructions for the same directory receive `data=cached._data` so the same frozen slice flows through every permutation reconstructed from that experiment. Avoids fetching the live Hugging Face dataset twice for SensorSpecs that share an experiment dir (PT-FIX-9)
 - Add 3 tests in [`test_wire_sensors_data_cache.py`](tests/test_wire_sensors_data_cache.py) verifying shared-dir reuse, distinct-dir isolation, and single-sensor passthrough (1069 total)
