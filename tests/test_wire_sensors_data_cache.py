@@ -78,7 +78,7 @@ def test_shared_experiment_dir_reuses_cached_trainer_data(
     '''Two SensorSpecs sharing one experiment_dir → second Trainer ctor
     receives the cached _data via the `data=` kwarg.'''
 
-    sequencer, exp_dir, _, _ = _build_sequencer_with_two_sensor_specs(
+    sequencer, _exp_dir, _, _ = _build_sequencer_with_two_sensor_specs(
         tmp_path,
         shared_experiment_dir=True,
     )
