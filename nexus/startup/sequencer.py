@@ -508,6 +508,8 @@ class StartupSequencer:
 
         self._wired_sensors.clear()
 
+        trainer_cache: dict[Path, Trainer] = {}
+
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id
 
@@ -516,8 +518,18 @@ class StartupSequencer:
                     str(sensor_spec.experiment_dir.resolve()).encode(),
                 ).hexdigest()[:12]
 
+                resolved_dir = sensor_spec.experiment_dir.resolve()
+
                 try:
-                    trainer = Trainer(sensor_spec.experiment_dir)
+                    trainer = trainer_cache.get(resolved_dir)
+                    if trainer is None:
+                        trainer = Trainer(sensor_spec.experiment_dir)
+                        trainer_cache[resolved_dir] = trainer
+                    else:
+                        trainer = Trainer(
+                            sensor_spec.experiment_dir,
+                            data=trainer._data,
+                        )
                     sensors = trainer.train(list(sensor_spec.permutation_ids))
                 except Exception as e:
                     raise StartupError(
@@ -529,7 +541,7 @@ class StartupSequencer:
                 for sensor in sensors:
                     sensor_id = f'{path_hash}:{sensor.permutation_id}'
                     # NOTE: trainer._manifest is a private attribute on Limen Trainer.
-                    # No public accessor exists as of vaquum_limen 1.52.0.
+                    # No public accessor exists as of vaquum_limen 2.4.3.
                     wired = WiredSensor(
                         sensor_id=sensor_id,
                         sensor=sensor,
