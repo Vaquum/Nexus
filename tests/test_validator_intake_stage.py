@@ -666,7 +666,7 @@ class TestIntakeOperationalMode:
     `HealthLoop` mutates `state.mode` on health degradation. Validator
     must enforce the documented contract before any submission reaches
     PraxisOutbound: ACTIVE allows everything, REDUCE_ONLY blocks ENTER,
-    HALTED blocks ENTER + EXIT.
+    HALTED blocks ENTER/EXIT/MODIFY (CANCEL/ABORT remain available).
     '''
 
     def test_active_mode_allows_enter(self) -> None:

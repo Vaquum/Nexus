@@ -273,3 +273,24 @@ def test_validate_magic_raises_on_exact_magic_size_invalid_bytes(tmp_path: Path)
 
     with pytest.raises(ValueError, match='invalid magic'):
         wal.validate_magic()
+
+
+def test_truncate_keeping_events_raises_on_invalid_magic(tmp_path: Path) -> None:
+    '''Checkpoint must refuse to overwrite a non-WAL file at the WAL path.
+
+    `read_safe()` returns `[]` for an invalid-magic file, so the
+    rewrite would silently replace the garbage with a fresh WAL
+    header — masking either a wrong-path configuration or genuine
+    corruption.
+    '''
+
+    wal_file = _wal_path(tmp_path)
+    wal_file.write_bytes(b'GARBAGE_NOT_A_WAL_FILE_AT_ALL')
+
+    wal = WriteAheadLog(wal_file)
+    cutoff = datetime(2026, 4, 25, tzinfo=timezone.utc)
+
+    with pytest.raises(ValueError, match='invalid magic'):
+        wal.truncate_keeping_events(cutoff)
+
+    assert wal_file.read_bytes() == b'GARBAGE_NOT_A_WAL_FILE_AT_ALL'

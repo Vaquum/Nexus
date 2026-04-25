@@ -247,6 +247,11 @@ class WriteAheadLog:
         `ValueError`. The corrupt suffix is unrecoverable; the
         rewrite below replaces the file in full and drops it.
 
+        Calls `validate_magic()` first so a non-WAL file at this
+        path raises rather than being silently overwritten with a
+        fresh magic header (which would mask data loss / wrong-path
+        configuration).
+
         Args:
             cutoff: Keep events with timestamp >= this value.
         '''
@@ -254,6 +259,7 @@ class WriteAheadLog:
         if not self._path.exists():
             return
 
+        self.validate_magic()
         entries = self.read_safe()
         events_to_keep = [
             e for e in entries

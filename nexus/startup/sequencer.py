@@ -72,6 +72,19 @@ class StartupSequencer:
         strategies_base_path: Base path for resolving strategy file paths.
         strategy_state_path: Directory for strategy state blob files.
         praxis_outbound: Outbound connector for Praxis Trading operations.
+        health_evaluator: `HealthEvaluator` consulted by `_determine_mode`
+            to start the instance in REDUCE_ONLY/HALTED when boot-time
+            health is degraded. Falls back to a default-thresholds
+            evaluator when omitted.
+        health_snapshot: Optional `HealthSnapshot` driving the
+            boot-time mode decision; `_determine_mode` synthesizes a
+            healthy default when omitted.
+        action_submit: Optional callback invoked with `(actions,
+            strategy_id)` for actions that strategies return from
+            `on_startup`. When omitted at construction the actions
+            are buffered into `_pending_startup_actions` for the
+            launcher to drain via `drain_pending_startup_actions`
+            once the runtime submitter is wired.
     '''
 
     def __init__(
