@@ -403,12 +403,40 @@ class TestExternalIntegrationStubs:
         with pytest.raises(StartupError, match='manifest not loaded'):
             sequencer._register_timers()
 
-    def test_determine_mode_sets_active(self) -> None:
+    def test_determine_mode_defaults_to_reduce_only_without_health(self) -> None:
+        '''PT-FIX-26: When no `health_snapshot` is wired at boot,
+        `_determine_mode` defaults to REDUCE_ONLY (not ACTIVE) so the
+        validator's `_check_operational_mode` stage rejects ENTER
+        actions during the ~5 s window before the first HealthLoop
+        tick lands. Pre-fix the sequencer defaulted to ACTIVE,
+        leaving an unprotected window where on_startup ENTERs reach
+        the venue even when Praxis health is already degraded.'''
+
         sequencer = _make_sequencer()
 
         sequencer._determine_mode()
 
-        assert sequencer._mode == OperationalMode.ACTIVE
+        assert sequencer._mode == OperationalMode.REDUCE_ONLY
+
+    def test_determine_mode_mirrors_mode_into_state(self) -> None:
+        '''PT-FIX-26: `_determine_mode` must mirror its decision into
+        `state.mode` so the validator's `_check_operational_mode` (PT-FIX-15)
+        sees the same value the sequencer carries into `StrategyContext`.
+        Sequencer-local `_mode` alone is invisible to the validator.'''
+
+        state_store = _make_mock_state_store()
+        state_store.recover.return_value = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        sequencer = _make_sequencer(state_store=state_store)
+        _attach_stub_manifest(sequencer)
+        sequencer._recover_state()
+
+        sequencer._determine_mode()
+
+        assert sequencer._state is not None
+        assert sequencer._state.mode.mode == OperationalMode.REDUCE_ONLY
+        assert sequencer._state.mode.trigger == 'boot_no_health_data'
 
 
 class TestStrategyStateRestoration:
