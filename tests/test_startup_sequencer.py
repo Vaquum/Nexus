@@ -15,6 +15,7 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.startup import StartupError, StartupSequencer
+from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
 
@@ -1056,3 +1057,138 @@ class TestCrashOnlyDesign:
         state_store_crash.recover.assert_called_once()
         assert runner_fresh is not None
         assert runner_crash is not None
+
+
+class TestPendingStartupActions:
+    '''PT-FIX-16: on_startup actions are buffered and drained via submitter.
+
+    The runtime submitter depends on `instance_state` (capital
+    controller / validator / praxis_outbound) which only exists after
+    `start()` runs, so `_dispatch_startup` cannot call the submitter
+    inline. Actions returned by `Strategy.on_startup` are stashed in
+    `_pending_startup_actions` and forwarded by the launcher via
+    `drain_pending_startup_actions(submitter)` once wiring completes.
+    '''
+
+    def test_dispatch_startup_buffers_actions_without_submitter(
+        self, tmp_path: Path,
+    ) -> None:
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            f'{_sensors_yaml(tmp_path)}'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._determine_mode()
+
+        action = Action(action_type=ActionType.EXIT, trade_id='trade_existing', size=Decimal('1'))
+        sequencer._runner.dispatch_startup = MagicMock(return_value=[action])
+
+        sequencer._dispatch_startup()
+
+        assert sequencer._pending_startup_actions == {'test_strat': [action]}
+
+    def test_dispatch_startup_invokes_submitter_when_wired(
+        self, tmp_path: Path,
+    ) -> None:
+
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test_strat\n'
+            '    file: strat.py\n'
+            f'{_sensors_yaml(tmp_path)}'
+            '    capital_pct: 50\n'
+        )
+
+        submitter = MagicMock()
+        sequencer = StartupSequencer(
+            state_store=_make_mock_state_store(),
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+            action_submit=submitter,
+        )
+        sequencer._load_manifest()
+        sequencer._instantiate_strategies()
+        sequencer._determine_mode()
+
+        action = Action(action_type=ActionType.EXIT, trade_id='trade_existing', size=Decimal('1'))
+        sequencer._runner.dispatch_startup = MagicMock(return_value=[action])
+
+        sequencer._dispatch_startup()
+
+        submitter.assert_called_once_with([action], 'test_strat')
+        assert sequencer._pending_startup_actions == {}
+
+    def test_drain_pending_forwards_buffered_actions(self) -> None:
+
+        sequencer = _make_sequencer()
+        action_a = Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))
+        action_b = Action(action_type=ActionType.EXIT, trade_id='trade_b', size=Decimal('1'))
+        sequencer._pending_startup_actions = {
+            'strat_a': [action_a],
+            'strat_b': [action_b],
+        }
+
+        submitter = MagicMock()
+        sequencer.drain_pending_startup_actions(submitter)
+
+        assert submitter.call_count == 2
+        submitter.assert_any_call([action_a], 'strat_a')
+        submitter.assert_any_call([action_b], 'strat_b')
+        assert sequencer._pending_startup_actions == {}
+
+    def test_drain_pending_is_idempotent(self) -> None:
+
+        sequencer = _make_sequencer()
+        sequencer._pending_startup_actions = {
+            'strat_a': [Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))],
+        }
+
+        submitter = MagicMock()
+        sequencer.drain_pending_startup_actions(submitter)
+        sequencer.drain_pending_startup_actions(submitter)
+
+        assert submitter.call_count == 1
+
+    def test_drain_pending_swallows_per_strategy_submitter_exceptions(self) -> None:
+
+        sequencer = _make_sequencer()
+        action_a = Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))
+        action_b = Action(action_type=ActionType.EXIT, trade_id='trade_b', size=Decimal('1'))
+        sequencer._pending_startup_actions = {
+            'strat_bad': [action_a],
+            'strat_ok': [action_b],
+        }
+
+        calls: list[tuple[str, list[Action]]] = []
+
+        def submitter(actions: list[Action], strategy_id: str) -> None:
+            calls.append((strategy_id, actions))
+            if strategy_id == 'strat_bad':
+                raise RuntimeError('submit_failed')
+
+        sequencer.drain_pending_startup_actions(submitter)
+
+        seen = {strategy_id for strategy_id, _ in calls}
+        assert seen == {'strat_bad', 'strat_ok'}
+        assert sequencer._pending_startup_actions == {}

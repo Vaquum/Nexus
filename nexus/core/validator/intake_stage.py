@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from threading import Lock
 
-from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.instance_config import InstanceConfig
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
@@ -296,6 +296,61 @@ def make_reference_integrity_hook(
     return hook
 
 
+def _check_operational_mode(
+    context: ValidationRequestContext,
+) -> ValidationDecision | None:
+
+    '''Reject trading actions that are blocked by the current state mode.
+
+    `HealthLoop` mutates `state.mode` to `REDUCE_ONLY` or `HALTED` when
+    health degrades. The contract on `OperationalMode` is:
+
+    * `ACTIVE` — all actions allowed.
+    * `REDUCE_ONLY` — blocks new entries; allows EXIT/MODIFY/CANCEL/ABORT.
+    * `HALTED` — stops new trading entirely; only CANCEL/ABORT (which
+      remove pending orders) remain available so an operator can wind
+      the account down without flipping the mode back manually. EXIT
+      and MODIFY are blocked because they are trading actions, not
+      wind-down actions.
+
+    Returns a denial `ValidationDecision` for blocked actions, or
+    `None` when the current mode permits the action.
+    '''
+
+    mode = context.state.mode.mode
+
+    if mode == OperationalMode.ACTIVE:
+        return None
+
+    if context.action == ValidationAction.ENTER:
+        return ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.INTAKE,
+            reason_code='INTAKE_MODE_BLOCKS_ENTER',
+            message=(
+                f'operational mode {mode.value} blocks new entries; '
+                'flip mode back to ACTIVE before submitting ENTER actions'
+            ),
+        )
+
+    if mode == OperationalMode.HALTED and context.action in (
+        ValidationAction.EXIT,
+        ValidationAction.MODIFY,
+    ):
+        return ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.INTAKE,
+            reason_code='INTAKE_MODE_HALTED_BLOCKS_TRADING',
+            message=(
+                f'operational mode HALTED blocks all new trading '
+                f'({context.action.value} included); only CANCEL/ABORT '
+                'actions are accepted until mode flips back'
+            ),
+        )
+
+    return None
+
+
 def validate_intake_stage(
     context: ValidationRequestContext,
     hooks: Sequence[IntakeValidationHook] = (),
@@ -342,6 +397,10 @@ def validate_intake_stage(
             reason_code='INTAKE_STRATEGY_BUDGET_ZERO',
             message='strategy_budget must be greater than zero',
         )
+
+    mode_decision = _check_operational_mode(context)
+    if mode_decision is not None:
+        return mode_decision
 
     for hook in hooks:
         decision = hook(context)

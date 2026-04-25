@@ -56,7 +56,8 @@ class StateStore:
         wal_dir.mkdir(parents=True, exist_ok=True)
         self._wal = WriteAheadLog(wal_dir / _WAL_FILENAME)
         self._snapshot_path = snap_dir / _SNAPSHOT_FILENAME
-        existing = self._wal.read_all()
+        self._wal.validate_magic()
+        existing = self._wal.read_safe()
         self._sequence = existing[-1].sequence + 1 if existing else 0
 
     @property
@@ -120,8 +121,9 @@ class StateStore:
             or None if no persisted state exists.
         '''
 
+        self._wal.validate_magic()
         state = load_snapshot(self._snapshot_path)
-        wal_entries = self._wal.read_all()
+        wal_entries = self._wal.read_safe()
 
         events = []
 
@@ -165,7 +167,8 @@ class StateStore:
             List of StrategyEvent records from WAL, in sequence order.
         '''
 
-        wal_entries = self._wal.read_all()
+        self._wal.validate_magic()
+        wal_entries = self._wal.read_safe()
         return [
             deserialize_event(entry.payload)
             for entry in wal_entries

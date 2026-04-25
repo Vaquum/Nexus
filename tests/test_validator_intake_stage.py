@@ -21,7 +21,8 @@ from nexus.core.validator import (
     make_reference_integrity_hook,
     validate_intake_stage,
 )
-from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.operational_mode import ModeState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.position import Position
 from nexus.instance_config import InstanceConfig
@@ -657,3 +658,162 @@ class TestRfcStageOneHooks:
         assert d1.allowed is True
         assert d2.allowed is False
         assert d2.reason_code == 'INTAKE_MAX_ORDER_RATE_EXCEEDED'
+
+
+class TestIntakeOperationalMode:
+    '''Mode-state checks (PT-FIX-15).
+
+    `HealthLoop` mutates `state.mode` on health degradation. Validator
+    must enforce the documented contract before any submission reaches
+    PraxisOutbound: ACTIVE allows everything, REDUCE_ONLY blocks ENTER,
+    HALTED blocks ENTER/EXIT/MODIFY (CANCEL/ABORT remain available).
+    '''
+
+    def test_active_mode_allows_enter(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.ACTIVE)
+
+        decision = validate_intake_stage(
+            _make_context(state=state, action=ValidationAction.ENTER),
+        )
+
+        assert decision.allowed is True
+
+    def test_active_mode_allows_exit(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.ACTIVE)
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.EXIT,
+                trade_id='trade_x',
+            ),
+        )
+
+        assert decision.allowed is True
+
+    def test_reduce_only_blocks_enter(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.REDUCE_ONLY, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(state=state, action=ValidationAction.ENTER),
+        )
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.INTAKE
+        assert decision.reason_code == 'INTAKE_MODE_BLOCKS_ENTER'
+        assert 'REDUCE_ONLY' in (decision.message or '')
+
+    def test_reduce_only_allows_exit(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.REDUCE_ONLY, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.EXIT,
+                trade_id='trade_x',
+            ),
+        )
+
+        assert decision.allowed is True
+
+    def test_halted_blocks_enter(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(state=state, action=ValidationAction.ENTER),
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_MODE_BLOCKS_ENTER'
+        assert 'HALTED' in (decision.message or '')
+
+    def test_halted_blocks_exit(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.EXIT,
+                trade_id='trade_x',
+            ),
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_TRADING'
+        assert 'EXIT' in (decision.message or '')
+
+    def test_halted_blocks_modify(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.MODIFY,
+                command_id='cmd_to_modify',
+                order_side=None,
+            ),
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_TRADING'
+        assert 'MODIFY' in (decision.message or '')
+
+    def test_reduce_only_allows_modify(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.REDUCE_ONLY, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.MODIFY,
+                command_id='cmd_to_modify',
+                order_side=None,
+            ),
+        )
+
+        assert decision.allowed is True
+
+    def test_halted_still_allows_cancel(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.CANCEL,
+                command_id='cmd_to_cancel',
+            ),
+        )
+
+        assert decision.allowed is True
+
+    def test_halted_still_allows_abort(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.ABORT,
+                command_id='cmd_to_abort',
+            ),
+        )
+
+        assert decision.allowed is True

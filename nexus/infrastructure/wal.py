@@ -33,6 +33,8 @@ _MAGIC_SIZE = len(_MAGIC)
 _RECORD_HEADER_FMT = '>II'
 _RECORD_HEADER_SIZE = struct.calcsize(_RECORD_HEADER_FMT)
 
+_MAX_RECORD_LENGTH = 16 * 1024 * 1024
+
 
 class WriteAheadLog:
     '''Append-only write-ahead log backed by a binary file.
@@ -89,6 +91,8 @@ class WriteAheadLog:
     def _find_valid_end(self) -> int:
         '''Return the file offset after the last fully valid record.'''
 
+        file_size = self._path.stat().st_size
+
         with self._path.open('rb') as f:
             magic = f.read(_MAGIC_SIZE)
             if len(magic) < _MAGIC_SIZE or magic != _MAGIC:
@@ -99,6 +103,11 @@ class WriteAheadLog:
                 if not record_header or len(record_header) < _RECORD_HEADER_SIZE:
                     return pos
                 length, expected_crc = struct.unpack(_RECORD_HEADER_FMT, record_header)
+                if (
+                    length > _MAX_RECORD_LENGTH
+                    or length > file_size - f.tell()
+                ):
+                    return pos
                 payload = f.read(length)
                 if len(payload) < length:
                     return pos
@@ -116,6 +125,8 @@ class WriteAheadLog:
 
         if not self._path.exists():
             return []
+
+        file_size = self._path.stat().st_size
 
         with self._path.open('rb') as f:
             file_magic = f.read(_MAGIC_SIZE)
@@ -135,6 +146,14 @@ class WriteAheadLog:
                 if len(record_header) < _RECORD_HEADER_SIZE:
                     break
                 length, expected_crc = struct.unpack(_RECORD_HEADER_FMT, record_header)
+                if length > _MAX_RECORD_LENGTH:
+                    msg = (
+                        f'WAL record length {length} exceeds max '
+                        f'{_MAX_RECORD_LENGTH}; treating as corruption'
+                    )
+                    raise ValueError(msg)
+                if length > file_size - f.tell():
+                    break
                 payload = f.read(length)
                 if len(payload) < length:
                     break
@@ -144,6 +163,91 @@ class WriteAheadLog:
                     raise ValueError(msg)
                 entries.append(_deserialize_entry(payload))
         return entries
+
+    def read_safe(self) -> list[WALEntry]:
+        '''Read entries up to the last fully-valid record, stopping silently at a torn tail.
+
+        Mirrors `read_all` for healthy files but stops at the first
+        short-read or CRC mismatch instead of raising, so a process
+        killed mid-`append` (torn record) does not block the next
+        boot. Crash recovery uses this to tolerate the partial
+        record. The torn record's bytes are unrecoverable and stay
+        discarded — the next `append()` call truncates them off the
+        file (existing self-cleanup in `append` already calls
+        `_find_valid_end` + `f.truncate(...)` before writing) so
+        future reads do not stumble over junk between valid records.
+
+        Single-pass: opens the file once and stops on the first sign
+        of corruption, rather than the two-pass `_find_valid_end` +
+        re-open shape `read_all` would otherwise need.
+
+        Returns:
+            List of WALEntry in append order, only those that fall
+            inside the file's valid prefix. Empty list if the file
+            is missing, empty, or has an invalid magic header.
+        '''
+
+        if not self._path.exists():
+            return []
+
+        file_size = self._path.stat().st_size
+
+        with self._path.open('rb') as f:
+            file_magic = f.read(_MAGIC_SIZE)
+            if len(file_magic) < _MAGIC_SIZE or file_magic != _MAGIC:
+                return []
+
+            entries: list[WALEntry] = []
+            while True:
+                record_header = f.read(_RECORD_HEADER_SIZE)
+                if len(record_header) < _RECORD_HEADER_SIZE:
+                    break
+                length, expected_crc = struct.unpack(
+                    _RECORD_HEADER_FMT,
+                    record_header,
+                )
+                if length > _MAX_RECORD_LENGTH:
+                    break
+                if length > file_size - f.tell():
+                    break
+                payload = f.read(length)
+                if len(payload) < length:
+                    break
+                actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
+                if actual_crc != expected_crc:
+                    break
+                entries.append(_deserialize_entry(payload))
+        return entries
+
+    def validate_magic(self) -> None:
+
+        '''Raise `ValueError` if the WAL file exists with content but invalid magic.
+
+        `read_safe()` deliberately treats an unreadable header as
+        "no records" so a fresh / empty / magic-only file boots
+        cleanly. That contract is wrong for a file with non-trivial
+        content whose bytes do not start with the WAL magic — the
+        next `append()` will refuse to write into it (raising
+        `ValueError("Cannot append to WAL with invalid magic
+        header")`), so silent boot just defers the failure.
+
+        Boot-time callers should run `validate_magic()` before
+        `read_safe()` so corrupt or non-WAL files surface at boot
+        rather than at the first runtime mutation.
+        '''
+
+        if not self._path.exists():
+            return
+
+        if self._path.stat().st_size < _MAGIC_SIZE:
+            return
+
+        with self._path.open('rb') as f:
+            magic = f.read(_MAGIC_SIZE)
+
+        if len(magic) < _MAGIC_SIZE or magic != _MAGIC:
+            msg = f'WAL file has invalid magic header: {self._path}'
+            raise ValueError(msg)
 
     def truncate(self) -> None:
         '''Truncate the WAL file to zero bytes.
@@ -163,6 +267,16 @@ class WriteAheadLog:
         STRATEGY_EVENT entries with timestamp >= cutoff for rolling
         loss window derivation.
 
+        Uses `read_safe()` so a torn-tail record (left over from a
+        crashed `append`) does not abort the checkpoint with
+        `ValueError`. The corrupt suffix is unrecoverable; the
+        rewrite below replaces the file in full and drops it.
+
+        Calls `validate_magic()` first so a non-WAL file at this
+        path raises rather than being silently overwritten with a
+        fresh magic header (which would mask data loss / wrong-path
+        configuration).
+
         Args:
             cutoff: Keep events with timestamp >= this value.
         '''
@@ -170,7 +284,8 @@ class WriteAheadLog:
         if not self._path.exists():
             return
 
-        entries = self.read_all()
+        self.validate_magic()
+        entries = self.read_safe()
         events_to_keep = [
             e for e in entries
             if e.entry_type == WALEntryType.STRATEGY_EVENT and e.timestamp >= cutoff
