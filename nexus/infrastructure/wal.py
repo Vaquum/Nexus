@@ -148,15 +148,19 @@ class WriteAheadLog:
     def read_safe(self) -> list[WALEntry]:
         '''Read entries up to the last fully-valid record, stopping silently at a torn tail.
 
-        Mirrors `read_all` for healthy files but bounds the read at
-        `_find_valid_end()` so a process killed mid-`append` (torn
-        record) does not raise on the next boot. Crash recovery uses
-        this to tolerate the partial record. The torn record's bytes
-        are unrecoverable and stay discarded — the next `append()`
-        call truncates them off the file (existing self-cleanup in
-        `append` already calls `_find_valid_end` + `f.truncate(...)`
-        before writing) so future reads do not stumble over junk
-        between valid records.
+        Mirrors `read_all` for healthy files but stops at the first
+        short-read or CRC mismatch instead of raising, so a process
+        killed mid-`append` (torn record) does not block the next
+        boot. Crash recovery uses this to tolerate the partial
+        record. The torn record's bytes are unrecoverable and stay
+        discarded — the next `append()` call truncates them off the
+        file (existing self-cleanup in `append` already calls
+        `_find_valid_end` + `f.truncate(...)` before writing) so
+        future reads do not stumble over junk between valid records.
+
+        Single-pass: opens the file once and stops on the first sign
+        of corruption, rather than the two-pass `_find_valid_end` +
+        re-open shape `read_all` would otherwise need.
 
         Returns:
             List of WALEntry in append order, only those that fall
@@ -167,26 +171,25 @@ class WriteAheadLog:
         if not self._path.exists():
             return []
 
-        valid_end = self._find_valid_end()
-        if valid_end <= _MAGIC_SIZE:
-            return []
-
         with self._path.open('rb') as f:
             file_magic = f.read(_MAGIC_SIZE)
-            if file_magic != _MAGIC:
+            if len(file_magic) < _MAGIC_SIZE or file_magic != _MAGIC:
                 return []
 
             entries: list[WALEntry] = []
-            while f.tell() < valid_end:
+            while True:
                 record_header = f.read(_RECORD_HEADER_SIZE)
                 if len(record_header) < _RECORD_HEADER_SIZE:
                     break
-                length, _expected_crc = struct.unpack(
+                length, expected_crc = struct.unpack(
                     _RECORD_HEADER_FMT,
                     record_header,
                 )
                 payload = f.read(length)
                 if len(payload) < length:
+                    break
+                actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
+                if actual_crc != expected_crc:
                     break
                 entries.append(_deserialize_entry(payload))
         return entries

@@ -577,13 +577,12 @@ class StartupSequencer:
                             data=cached_trainer._data,
                         )
                     sensors = trainer.train(list(sensor_spec.permutation_ids))
-                except Exception as e:  # noqa: BLE001 - per-sensor isolation
-                    _log.error(
+                except Exception:  # noqa: BLE001 - per-sensor isolation
+                    _log.exception(
                         'sensor wiring failed',
                         strategy_id=strategy_id,
                         experiment_dir=str(resolved_dir),
                         permutation_ids=list(sensor_spec.permutation_ids),
-                        error=str(e),
                     )
                     continue
 
@@ -609,11 +608,13 @@ class StartupSequencer:
                         interval_seconds=sensor_spec.interval_seconds,
                     )
 
-        if attempted > 0 and wired_count == 0:
+        if attempted > 0 and not self._wired_sensors:
             raise StartupError(
                 'wire_sensors',
-                f'all {attempted} sensors failed to wire; refusing to start '
-                'an account with no signal source',
+                f'all {attempted} sensor specs produced no wired sensors '
+                f'({wired_count} train calls succeeded but every Trainer '
+                'returned an empty list); refusing to start an account with '
+                'no signal source',
             )
 
     def _register_timers(self) -> None:

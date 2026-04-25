@@ -102,7 +102,7 @@ def test_all_sensors_failing_raises_startup_error(tmp_path: Path) -> None:
     with patch(
         'nexus.startup.sequencer.Trainer',
         side_effect=always_fails,
-    ), pytest.raises(StartupError, match='all 2 sensors failed') as exc_info:
+    ), pytest.raises(StartupError, match='no wired sensors') as exc_info:
         sequencer._wire_sensors()
 
     assert 'no signal source' in exc_info.value.reason
@@ -128,15 +128,17 @@ def test_no_sensors_in_manifest_does_not_raise(tmp_path: Path) -> None:
     assert sequencer.wired_sensors == []
 
 
-def test_train_call_returning_no_sensors_is_treated_as_success(
+def test_train_call_returning_no_sensors_trips_all_failed_safeguard(
     tmp_path: Path,
 ) -> None:
-    '''Trainer that returns empty sensors list is unusual but not a wiring failure.
+    '''Trainer succeeding but returning no Sensors is still zero signal sources.
 
-    The Trainer constructor + train() succeeded — the (empty) outcome
-    is the trainer's contract, not a sensor failure. Treat it as a
-    successful wiring of zero sensors so the all-failed safeguard
-    does not trip.
+    `train()` returning an empty list means no `WiredSensor` ends up in
+    `self._wired_sensors`. The safeguard exists to refuse a boot that
+    would run with zero signal sources; "the Trainer didn't raise" is
+    not a useful distinction when the operational outcome is silent
+    dead air. Both fully-raising and empty-return paths must trip
+    `StartupError`.
     '''
 
     sequencer = _build_sequencer_with_two_sensor_specs(tmp_path)
@@ -151,7 +153,8 @@ def test_train_call_returning_no_sensors_is_treated_as_success(
     with patch(
         'nexus.startup.sequencer.Trainer',
         side_effect=fake_trainer_factory,
-    ):
+    ), pytest.raises(StartupError, match='no wired sensors') as exc_info:
         sequencer._wire_sensors()
 
+    assert 'no signal source' in exc_info.value.reason
     assert sequencer.wired_sensors == []

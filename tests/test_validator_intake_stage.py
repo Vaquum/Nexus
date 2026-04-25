@@ -21,7 +21,8 @@ from nexus.core.validator import (
     make_reference_integrity_hook,
     validate_intake_stage,
 )
-from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.domain.operational_mode import ModeState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.position import Position
 from nexus.instance_config import InstanceConfig
@@ -669,8 +670,6 @@ class TestIntakeOperationalMode:
     '''
 
     def test_active_mode_allows_enter(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.ACTIVE)
@@ -682,8 +681,6 @@ class TestIntakeOperationalMode:
         assert decision.allowed is True
 
     def test_active_mode_allows_exit(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.ACTIVE)
@@ -699,8 +696,6 @@ class TestIntakeOperationalMode:
         assert decision.allowed is True
 
     def test_reduce_only_blocks_enter(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.REDUCE_ONLY, trigger='health')
@@ -715,8 +710,6 @@ class TestIntakeOperationalMode:
         assert 'REDUCE_ONLY' in (decision.message or '')
 
     def test_reduce_only_allows_exit(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.REDUCE_ONLY, trigger='health')
@@ -732,8 +725,6 @@ class TestIntakeOperationalMode:
         assert decision.allowed is True
 
     def test_halted_blocks_enter(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
@@ -747,8 +738,6 @@ class TestIntakeOperationalMode:
         assert 'HALTED' in (decision.message or '')
 
     def test_halted_blocks_exit(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
@@ -765,8 +754,6 @@ class TestIntakeOperationalMode:
         assert decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_EXIT'
 
     def test_halted_still_allows_cancel(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
@@ -782,8 +769,6 @@ class TestIntakeOperationalMode:
         assert decision.allowed is True
 
     def test_halted_still_allows_abort(self) -> None:
-        from nexus.core.domain.enums import OperationalMode
-        from nexus.core.domain.operational_mode import ModeState
 
         state = InstanceState.fresh(Decimal('10000'))
         state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')

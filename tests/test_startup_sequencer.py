@@ -15,6 +15,7 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.startup import StartupError, StartupSequencer
+from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
 
 
@@ -1072,9 +1073,6 @@ class TestPendingStartupActions:
     def test_dispatch_startup_buffers_actions_without_submitter(
         self, tmp_path: Path,
     ) -> None:
-        from unittest.mock import MagicMock
-        from nexus.strategy.action import Action, ActionType
-        from nexus.core.domain.enums import OrderSide
 
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
@@ -1107,8 +1105,6 @@ class TestPendingStartupActions:
     def test_dispatch_startup_invokes_submitter_when_wired(
         self, tmp_path: Path,
     ) -> None:
-        from unittest.mock import MagicMock
-        from nexus.strategy.action import Action, ActionType
 
         manifest_path = tmp_path / 'manifest.yaml'
         strategy_file = tmp_path / 'strat.py'
@@ -1146,8 +1142,6 @@ class TestPendingStartupActions:
     def test_drain_pending_forwards_buffered_actions(
         self, tmp_path: Path,
     ) -> None:
-        from unittest.mock import MagicMock
-        from nexus.strategy.action import Action, ActionType
 
         sequencer = _make_sequencer()
         action_a = Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))
@@ -1166,8 +1160,6 @@ class TestPendingStartupActions:
         assert sequencer._pending_startup_actions == {}
 
     def test_drain_pending_is_idempotent(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock
-        from nexus.strategy.action import Action, ActionType
 
         sequencer = _make_sequencer()
         sequencer._pending_startup_actions = {
@@ -1183,8 +1175,6 @@ class TestPendingStartupActions:
     def test_drain_pending_swallows_per_strategy_submitter_exceptions(
         self, tmp_path: Path,
     ) -> None:
-        from unittest.mock import MagicMock
-        from nexus.strategy.action import Action, ActionType
 
         sequencer = _make_sequencer()
         action_a = Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))
