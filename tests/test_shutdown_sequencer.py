@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from nexus.core.domain.capital_state import CapitalState
-from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.core.domain.position import Position
@@ -484,6 +484,49 @@ class TestShutdownSequence:
         runner.dispatch_shutdown.assert_called_once()
         runner.dispatch_save.assert_called_once()
         state_store.checkpoint.assert_called_once()
+
+    def test_shutdown_halts_state_mode_before_stopping_signals(
+        self, tmp_path: Path,
+    ) -> None:
+        '''PT-FIX-25: `shutdown()` must flip `state.mode` to HALTED
+        BEFORE `_stop_signals` so any FILLED outcome that the
+        OutcomeLoop drains between `_stop_signals` and
+        `_stop_outcome_loop` cannot drive a strategy ENTER past the
+        validator. The validator's `_check_operational_mode` stage
+        rejects ENTER when `state.mode != ACTIVE`; pre-fix the mode
+        stayed ACTIVE through the whole shutdown sequence, so a
+        late-arriving outcome could leak a fresh order to the venue
+        without going through `_dispatch_shutdown`.'''
+
+        state = _make_instance_state()
+        assert state.mode.mode == OperationalMode.ACTIVE
+
+        observed_modes: list[OperationalMode] = []
+
+        mock_loop = MagicMock()
+        mock_loop.stop.side_effect = lambda: observed_modes.append(state.mode.mode)
+
+        runner = _make_mock_runner()
+        runner.dispatch_shutdown.return_value = []
+        runner.dispatch_save.return_value = b''
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            predict_loop=mock_loop,
+        )
+
+        sequencer.shutdown()
+
+        assert observed_modes == [OperationalMode.HALTED], (
+            f'_stop_signals saw mode={observed_modes!r}; expected HALTED '
+            f'set before _stop_signals ran'
+        )
+        assert state.mode.mode == OperationalMode.HALTED
+        assert state.mode.trigger == 'shutdown'
 
     def test_shutdown_is_idempotent(self, tmp_path: Path) -> None:
         runner = _make_mock_runner()

@@ -11,8 +11,9 @@ from pathlib import Path
 
 import structlog
 
-from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.operational_mode import ModeState
 from nexus.core.outcome_loop import OutcomeLoop
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
@@ -147,6 +148,7 @@ class ShutdownSequencer:
         self._submitted_command_ids.clear()
         self._save_blobs.clear()
 
+        self._halt_state_mode()
         self._stop_signals()
         self._stop_timers()
         self._stop_outcome_loop()
@@ -160,6 +162,27 @@ class ShutdownSequencer:
         except Exception:  # noqa: BLE001 - checkpoint failure must not prevent deregister
             _log.exception('final_checkpoint failed')
         self._deregister()
+
+    def _halt_state_mode(self) -> None:
+        '''Flip `state.mode` to HALTED before any loop is stopped.
+
+        The OutcomeLoop keeps draining `praxis_inbound` until
+        `_stop_outcome_loop` runs, and a FILLED outcome arriving in
+        that window can drive `Strategy.on_outcome` to return a
+        fresh `Action(ENTER)`. The validator's
+        `_check_operational_mode` stage rejects ENTER only when
+        `state.mode != ACTIVE`, so flipping to HALTED here ensures
+        any in-flight outcome dispatch's downstream order is rejected
+        with `INTAKE_MODE_BLOCKS_ENTER` instead of leaking past
+        `_dispatch_shutdown` to the venue.
+        '''
+
+        self._state.mode = ModeState(
+            mode=OperationalMode.HALTED,
+            trigger='shutdown',
+            transitioned_at=datetime.now(timezone.utc),
+        )
+        _log.info('state mode flipped to HALTED for shutdown')
 
     def _stop_signals(self) -> None:
         '''Stop Sensor signal generation.
