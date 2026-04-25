@@ -194,6 +194,36 @@ class WriteAheadLog:
                 entries.append(_deserialize_entry(payload))
         return entries
 
+    def validate_magic(self) -> None:
+
+        '''Raise `ValueError` if the WAL file exists with content but invalid magic.
+
+        `read_safe()` deliberately treats an unreadable header as
+        "no records" so a fresh / empty / magic-only file boots
+        cleanly. That contract is wrong for a file with non-trivial
+        content whose bytes do not start with the WAL magic — the
+        next `append()` will refuse to write into it (raising
+        `ValueError("Cannot append to WAL with invalid magic
+        header")`), so silent boot just defers the failure.
+
+        Boot-time callers should run `validate_magic()` before
+        `read_safe()` so corrupt or non-WAL files surface at boot
+        rather than at the first runtime mutation.
+        '''
+
+        if not self._path.exists():
+            return
+
+        if self._path.stat().st_size <= _MAGIC_SIZE:
+            return
+
+        with self._path.open('rb') as f:
+            magic = f.read(_MAGIC_SIZE)
+
+        if len(magic) < _MAGIC_SIZE or magic != _MAGIC:
+            msg = f'WAL file has invalid magic header: {self._path}'
+            raise ValueError(msg)
+
     def truncate(self) -> None:
         '''Truncate the WAL file to zero bytes.
 

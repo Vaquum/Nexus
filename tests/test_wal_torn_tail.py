@@ -204,3 +204,51 @@ def test_state_store_sequence_continues_after_torn_tail(tmp_path: Path) -> None:
 
     entries = WriteAheadLog(wal_path).read_safe()
     assert [e.sequence for e in entries] == [0, 1, 2]
+
+
+def test_validate_magic_passes_for_missing_file(tmp_path: Path) -> None:
+
+    wal = WriteAheadLog(_wal_path(tmp_path))
+    wal.validate_magic()
+
+
+def test_validate_magic_passes_for_magic_only_file(tmp_path: Path) -> None:
+
+    wal_file = _wal_path(tmp_path)
+    wal_file.write_bytes(b'NXWAL\x00\x01\x00')
+
+    wal = WriteAheadLog(wal_file)
+    wal.validate_magic()
+
+
+def test_validate_magic_passes_for_clean_wal(tmp_path: Path) -> None:
+
+    state = InstanceState.fresh(Decimal('10000'))
+    wal = WriteAheadLog(_wal_path(tmp_path))
+    wal.append(_entry(0, state))
+
+    wal.validate_magic()
+
+
+def test_validate_magic_raises_on_garbage_file(tmp_path: Path) -> None:
+
+    wal_file = _wal_path(tmp_path)
+    wal_file.write_bytes(b'GARBAGE_NOT_A_WAL_FILE_AT_ALL')
+
+    wal = WriteAheadLog(wal_file)
+
+    with pytest.raises(ValueError, match='invalid magic'):
+        wal.validate_magic()
+
+
+def test_state_store_init_raises_on_invalid_magic_wal(tmp_path: Path) -> None:
+    '''Boot must fail loud rather than letting the next `append` crash later.'''
+
+    base = tmp_path / 'state'
+    StateStore(base)
+
+    wal_path = base / 'wal' / 'wal.bin'
+    wal_path.write_bytes(b'GARBAGE_NOT_A_WAL_FILE_AT_ALL')
+
+    with pytest.raises(ValueError, match='invalid magic'):
+        StateStore(base)

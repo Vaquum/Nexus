@@ -300,7 +300,7 @@ def _check_operational_mode(
     context: ValidationRequestContext,
 ) -> ValidationDecision | None:
 
-    '''Reject ENTER/EXIT actions that are blocked by the current state mode.
+    '''Reject trading actions that are blocked by the current state mode.
 
     `HealthLoop` mutates `state.mode` to `REDUCE_ONLY` or `HALTED` when
     health degrades. The contract on `OperationalMode` is:
@@ -309,7 +309,9 @@ def _check_operational_mode(
     * `REDUCE_ONLY` — blocks new entries; allows EXIT/MODIFY/CANCEL/ABORT.
     * `HALTED` — stops new trading entirely; only CANCEL/ABORT (which
       remove pending orders) remain available so an operator can wind
-      the account down without flipping the mode back manually.
+      the account down without flipping the mode back manually. EXIT
+      and MODIFY are blocked because they are trading actions, not
+      wind-down actions.
 
     Returns a denial `ValidationDecision` for blocked actions, or
     `None` when the current mode permits the action.
@@ -331,17 +333,18 @@ def _check_operational_mode(
             ),
         )
 
-    if (
-        context.action == ValidationAction.EXIT
-        and mode == OperationalMode.HALTED
+    if mode == OperationalMode.HALTED and context.action in (
+        ValidationAction.EXIT,
+        ValidationAction.MODIFY,
     ):
         return ValidationDecision(
             allowed=False,
             failed_stage=ValidationStage.INTAKE,
-            reason_code='INTAKE_MODE_HALTED_BLOCKS_EXIT',
+            reason_code='INTAKE_MODE_HALTED_BLOCKS_TRADING',
             message=(
-                'operational mode HALTED blocks all new trading; only '
-                'CANCEL/ABORT actions are accepted until mode flips back'
+                f'operational mode HALTED blocks all new trading '
+                f'({context.action.value} included); only CANCEL/ABORT '
+                'actions are accepted until mode flips back'
             ),
         )
 

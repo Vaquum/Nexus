@@ -751,7 +751,42 @@ class TestIntakeOperationalMode:
         )
 
         assert decision.allowed is False
-        assert decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_EXIT'
+        assert decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_TRADING'
+        assert 'EXIT' in (decision.message or '')
+
+    def test_halted_blocks_modify(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.MODIFY,
+                command_id='cmd_to_modify',
+                order_side=None,
+            ),
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_TRADING'
+        assert 'MODIFY' in (decision.message or '')
+
+    def test_reduce_only_allows_modify(self) -> None:
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.mode = ModeState(mode=OperationalMode.REDUCE_ONLY, trigger='health')
+
+        decision = validate_intake_stage(
+            _make_context(
+                state=state,
+                action=ValidationAction.MODIFY,
+                command_id='cmd_to_modify',
+                order_side=None,
+            ),
+        )
+
+        assert decision.allowed is True
 
     def test_halted_still_allows_cancel(self) -> None:
 
