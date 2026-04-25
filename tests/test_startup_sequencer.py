@@ -1139,9 +1139,7 @@ class TestPendingStartupActions:
         submitter.assert_called_once_with([action], 'test_strat')
         assert sequencer._pending_startup_actions == {}
 
-    def test_drain_pending_forwards_buffered_actions(
-        self, tmp_path: Path,
-    ) -> None:
+    def test_drain_pending_forwards_buffered_actions(self) -> None:
 
         sequencer = _make_sequencer()
         action_a = Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))
@@ -1159,7 +1157,7 @@ class TestPendingStartupActions:
         submitter.assert_any_call([action_b], 'strat_b')
         assert sequencer._pending_startup_actions == {}
 
-    def test_drain_pending_is_idempotent(self, tmp_path: Path) -> None:
+    def test_drain_pending_is_idempotent(self) -> None:
 
         sequencer = _make_sequencer()
         sequencer._pending_startup_actions = {
@@ -1172,9 +1170,7 @@ class TestPendingStartupActions:
 
         assert submitter.call_count == 1
 
-    def test_drain_pending_swallows_per_strategy_submitter_exceptions(
-        self, tmp_path: Path,
-    ) -> None:
+    def test_drain_pending_swallows_per_strategy_submitter_exceptions(self) -> None:
 
         sequencer = _make_sequencer()
         action_a = Action(action_type=ActionType.EXIT, trade_id='trade_a', size=Decimal('1'))

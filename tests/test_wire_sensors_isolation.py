@@ -113,7 +113,7 @@ def test_all_sensors_failing_raises_startup_error(tmp_path: Path) -> None:
     assert sequencer.wired_sensors == []
 
 
-def test_no_sensors_in_manifest_does_not_raise(tmp_path: Path) -> None:
+def test_no_sensors_in_manifest_does_not_raise() -> None:
     '''A manifest with zero SensorSpecs is a config concern, not a wiring failure.'''
 
     strat = MagicMock()
