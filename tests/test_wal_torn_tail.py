@@ -350,14 +350,21 @@ def test_read_safe_caps_record_length_at_remaining_file_size(tmp_path: Path) -> 
     assert entries == []
 
 
+def _extend_file_sparse(path: Path, by_bytes: int) -> None:
+    '''Grow the file to declared size via sparse truncate (no large allocation).'''
+
+    with path.open('rb+') as f:
+        current_size = path.stat().st_size
+        f.truncate(current_size + by_bytes)
+
+
 def test_read_safe_caps_record_length_at_max(tmp_path: Path) -> None:
     '''Even if remaining bytes were huge, a length above _MAX_RECORD_LENGTH must stop the scan.'''
 
     wal_file = _wal_path(tmp_path)
     huge = 50 * 1024 * 1024
     _write_record_with_length(wal_file, length=huge)
-    with wal_file.open('ab') as f:
-        f.write(b'\x00' * (huge + 100))
+    _extend_file_sparse(wal_file, huge + 100)
 
     wal = WriteAheadLog(wal_file)
     entries = wal.read_safe()
@@ -370,8 +377,7 @@ def test_read_all_raises_on_oversized_record_length(tmp_path: Path) -> None:
     wal_file = _wal_path(tmp_path)
     huge = 50 * 1024 * 1024
     _write_record_with_length(wal_file, length=huge)
-    with wal_file.open('ab') as f:
-        f.write(b'\x00' * (huge + 100))
+    _extend_file_sparse(wal_file, huge + 100)
 
     wal = WriteAheadLog(wal_file)
 

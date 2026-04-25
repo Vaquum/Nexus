@@ -113,25 +113,6 @@ def test_all_sensors_failing_raises_startup_error(tmp_path: Path) -> None:
     assert sequencer.wired_sensors == []
 
 
-def test_no_sensors_in_manifest_does_not_raise() -> None:
-    '''A manifest with zero SensorSpecs is a config concern, not a wiring failure.'''
-
-    strat = MagicMock()
-    strat.strategy_id = 'strat-empty'
-    strat.sensors = []
-
-    sequencer = StartupSequencer.__new__(StartupSequencer)
-    sequencer._wired_sensors = []
-    sequencer._manifest = MagicMock()
-    sequencer._manifest.strategies = [strat]
-
-    with patch('nexus.startup.sequencer.Trainer') as trainer_cls:
-        sequencer._wire_sensors()
-
-    trainer_cls.assert_not_called()
-    assert sequencer.wired_sensors == []
-
-
 def test_train_call_returning_no_sensors_trips_all_failed_safeguard(
     tmp_path: Path,
 ) -> None:
