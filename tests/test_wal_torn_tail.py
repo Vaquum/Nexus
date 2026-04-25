@@ -6,14 +6,15 @@ mismatch")` whenever the file ended on a partially-written record.
 thread killed mid-`append` blocked the next boot before
 `_recover_state` could even run.
 
-Post-fix: `WriteAheadLog.read_safe()` bounds the read at
-`_find_valid_end()` and silently stops at the torn tail, returning
-the valid prefix. `StateStore.__init__`, `StateStore.recover`, and
-`StateStore.read_events` all consume the safe variant. The corrupt
-record's bytes are unrecoverable and discarded; the next `append()`
-call truncates the dead suffix off the file (existing self-cleanup
-in `append`) so future reads don't stumble over junk between valid
-records.
+Post-fix: `WriteAheadLog.read_safe()` scans records in a single
+pass and silently stops at the first short-read or CRC mismatch,
+returning the valid prefix. `StateStore.__init__`,
+`StateStore.recover`, `StateStore.read_events`, and
+`WriteAheadLog.truncate_keeping_events` all consume the safe
+variant. The corrupt record's bytes are unrecoverable and
+discarded; the next `append()` call truncates the dead suffix off
+the file (existing self-cleanup in `append`) so future reads don't
+stumble over junk between valid records.
 '''
 
 from __future__ import annotations
