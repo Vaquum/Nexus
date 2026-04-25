@@ -50,6 +50,19 @@ class OutcomeProcessor:
     ) -> ProcessResult:
         '''Process a TradeOutcome and update state accordingly.
 
+        Contract — `outcome.command_id` ↔ `CapitalController.send_order`:
+            Every ACK / FILL / REJECT / CANCEL handled here looks up
+            `self._capital._orders[outcome.command_id]`. That dict is
+            populated only by `CapitalController.send_order(reservation_id,
+            order_id)`, where `order_id == outcome.command_id`. The
+            launcher is responsible for calling `send_order` for every
+            SUBMITTED action (use `nexus.strategy.action_submit.bridge_to_capital`
+            to centralise the wiring). Renaming `outcome.command_id`
+            without renaming `send_order(order_id=...)` (or vice
+            versa) silently breaks the round trip — every outcome
+            returns `INVARIANT_BREACH: order not found` and capital
+            stays parked in `reservation_notional`.
+
         Args:
             outcome: Inbound outcome from Trading sub-system.
             context: Metadata for outcome processing.
