@@ -326,3 +326,54 @@ def test_state_store_recover_raises_on_invalid_magic(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match='invalid magic'):
         store.recover()
+
+
+def _write_record_with_length(path: Path, length: int) -> None:
+    '''Write a WAL file: magic + a single record header declaring `length`,
+    with no actual payload bytes following.
+    '''
+    import struct as _struct
+    with path.open('wb') as f:
+        f.write(b'NXWAL\x00\x01\x00')
+        f.write(_struct.pack('>II', length, 0))
+
+
+def test_read_safe_caps_record_length_at_remaining_file_size(tmp_path: Path) -> None:
+    '''A record header declaring more bytes than remain must not allocate them.'''
+
+    wal_file = _wal_path(tmp_path)
+    _write_record_with_length(wal_file, length=999_999_999)
+
+    wal = WriteAheadLog(wal_file)
+    entries = wal.read_safe()
+
+    assert entries == []
+
+
+def test_read_safe_caps_record_length_at_max(tmp_path: Path) -> None:
+    '''Even if remaining bytes were huge, a length above _MAX_RECORD_LENGTH must stop the scan.'''
+
+    wal_file = _wal_path(tmp_path)
+    huge = 50 * 1024 * 1024
+    _write_record_with_length(wal_file, length=huge)
+    with wal_file.open('ab') as f:
+        f.write(b'\x00' * (huge + 100))
+
+    wal = WriteAheadLog(wal_file)
+    entries = wal.read_safe()
+
+    assert entries == []
+
+
+def test_read_all_raises_on_oversized_record_length(tmp_path: Path) -> None:
+
+    wal_file = _wal_path(tmp_path)
+    huge = 50 * 1024 * 1024
+    _write_record_with_length(wal_file, length=huge)
+    with wal_file.open('ab') as f:
+        f.write(b'\x00' * (huge + 100))
+
+    wal = WriteAheadLog(wal_file)
+
+    with pytest.raises(ValueError, match='exceeds max'):
+        wal.read_all()

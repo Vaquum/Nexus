@@ -33,6 +33,8 @@ _MAGIC_SIZE = len(_MAGIC)
 _RECORD_HEADER_FMT = '>II'
 _RECORD_HEADER_SIZE = struct.calcsize(_RECORD_HEADER_FMT)
 
+_MAX_RECORD_LENGTH = 16 * 1024 * 1024
+
 
 class WriteAheadLog:
     '''Append-only write-ahead log backed by a binary file.
@@ -89,6 +91,8 @@ class WriteAheadLog:
     def _find_valid_end(self) -> int:
         '''Return the file offset after the last fully valid record.'''
 
+        file_size = self._path.stat().st_size
+
         with self._path.open('rb') as f:
             magic = f.read(_MAGIC_SIZE)
             if len(magic) < _MAGIC_SIZE or magic != _MAGIC:
@@ -99,6 +103,10 @@ class WriteAheadLog:
                 if not record_header or len(record_header) < _RECORD_HEADER_SIZE:
                     return pos
                 length, expected_crc = struct.unpack(_RECORD_HEADER_FMT, record_header)
+                if length > _MAX_RECORD_LENGTH:
+                    return pos
+                if length > file_size - f.tell():
+                    return pos
                 payload = f.read(length)
                 if len(payload) < length:
                     return pos
@@ -116,6 +124,8 @@ class WriteAheadLog:
 
         if not self._path.exists():
             return []
+
+        file_size = self._path.stat().st_size
 
         with self._path.open('rb') as f:
             file_magic = f.read(_MAGIC_SIZE)
@@ -135,6 +145,14 @@ class WriteAheadLog:
                 if len(record_header) < _RECORD_HEADER_SIZE:
                     break
                 length, expected_crc = struct.unpack(_RECORD_HEADER_FMT, record_header)
+                if length > _MAX_RECORD_LENGTH:
+                    msg = (
+                        f'WAL record length {length} exceeds max '
+                        f'{_MAX_RECORD_LENGTH}; treating as corruption'
+                    )
+                    raise ValueError(msg)
+                if length > file_size - f.tell():
+                    break
                 payload = f.read(length)
                 if len(payload) < length:
                     break
@@ -171,6 +189,8 @@ class WriteAheadLog:
         if not self._path.exists():
             return []
 
+        file_size = self._path.stat().st_size
+
         with self._path.open('rb') as f:
             file_magic = f.read(_MAGIC_SIZE)
             if len(file_magic) < _MAGIC_SIZE or file_magic != _MAGIC:
@@ -185,6 +205,10 @@ class WriteAheadLog:
                     _RECORD_HEADER_FMT,
                     record_header,
                 )
+                if length > _MAX_RECORD_LENGTH:
+                    break
+                if length > file_size - f.tell():
+                    break
                 payload = f.read(length)
                 if len(payload) < length:
                     break
