@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,7 @@ from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.infrastructure.manifest import Manifest, TimerSpec, load_manifest
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.error import StartupError
+from nexus.strategy.action import Action
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.executor import StrategyExecutor
 from nexus.strategy.loader import instantiate_strategy
@@ -81,6 +83,7 @@ class StartupSequencer:
         praxis_outbound: PraxisOutbound | None = None,
         health_evaluator: HealthEvaluator | None = None,
         health_snapshot: HealthSnapshot | None = None,
+        action_submit: Callable[[list[Action], str], None] | None = None,
     ) -> None:
         if not isinstance(state_store, StateStore):
             msg = 'state_store must be a StateStore instance'
@@ -105,6 +108,7 @@ class StartupSequencer:
         self._praxis_outbound = praxis_outbound
         self._health_evaluator = health_evaluator
         self._health_snapshot = health_snapshot
+        self._action_submit = action_submit
 
         self._state: InstanceState | None = None
         self._manifest: Manifest | None = None
@@ -112,6 +116,7 @@ class StartupSequencer:
         self._mode: OperationalMode | None = None
         self._wired_sensors: list[WiredSensor] = []
         self._timer_specs: dict[str, tuple[TimerSpec, ...]] = {}
+        self._pending_startup_actions: dict[str, list[Action]] = {}
 
     @property
     def timer_specs(self) -> dict[str, tuple[TimerSpec, ...]]:
@@ -177,6 +182,42 @@ class StartupSequencer:
             raise StartupError('start', 'runner not initialized')
 
         return self._runner
+
+    def drain_pending_startup_actions(
+        self,
+        submitter: Callable[[list[Action], str], None],
+    ) -> None:
+
+        '''Forward buffered `on_startup` actions through `submitter`.
+
+        `_dispatch_startup` runs inside `start()` before the launcher
+        has assembled the validation pipeline / capital controller /
+        submitter (those depend on `instance_state`, which only
+        materialises during `start()` itself). Strategy actions
+        captured at that point are stashed in
+        `_pending_startup_actions` until the launcher finishes wiring
+        and calls this method, which submits them in arrival order.
+        Idempotent: subsequent calls find an empty buffer and no-op.
+        Submitter exceptions per strategy are caught and logged so
+        one bad strategy does not block the rest.
+        '''
+
+        if not self._pending_startup_actions:
+            return
+
+        pending = self._pending_startup_actions
+        self._pending_startup_actions = {}
+
+        for strategy_id, actions in pending.items():
+            if not actions:
+                continue
+            try:
+                submitter(actions, strategy_id)
+            except Exception:  # noqa: BLE001 - submitter must not abort drain
+                _log.exception(
+                    'pending on_startup action submission raised',
+                    strategy_id=strategy_id,
+                )
 
     def _recover_state(self) -> None:
         '''Recover InstanceState from snapshot and WAL.
@@ -627,7 +668,29 @@ class StartupSequencer:
                 operational_mode=mode,
             )
             try:
-                self._runner.dispatch_startup(spec.strategy_id, params, context)
+                actions = self._runner.dispatch_startup(
+                    spec.strategy_id,
+                    params,
+                    context,
+                )
             except Exception as e:
                 msg = f'strategy {spec.strategy_id} on_startup failed: {e}'
                 raise StartupError('dispatch_startup', msg) from e
+
+            if not actions:
+                continue
+
+            if self._action_submit is None:
+                self._pending_startup_actions.setdefault(
+                    spec.strategy_id,
+                    [],
+                ).extend(actions)
+                continue
+
+            try:
+                self._action_submit(actions, spec.strategy_id)
+            except Exception:  # noqa: BLE001 - submitter must not abort startup
+                _log.exception(
+                    'on_startup action submission raised',
+                    strategy_id=spec.strategy_id,
+                )
