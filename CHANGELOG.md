@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.30.1 on 25th of April, 2026
+
+- Drop `@v2.4.3` ref from `vaquum_limen` dependency in `pyproject.toml`; the dependency now reads `vaquum_limen @ git+https://github.com/Vaquum/Limen`. v0.30.0 pinned Limen to `@v2.4.3` to converge with Praxis, but Praxis has since moved to the untagged form, so the two siblings declared the same package with two different URL specifiers — pip's resolver treats those as conflicting packages and fails install with `ResolutionImpossible` for any consumer (e.g. `backtest_simulator`) that pulls both Praxis and Nexus into one venv. Untagging here re-converges the URL strings so pip unifies them, and matches the operator policy "always take the latest Limen"
+
 ## v0.1.0 on 16th of March, 2026
 
 - Add CI pipeline mirroring Praxis: Ruff, Mypy strict, pytest, CodeQL workflows
