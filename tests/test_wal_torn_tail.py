@@ -252,3 +252,23 @@ def test_state_store_init_raises_on_invalid_magic_wal(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match='invalid magic'):
         StateStore(base)
+
+
+def test_validate_magic_raises_on_exact_magic_size_invalid_bytes(tmp_path: Path) -> None:
+    '''An 8-byte file (exactly _MAGIC_SIZE) with non-magic bytes must raise.
+
+    The earlier guard skipped validation for `size <= _MAGIC_SIZE`,
+    which let a file of exactly the magic-header size sneak past
+    `validate_magic()` even when the bytes were garbage. The next
+    `append()` would then raise on the same file. The new guard only
+    skips when `size < _MAGIC_SIZE`.
+    '''
+
+    wal_file = _wal_path(tmp_path)
+    wal_file.write_bytes(b'GARBAGE!')
+    assert wal_file.stat().st_size == 8
+
+    wal = WriteAheadLog(wal_file)
+
+    with pytest.raises(ValueError, match='invalid magic'):
+        wal.validate_magic()

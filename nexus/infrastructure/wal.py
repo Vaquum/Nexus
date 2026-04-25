@@ -214,7 +214,7 @@ class WriteAheadLog:
         if not self._path.exists():
             return
 
-        if self._path.stat().st_size <= _MAGIC_SIZE:
+        if self._path.stat().st_size < _MAGIC_SIZE:
             return
 
         with self._path.open('rb') as f:
