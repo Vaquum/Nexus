@@ -294,3 +294,35 @@ def test_truncate_keeping_events_raises_on_invalid_magic(tmp_path: Path) -> None
         wal.truncate_keeping_events(cutoff)
 
     assert wal_file.read_bytes() == b'GARBAGE_NOT_A_WAL_FILE_AT_ALL'
+
+
+def test_state_store_read_events_raises_on_invalid_magic(tmp_path: Path) -> None:
+    '''read_events must reject invalid-magic at runtime, not silently return [].
+
+    `refresh_rolling_losses()` calls `read_events()` periodically
+    during uptime. If the WAL file gets externally tampered with /
+    overwritten / wrongly mounted, returning [] would silently zero
+    the rolling-loss counters; the failure must surface loudly.
+    '''
+
+    base = tmp_path / 'state'
+    store = StateStore(base)
+
+    wal_path = base / 'wal' / 'wal.bin'
+    wal_path.write_bytes(b'GARBAGE_NOT_A_WAL_FILE_AT_ALL')
+
+    with pytest.raises(ValueError, match='invalid magic'):
+        store.read_events()
+
+
+def test_state_store_recover_raises_on_invalid_magic(tmp_path: Path) -> None:
+    '''recover() must also reject invalid-magic at runtime.'''
+
+    base = tmp_path / 'state'
+    store = StateStore(base)
+
+    wal_path = base / 'wal' / 'wal.bin'
+    wal_path.write_bytes(b'GARBAGE_NOT_A_WAL_FILE_AT_ALL')
+
+    with pytest.raises(ValueError, match='invalid magic'):
+        store.recover()

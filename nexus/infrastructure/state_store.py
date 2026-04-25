@@ -121,6 +121,7 @@ class StateStore:
             or None if no persisted state exists.
         '''
 
+        self._wal.validate_magic()
         state = load_snapshot(self._snapshot_path)
         wal_entries = self._wal.read_safe()
 
@@ -166,6 +167,7 @@ class StateStore:
             List of StrategyEvent records from WAL, in sequence order.
         '''
 
+        self._wal.validate_magic()
         wal_entries = self._wal.read_safe()
         return [
             deserialize_event(entry.payload)

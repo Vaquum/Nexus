@@ -674,8 +674,25 @@ class StartupSequencer:
     def _dispatch_startup(self) -> None:
         '''Dispatch on_startup to all strategies.
 
-        Calls dispatch_startup on each strategy with context.
-        Actions are not validated (Validator wiring is later phase).
+        Calls dispatch_startup on each strategy with context. Actions
+        returned by `Strategy.on_startup` are routed in one of two
+        ways depending on whether `self._action_submit` was supplied
+        at construction:
+
+        * Submitter wired (production launcher path) — actions are
+          forwarded directly through the submitter, which runs them
+          through the full validation pipeline before
+          `PraxisOutbound.send_command`.
+        * Submitter unset — actions are stashed per-strategy in
+          `self._pending_startup_actions` so the launcher can drain
+          them via `drain_pending_startup_actions(submitter)` once
+          the runtime submitter is wired (the validation pipeline
+          depends on `instance_state`, which only exists after
+          `start()` runs).
+
+        Either way the actions reach the validator before any venue
+        contact; the buffered path just defers the submission until
+        the launcher finishes assembly.
         '''
 
         if self._runner is None:
