@@ -209,6 +209,11 @@ class WriteAheadLog:
         STRATEGY_EVENT entries with timestamp >= cutoff for rolling
         loss window derivation.
 
+        Uses `read_safe()` so a torn-tail record (left over from a
+        crashed `append`) does not abort the checkpoint with
+        `ValueError`. The corrupt suffix is unrecoverable; the
+        rewrite below replaces the file in full and drops it.
+
         Args:
             cutoff: Keep events with timestamp >= this value.
         '''
@@ -216,7 +221,7 @@ class WriteAheadLog:
         if not self._path.exists():
             return
 
-        entries = self.read_all()
+        entries = self.read_safe()
         events_to_keep = [
             e for e in entries
             if e.entry_type == WALEntryType.STRATEGY_EVENT and e.timestamp >= cutoff
