@@ -93,6 +93,7 @@ def test_one_sensor_failure_does_not_abort_remaining(tmp_path: Path) -> None:
 
 
 def test_all_sensors_failing_raises_startup_error(tmp_path: Path) -> None:
+    '''Every Trainer raised → message attributes the failure to "raised", not "returned no Sensors".'''
 
     sequencer = _build_sequencer_with_two_sensor_specs(tmp_path)
 
@@ -105,7 +106,10 @@ def test_all_sensors_failing_raises_startup_error(tmp_path: Path) -> None:
     ), pytest.raises(StartupError, match='no wired sensors') as exc_info:
         sequencer._wire_sensors()
 
-    assert 'no signal source' in exc_info.value.reason
+    reason = exc_info.value.reason
+    assert 'no signal source' in reason
+    assert '2 raised' in reason
+    assert '0 returned no Sensors' in reason
     assert sequencer.wired_sensors == []
 
 
@@ -156,5 +160,8 @@ def test_train_call_returning_no_sensors_trips_all_failed_safeguard(
     ), pytest.raises(StartupError, match='no wired sensors') as exc_info:
         sequencer._wire_sensors()
 
-    assert 'no signal source' in exc_info.value.reason
+    reason = exc_info.value.reason
+    assert 'no signal source' in reason
+    assert '0 raised' in reason
+    assert '2 returned no Sensors' in reason
     assert sequencer.wired_sensors == []

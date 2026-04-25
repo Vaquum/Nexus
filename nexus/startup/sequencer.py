@@ -551,7 +551,7 @@ class StartupSequencer:
 
         trainer_cache: dict[Path, Trainer] = {}
         attempted = 0
-        wired_count = 0
+        train_succeeded = 0
 
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id
@@ -586,7 +586,7 @@ class StartupSequencer:
                     )
                     continue
 
-                wired_count += 1
+                train_succeeded += 1
 
                 for sensor in sensors:
                     sensor_id = f'{path_hash}:{sensor.permutation_id}'
@@ -609,12 +609,13 @@ class StartupSequencer:
                     )
 
         if attempted > 0 and not self._wired_sensors:
+            raised = attempted - train_succeeded
+            empty = train_succeeded
             raise StartupError(
                 'wire_sensors',
                 f'all {attempted} sensor specs produced no wired sensors '
-                f'({wired_count} train calls succeeded but every Trainer '
-                'returned an empty list); refusing to start an account with '
-                'no signal source',
+                f'({raised} raised, {empty} returned no Sensors); '
+                'refusing to start an account with no signal source',
             )
 
     def _register_timers(self) -> None:
