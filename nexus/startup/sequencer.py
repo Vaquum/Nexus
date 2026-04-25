@@ -550,11 +550,14 @@ class StartupSequencer:
         self._wired_sensors.clear()
 
         trainer_cache: dict[Path, Trainer] = {}
+        attempted = 0
+        wired_count = 0
 
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id
 
             for sensor_spec in spec.sensors:
+                attempted += 1
                 resolved_dir = sensor_spec.experiment_dir.resolve()
                 path_hash = hashlib.sha256(
                     str(resolved_dir).encode(),
@@ -574,12 +577,17 @@ class StartupSequencer:
                             data=cached_trainer._data,
                         )
                     sensors = trainer.train(list(sensor_spec.permutation_ids))
-                except Exception as e:
-                    raise StartupError(
-                        'wire_sensors',
-                        f'strategy {strategy_id!r} experiment '
-                        f'{resolved_dir}: {e}',
-                    ) from e
+                except Exception as e:  # noqa: BLE001 - per-sensor isolation
+                    _log.error(
+                        'sensor wiring failed',
+                        strategy_id=strategy_id,
+                        experiment_dir=str(resolved_dir),
+                        permutation_ids=list(sensor_spec.permutation_ids),
+                        error=str(e),
+                    )
+                    continue
+
+                wired_count += 1
 
                 for sensor in sensors:
                     sensor_id = f'{path_hash}:{sensor.permutation_id}'
@@ -600,6 +608,13 @@ class StartupSequencer:
                         strategy_id=strategy_id,
                         interval_seconds=sensor_spec.interval_seconds,
                     )
+
+        if attempted > 0 and wired_count == 0:
+            raise StartupError(
+                'wire_sensors',
+                f'all {attempted} sensors failed to wire; refusing to start '
+                'an account with no signal source',
+            )
 
     def _register_timers(self) -> None:
         '''Register strategy timers from manifest.
