@@ -18,6 +18,10 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.core.domain.position import Position
 from nexus.core.stp_mode import STPMode
+from nexus.core.validator.pipeline_models import (
+    ValidationAction,
+    ValidationRequestContext,
+)
 from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
@@ -1123,3 +1127,125 @@ class TestShutdownExitAppliesToState:
         sequencer._wait_terminal()
 
         assert 't-1' in state.positions
+
+
+class TestSubmitExitMissingPositionRace:
+    '''PT-FIX-36: `_build_exit_order_context` must use `.get()` instead
+    of bare `[]` on `state.positions`. `_outcome_loop.stop()` does not
+    block — a final OutcomeLoop tick can process a FILL between
+    `_build_exit_context` (which `.get()`-checks the position) and
+    `_build_exit_order_context` (which previously used `[]`). The
+    final tick removes the position via `_reduce_position`; the bare
+    `[]` then raises `KeyError`. The surrounding `try / except
+    ValueError` does NOT catch `KeyError`, so the exception
+    propagates out of `_submit_exit`, aborting the entire shutdown
+    sequence before `_dispatch_save` / `_persist_strategy_state` /
+    `_final_checkpoint` can run.
+
+    Post-fix: `.get()` returns `None`, the explicit `is None` check
+    raises `ValueError` (which IS caught), the OrderContext store is
+    skipped, and shutdown continues. The terminal-outcome handler
+    will gracefully no-op for this command_id since no context is
+    stored.
+    '''
+
+    def test_position_removed_between_context_and_order_context_does_not_abort(
+        self, tmp_path: Path,
+    ) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                't-1': Position(
+                    trade_id='t-1',
+                    strategy_id='test',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=Decimal('0.5'),
+                    entry_price=Decimal('50000'),
+                ),
+            },
+        )
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        def _send_command_then_remove_position(_cmd: object) -> str:
+            del state.positions['t-1']
+            return 'praxis_cmd_42'
+
+        outbound.send_command.side_effect = _send_command_then_remove_position
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            shutdown_timeout=0.01,
+            config=config,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert 'praxis_cmd_42' in sequencer._submitted_command_ids
+        assert 'praxis_cmd_42' not in sequencer._exit_contexts
+
+    def test_build_exit_order_context_raises_value_error_for_missing_position(
+        self,
+    ) -> None:
+        '''Direct unit test on `_build_exit_order_context`: passing an
+        action whose trade_id is not in `state.positions` raises
+        `ValueError` (NOT `KeyError`). The surrounding `try / except
+        ValueError` in `_submit_exit` catches `ValueError` only.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = _make_instance_state()
+
+        sequencer = _make_sequencer(state=state)
+        sequencer._config = config
+
+        action = Action(
+            action_type=ActionType.EXIT,
+            trade_id='t-missing',
+            size=Decimal('0.1'),
+        )
+        validation_context = ValidationRequestContext(
+            strategy_id='test',
+            action=ValidationAction.EXIT,
+            symbol='BTCUSDT',
+            order_side=OrderSide.SELL,
+            order_size=Decimal('0.1'),
+            command_id='cmd-1',
+            trade_id='t-missing',
+            order_notional=Decimal('0'),
+            estimated_fees=Decimal('0'),
+            strategy_budget=Decimal('0'),
+            state=state,
+            config=config,
+        )
+
+        with pytest.raises(ValueError, match=r'not in state\.positions'):
+            sequencer._build_exit_order_context(
+                strategy_id='test',
+                action=action,
+                command_id='cmd-1',
+                validation_context=validation_context,
+            )

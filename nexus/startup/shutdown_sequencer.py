@@ -403,7 +403,15 @@ class ShutdownSequencer:
             msg = 'shutdown EXIT validation context missing order_side'
             raise ValueError(msg)
 
-        position = self._state.positions[action.trade_id]
+        position = self._state.positions.get(action.trade_id)
+        if position is None:
+            msg = (
+                f'shutdown EXIT trade_id {action.trade_id!r} not in '
+                'state.positions; OutcomeLoop tick may have removed the '
+                'position between _build_exit_context and _build_exit_order_context'
+            )
+            raise ValueError(msg)
+
         approx_notional = position.entry_price * action.size
 
         if approx_notional <= _ZERO:
