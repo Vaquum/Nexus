@@ -53,6 +53,69 @@ class CapitalController:
         self._expiry_heap: list[tuple[datetime, str]] = []
         self._orders: dict[str, TrackedOrder] = {}
 
+    def reconcile_at_boot(self) -> CapitalState:
+        '''Reset stranded in-flight / working / reservation aggregates at boot.
+
+        PT-FIX-35: `_reservations` and `_orders` are in-memory only —
+        they are rebuilt fresh per `CapitalController` construction.
+        The persisted `CapitalState` carries the AGGREGATE
+        `reservation_notional`, `in_flight_order_notional`, and
+        `working_order_notional` from the prior boot. After a clean
+        shutdown those aggregates are zero (every command reached a
+        terminal outcome via `_wait_terminal`), so this method is a
+        no-op. After a crash / SIGKILL between `submit_command` and
+        the venue ACK / FILL, the aggregates carry non-zero values
+        with no corresponding tracked orders to release them via
+        `order_ack` / `order_fill` / `order_reject` / `order_cancel`.
+
+        The pragmatic recovery path: declare the in-flight from the
+        prior boot lost — reset the aggregates to zero so capital is
+        again available for the freshly-booting strategy. Tradeoff:
+        if the venue still has stale orders open from the prior boot,
+        the strategy may double-spend. For paper-trade testnet this
+        is acceptable. A production deployment should pair this with
+        a venue `query_open_orders` reconciliation pass.
+
+        Returns:
+            CapitalState: snapshot of the (possibly mutated) state for
+                callers that want to log the change.
+        '''
+
+        with self._lock:
+            if self._reservations or self._orders:
+                msg = (
+                    'reconcile_at_boot called after orders or reservations '
+                    'were tracked; expected empty in-memory state at boot'
+                )
+                raise RuntimeError(msg)
+
+            stranded_reservation = self._state.reservation_notional
+            stranded_in_flight = self._state.in_flight_order_notional
+            stranded_working = self._state.working_order_notional
+
+            if stranded_reservation > _ZERO:
+                _logger.warning(
+                    'reconcile_at_boot resetting stranded reservation_notional: %s',
+                    stranded_reservation,
+                )
+                self._state.reservation_notional = _ZERO
+
+            if stranded_in_flight > _ZERO:
+                _logger.warning(
+                    'reconcile_at_boot resetting stranded in_flight_order_notional: %s',
+                    stranded_in_flight,
+                )
+                self._state.in_flight_order_notional = _ZERO
+
+            if stranded_working > _ZERO:
+                _logger.warning(
+                    'reconcile_at_boot resetting stranded working_order_notional: %s',
+                    stranded_working,
+                )
+                self._state.working_order_notional = _ZERO
+
+            return self._state
+
     def check_and_reserve(
         self,
         strategy_id: str,

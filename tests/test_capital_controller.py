@@ -951,3 +951,115 @@ class TestPerStrategyDeployedInvariants:
 
         assert 'Per-strategy deployed underflow' in caplog.text
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+
+class TestReconcileAtBoot:
+    '''PT-FIX-35: stranded `in_flight_order_notional` /
+    `working_order_notional` / `reservation_notional` carried over from
+    a crashed prior boot must be reset to zero so capital is available
+    for the freshly-booting strategy.
+
+    `_orders` and `_reservations` are in-memory only and rebuilt fresh
+    per `CapitalController` construction. The persisted aggregates
+    have no corresponding TrackedOrders to release them via the
+    normal `order_ack` / `order_fill` / `order_reject` /
+    `order_cancel` lifecycle.
+
+    PT-FIX-30 added Praxis-side orphan reconciliation that synthesizes
+    `TradeOutcome(REJECTED, reason='boot_orphan_command')` for spine
+    `CommandAccepted` events with no follow-up `OrderSubmitIntent`.
+    Those outcomes flow through the launcher's per-account queue, but
+    the launcher's `command_contexts` is empty for orphan command_ids,
+    so the OutcomeProcessor is bypassed. Even if it weren't bypassed,
+    `CapitalController._orders` is empty so `order_reject` would
+    return `success=False`. This boot-time aggregate reset is the
+    pragmatic recovery path.
+    '''
+
+    def test_no_op_when_aggregates_are_zero(self) -> None:
+        ctrl = _make_controller()
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+
+    def test_resets_stranded_in_flight_aggregate(self) -> None:
+        ctrl = _make_controller(in_flight_order_notional=Decimal('250'))
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+    def test_resets_stranded_working_aggregate(self) -> None:
+        ctrl = _make_controller(working_order_notional=Decimal('500'))
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.working_order_notional == _ZERO
+
+    def test_resets_stranded_reservation_aggregate(self) -> None:
+        ctrl = _make_controller(reservation_notional=Decimal('120'))
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.reservation_notional == _ZERO
+
+    def test_resets_all_three_simultaneously(self) -> None:
+        ctrl = _make_controller(
+            reservation_notional=Decimal('10'),
+            in_flight_order_notional=Decimal('20'),
+            working_order_notional=Decimal('30'),
+        )
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+
+    def test_does_not_touch_position_or_per_strategy_aggregates(self) -> None:
+        '''Position notional and per_strategy_deployed are unaffected —
+        positions are real (in `state.positions`) and per_strategy
+        deployment is derived from positions.'''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={'strat_a': Decimal('500')},
+            in_flight_order_notional=Decimal('100'),
+        )
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.position_notional == Decimal('1000')
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('500')}
+
+    def test_logs_warning_for_each_reset_aggregate(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            reservation_notional=Decimal('10'),
+            in_flight_order_notional=Decimal('20'),
+            working_order_notional=Decimal('30'),
+        )
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot()
+
+        assert 'reservation_notional' in caplog.text
+        assert 'in_flight_order_notional' in caplog.text
+        assert 'working_order_notional' in caplog.text
+
+    def test_raises_when_called_after_orders_tracked(self) -> None:
+        '''reconcile_at_boot is a boot-time invariant. Calling it after
+        any reservation or send_order has been processed indicates a
+        misuse — raise loudly rather than silently corrupt state.'''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl)
+        assert result.granted is True
+
+        with pytest.raises(RuntimeError, match='reconcile_at_boot called after'):
+            ctrl.reconcile_at_boot()
