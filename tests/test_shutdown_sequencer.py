@@ -1249,3 +1249,180 @@ class TestSubmitExitMissingPositionRace:
                 command_id='cmd-1',
                 validation_context=validation_context,
             )
+
+
+class TestShutdownExitPartialFill:
+    '''PT-FIX-38: PARTIAL fills during shutdown EXIT must update
+    `state.positions`. Pre-fix `_apply_terminal_outcome` only routed
+    FILLED outcomes through `OutcomeProcessor`. PARTIAL outcomes
+    failed `is_terminal` so `_poll_until_terminal` never forwarded
+    them, and even if they had been forwarded the `== FILLED` check
+    in `_apply_terminal_outcome` would have dropped them. Net effect:
+    a partial fill on a shutdown EXIT followed by a CANCELED /
+    EXPIRED terminal left `state.positions[trade_id].size` carrying
+    the partial-fill amount that the venue had actually decremented.
+
+    Post-fix: `_poll_until_terminal` forwards `is_fill` outcomes
+    (PARTIAL + FILLED) to `_apply_terminal_outcome` for state
+    update; the gate is now `is_fill` rather than `== FILLED`.
+    '''
+
+    def _make_state_with_position(
+        self,
+        trade_id: str = 't-1',
+        size: Decimal = Decimal('1.0'),
+        entry_price: Decimal = Decimal('50000'),
+    ) -> InstanceState:
+        return InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={
+                trade_id: Position(
+                    trade_id=trade_id,
+                    strategy_id='test',
+                    symbol='BTCUSDT',
+                    side=OrderSide.BUY,
+                    size=size,
+                    entry_price=entry_price,
+                ),
+            },
+        )
+
+    def _make_partial_outcome(
+        self,
+        command_id: str,
+        fill_size: Decimal,
+    ) -> TradeOutcome:
+        return TradeOutcome(
+            outcome_id=f'out-partial-{command_id}',
+            command_id=command_id,
+            outcome_type=TradeOutcomeType.PARTIAL,
+            timestamp=datetime.now(tz=timezone.utc),
+            fill_size=fill_size,
+            fill_price=Decimal('50000'),
+            fill_notional=fill_size * Decimal('50000'),
+            actual_fees=Decimal('0'),
+        )
+
+    def _make_canceled_outcome(self, command_id: str) -> TradeOutcome:
+        return TradeOutcome(
+            outcome_id=f'out-cancel-{command_id}',
+            command_id=command_id,
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+
+    def _make_filled_outcome(
+        self,
+        command_id: str,
+        fill_size: Decimal,
+    ) -> TradeOutcome:
+        return TradeOutcome(
+            outcome_id=f'out-fill-{command_id}',
+            command_id=command_id,
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime.now(tz=timezone.utc),
+            fill_size=fill_size,
+            fill_price=Decimal('50000'),
+            fill_notional=fill_size * Decimal('50000'),
+            actual_fees=Decimal('0'),
+        )
+
+    def test_partial_fill_then_canceled_decrements_position_by_partial_amount(
+        self, tmp_path: Path,
+    ) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position(size=Decimal('1.0'))
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+        outcome_processor = OutcomeProcessor(capital_controller, state, state_store)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(self._make_partial_outcome('praxis_cmd_42', Decimal('0.4')))
+        q.put(self._make_canceled_outcome('praxis_cmd_42'))
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=2.0,
+            config=config,
+            outcome_processor=outcome_processor,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('1.0'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+        sequencer._wait_terminal()
+
+        assert state.positions['t-1'].size == Decimal('0.6')
+
+    def test_filled_outcome_only_decrements_once_when_also_terminal(
+        self, tmp_path: Path,
+    ) -> None:
+        '''FILLED outcomes are both `is_fill` AND `is_terminal`. The
+        `_poll_until_terminal` loop must invoke `_apply_terminal_outcome`
+        exactly once for them — not twice. A double-decrement would
+        underflow the position.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position(size=Decimal('1.0'))
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+        outcome_processor = OutcomeProcessor(capital_controller, state, state_store)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(self._make_filled_outcome('praxis_cmd_42', Decimal('1.0')))
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=2.0,
+            config=config,
+            outcome_processor=outcome_processor,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('1.0'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+        sequencer._wait_terminal()
+
+        assert 't-1' not in state.positions

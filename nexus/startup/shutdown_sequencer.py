@@ -25,7 +25,6 @@ from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
-from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.praxis_connector.translate import translate_to_trade_command
 from nexus.infrastructure.state_store import StateStore
 from nexus.instance_config import InstanceConfig
@@ -553,9 +552,16 @@ class ShutdownSequencer:
             if outcome is None:
                 continue
 
-            if outcome.command_id in remaining and outcome.outcome_type.is_terminal:
-                remaining.discard(outcome.command_id)
+            if outcome.command_id not in remaining:
+                continue
+
+            if outcome.outcome_type.is_fill:
                 self._apply_terminal_outcome(outcome)
+
+            if outcome.outcome_type.is_terminal:
+                remaining.discard(outcome.command_id)
+                if not outcome.outcome_type.is_fill:
+                    self._apply_terminal_outcome(outcome)
                 _log.info(
                     'command reached terminal state',
                     command_id=outcome.command_id,
@@ -565,7 +571,7 @@ class ShutdownSequencer:
         return remaining
 
     def _apply_terminal_outcome(self, outcome: object) -> None:
-        '''Apply a shutdown-EXIT terminal outcome to instance state.
+        '''Apply a shutdown-EXIT fill outcome to instance state.
 
         PT-FIX-31: pre-fix the shutdown sequencer drained terminal
         outcomes from `praxis_inbound` purely as a "did the venue
@@ -578,15 +584,22 @@ class ShutdownSequencer:
         a stale `Position` and `position_notional` that the venue had
         already closed.
 
-        Post-fix: when an outcome is FILLED for a tracked shutdown
-        EXIT, route it through the wired `OutcomeProcessor`. The
+        PT-FIX-38: routes both FILLED AND PARTIAL outcomes through
+        `OutcomeProcessor` (`is_fill` set) so a partial fill that
+        precedes a CANCELED / EXPIRED terminal also decrements
+        `state.positions`. Pre-PT-FIX-38 this method gated on
+        `== TradeOutcomeType.FILLED`, so a PARTIAL fill on a
+        shutdown EXIT was discarded — the position kept the
+        partial-fill amount that the venue had actually decremented.
+
+        Other terminal outcomes (REJECTED / CANCELED / EXPIRED with
+        no preceding PARTIAL) are deliberately skipped: they mean the
+        venue did NOT close the position, so leaving
+        `state.positions` untouched is the correct semantic. The
         non-entry FILL path inside `OutcomeProcessor` skips the
         capital-controller `order_fill` lookup (the shutdown EXIT was
         never registered via `bridge_to_capital`) and updates only
-        `state.positions` via `_reduce_position`. Other terminal
-        outcomes (REJECTED / CANCELED / EXPIRED) are deliberately
-        skipped: they mean the venue did NOT close the position, so
-        leaving `state.positions` untouched is the correct semantic.
+        `state.positions` via `_reduce_position`.
         '''
 
         command_id = outcome.command_id  # type: ignore[attr-defined]
@@ -596,15 +609,16 @@ class ShutdownSequencer:
         if context is None:
             return
 
-        if outcome_type != TradeOutcomeType.FILLED:
+        if not outcome_type.is_fill:
             return
 
         if self._outcome_processor is None:
             _log.warning(
-                'no outcome_processor wired; shutdown EXIT FILL state '
+                'no outcome_processor wired; shutdown EXIT fill state '
                 'update skipped — next boot may see stale Position',
                 command_id=command_id,
                 trade_id=context.trade_id,
+                outcome_type=outcome_type.value,
             )
             return
 
@@ -615,6 +629,7 @@ class ShutdownSequencer:
                 'outcome_processor.process raised during shutdown',
                 command_id=command_id,
                 trade_id=context.trade_id,
+                outcome_type=outcome_type.value,
             )
 
     def _escalate_abort_pending(self, pending: set[str]) -> None:
