@@ -176,3 +176,81 @@ def test_start_is_idempotent() -> None:
     loop.start()
     assert loop.running is True
     loop.stop()
+
+
+def test_in_flight_tick_does_not_overwrite_mode_after_stop() -> None:
+    '''PT-FIX-42: A `_tick` already past the `_running` check at the
+    top of `_tick` continues into `_apply_snapshot` even after
+    `stop()` is called. Pre-fix the post-stop tick wrote
+    `state.mode = ModeState(mode=ACTIVE, ...)`, defeating any
+    ratchet (e.g. PT-FIX-25's HALTED flip applied after `stop()`).
+
+    Post-fix `_apply_snapshot` re-checks `_running` under the lock
+    BEFORE the mode write — the post-stop tick observes
+    `_running=False` and skips the mutation.
+
+    Drives the race deterministically: the snapshot provider blocks
+    inside the in-flight tick until the test calls `stop()`, then
+    the tick resumes. Asserts `state.mode` was NOT mutated by the
+    post-stop tick.
+    '''
+
+    state = _make_state()
+
+    snapshot_started = threading.Event()
+    release_snapshot = threading.Event()
+    state.mode = state.mode  # baseline: ACTIVE
+
+    def _slow_provider() -> HealthSnapshot:
+        snapshot_started.set()
+        release_snapshot.wait(timeout=2.0)
+        return HealthSnapshot(latency_p99_ms=500.0)
+
+    loop = HealthLoop(
+        snapshot_provider=_slow_provider,
+        evaluator=_make_evaluator(),
+        state=state,
+        interval_seconds=0.05,
+    )
+
+    loop.start()
+    if not snapshot_started.wait(timeout=2.0):
+        pytest.fail('provider was not called within timeout')
+
+    loop.stop()
+
+    sentinel_trigger = 'sentinel-shutdown-ratchet'
+    state.mode.trigger = sentinel_trigger
+
+    release_snapshot.set()
+
+    import time
+    time.sleep(0.2)
+
+    assert state.mode.trigger == sentinel_trigger, (
+        'post-stop tick overwrote state.mode after stop() returned; '
+        'PT-FIX-25 HALTED ratchet would be defeated'
+    )
+
+
+def test_tick_once_still_writes_mode_when_loop_not_started() -> None:
+    '''PT-FIX-42 must not regress `tick_once`'s manual-driver use case.
+    `tick_once` bypasses the `_running` re-check (via
+    `respect_running=False`) so callers driving the loop manually
+    (without `start()`) still get the resulting mode write.'''
+
+    state = _make_state()
+    state.mode = state.mode
+
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=500.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        interval_seconds=0.05,
+    )
+
+    assert loop.running is False
+
+    loop.tick_once()
+
+    assert state.mode.mode != OperationalMode.ACTIVE

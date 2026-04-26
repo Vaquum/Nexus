@@ -88,10 +88,12 @@ class HealthLoop:
         '''Pull a snapshot and apply it without scheduling another tick.
 
         Useful for tests and for immediate-sync paths where the caller
-        controls the cadence.
+        controls the cadence. Bypasses the `_running` guard added in
+        PT-FIX-42 so callers that drive ticks manually (without
+        `start()`) still apply the resulting mode.
         '''
 
-        self._apply_snapshot()
+        self._apply_snapshot(respect_running=False)
 
     def _schedule_locked(self) -> None:
         if not self._running:
@@ -105,12 +107,30 @@ class HealthLoop:
             if not self._running:
                 return
 
-        self._apply_snapshot()
+        self._apply_snapshot(respect_running=True)
 
         with self._lock:
             self._schedule_locked()
 
-    def _apply_snapshot(self) -> None:
+    def _apply_snapshot(self, respect_running: bool = True) -> None:
+        '''Pull a snapshot, evaluate, and (under lock) commit the mode.
+
+        PT-FIX-42: the snapshot fetch and evaluation happen outside the
+        lock (they may be slow). The `_running` re-check and the
+        `state.mode` write happen INSIDE the lock so that a `stop()`
+        call that arrives while a tick is in flight prevents the
+        post-stop `state.mode = ACTIVE` write from overwriting any
+        ratchet (e.g. `ShutdownSequencer._halt_state_mode` setting
+        HALTED). Without this re-check, a tick whose `_running`
+        guard at `_tick:104-106` already passed could still write the
+        mode after `stop()` returned, defeating the ratchet.
+
+        Args:
+            respect_running: when False, the `_running` re-check is
+                skipped — used by `tick_once()` for callers driving
+                the loop manually without `start()`.
+        '''
+
         try:
             snapshot = self._snapshot_provider()
         except Exception:  # noqa: BLE001 - intentional catch-all for provider
@@ -123,15 +143,20 @@ class HealthLoop:
             _log.exception('health evaluation failed')
             return
 
-        current_mode = self._state.mode.mode
-        if new_mode == current_mode:
-            return
+        with self._lock:
+            if respect_running and not self._running:
+                return
 
-        self._state.mode = ModeState(
-            mode=new_mode,
-            trigger=_HEALTH_TRIGGER,
-            transitioned_at=datetime.now(tz=timezone.utc),
-        )
+            current_mode = self._state.mode.mode
+            if new_mode == current_mode:
+                return
+
+            self._state.mode = ModeState(
+                mode=new_mode,
+                trigger=_HEALTH_TRIGGER,
+                transitioned_at=datetime.now(tz=timezone.utc),
+            )
+
         _log.info(
             'operational mode transition (health)',
             extra={'from': current_mode.value, 'to': new_mode.value},
