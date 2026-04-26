@@ -155,10 +155,14 @@ class TestValidationPipelineRun:
         'action',
         [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
     )
-    def test_safety_actions_bypass_capital_health_and_platform_limits(
+    def test_safety_actions_bypass_capital_health_platform_limits_and_risk(
         self,
         action: ValidationAction,
     ) -> None:
+        '''PT-FIX-32: RISK joins CAPITAL/HEALTH/PLATFORM_LIMITS in the
+        bypass set for EXIT / ABORT / CANCEL. Risk gates new exposure,
+        not exit — drawdown is exactly when exits matter most.'''
+
         order_seen: list[ValidationStage] = []
 
         def make_stage(
@@ -170,6 +174,7 @@ class TestValidationPipelineRun:
                     ValidationStage.CAPITAL,
                     ValidationStage.HEALTH,
                     ValidationStage.PLATFORM_LIMITS,
+                    ValidationStage.RISK,
                 ):
                     return ValidationDecision(
                         allowed=False,
@@ -192,6 +197,76 @@ class TestValidationPipelineRun:
         assert ValidationStage.CAPITAL not in order_seen
         assert ValidationStage.HEALTH not in order_seen
         assert ValidationStage.PLATFORM_LIMITS not in order_seen
+        assert ValidationStage.RISK not in order_seen
+
+    @pytest.mark.parametrize(
+        'action',
+        [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
+    )
+    def test_risk_stage_failure_does_not_block_exit_actions(
+        self,
+        action: ValidationAction,
+    ) -> None:
+        '''PT-FIX-32 regression: a RISK validator that always denies
+        must NOT block EXIT / ABORT / CANCEL. Pre-fix the EXIT was
+        rejected with the RISK stage's reason code; post-fix the
+        bypass returns `allowed=True` and the action progresses to
+        the venue.'''
+
+        def risk_always_denies(
+            _: ValidationRequestContext,
+        ) -> ValidationDecision:
+            return ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.RISK,
+                reason_code='RISK_DRAWDOWN_BREACH',
+                message='drawdown limit hit',
+            )
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.RISK] = risk_always_denies
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=action))
+
+        assert decision.allowed is True
+        assert decision.failed_stage is None
+
+    def test_risk_stage_still_runs_for_enter_actions(self) -> None:
+        '''PT-FIX-32 must not regress entry gating. RISK still runs
+        (and can deny) for ENTER actions.'''
+
+        def risk_always_denies(
+            _: ValidationRequestContext,
+        ) -> ValidationDecision:
+            return ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.RISK,
+                reason_code='RISK_DRAWDOWN_BREACH',
+                message='drawdown limit hit',
+            )
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.RISK] = risk_always_denies
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.ENTER))
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.RISK
+        assert decision.reason_code == 'RISK_DRAWDOWN_BREACH'
 
     def test_enter_does_not_bypass_health_and_platform_limits(self) -> None:
         order_seen: list[ValidationStage] = []
