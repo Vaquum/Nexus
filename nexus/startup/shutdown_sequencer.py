@@ -21,8 +21,11 @@ from nexus.core.validator.pipeline_models import (
     ValidationRequestContext,
 )
 from nexus.infrastructure.manifest import Manifest
+from nexus.infrastructure.praxis_connector.order_context import OrderContext
+from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
+from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.praxis_connector.translate import translate_to_trade_command
 from nexus.infrastructure.state_store import StateStore
 from nexus.instance_config import InstanceConfig
@@ -88,6 +91,7 @@ class ShutdownSequencer:
         account_id: str | None = None,
         shutdown_timeout: float = 120.0,
         config: InstanceConfig | None = None,
+        outcome_processor: OutcomeProcessor | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -140,12 +144,15 @@ class ShutdownSequencer:
         self._shutdown_actions: dict[str, list[Action]] = {}
         self._submitted_command_ids: list[str] = []
         self._save_blobs: dict[str, bytes] = {}
+        self._outcome_processor = outcome_processor
+        self._exit_contexts: dict[str, OrderContext] = {}
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
 
         self._shutdown_actions.clear()
         self._submitted_command_ids.clear()
+        self._exit_contexts.clear()
         self._save_blobs.clear()
 
         self._halt_state_mode()
@@ -344,11 +351,72 @@ class ShutdownSequencer:
             return
 
         self._submitted_command_ids.append(returned_id)
+
+        try:
+            self._exit_contexts[returned_id] = self._build_exit_order_context(
+                strategy_id=strategy_id,
+                action=action,
+                command_id=returned_id,
+                validation_context=context,
+            )
+        except ValueError:
+            _log.exception(
+                'shutdown exit OrderContext rejected by invariants',
+                strategy_id=strategy_id,
+                trade_id=action.trade_id,
+                command_id=returned_id,
+            )
+
         _log.info(
             'exit submitted',
             strategy_id=strategy_id,
             trade_id=action.trade_id,
             command_id=returned_id,
+        )
+
+    def _build_exit_order_context(
+        self,
+        *,
+        strategy_id: str,
+        action: Action,
+        command_id: str,
+        validation_context: ValidationRequestContext,
+    ) -> OrderContext:
+        '''Build the per-command `OrderContext` consumed by
+        `OutcomeProcessor.process` when the shutdown EXIT's terminal
+        outcome arrives.
+
+        PT-FIX-31: shutdown EXITs bypass the validator, so the
+        `validation_context.order_notional` is always zero and cannot
+        be reused. The notional here is approximated from the
+        position's `entry_price * action.size` purely so the
+        `OrderContext` invariants pass; only `outcome.fill_size` /
+        `outcome.fill_price` are actually consumed by the
+        non-entry FILL path inside `_update_position_on_fill`.
+        '''
+
+        if action.trade_id is None or action.size is None:
+            msg = 'shutdown EXIT action missing trade_id or size'
+            raise ValueError(msg)
+
+        if validation_context.order_side is None:
+            msg = 'shutdown EXIT validation context missing order_side'
+            raise ValueError(msg)
+
+        position = self._state.positions[action.trade_id]
+        approx_notional = position.entry_price * action.size
+
+        if approx_notional <= _ZERO:
+            approx_notional = action.size
+
+        return OrderContext(
+            command_id=command_id,
+            strategy_id=strategy_id,
+            trade_id=action.trade_id,
+            side=validation_context.order_side,
+            order_size=action.size,
+            order_notional=approx_notional,
+            estimated_fees=_ZERO,
         )
 
     def _build_exit_context(
@@ -479,6 +547,7 @@ class ShutdownSequencer:
 
             if outcome.command_id in remaining and outcome.outcome_type.is_terminal:
                 remaining.discard(outcome.command_id)
+                self._apply_terminal_outcome(outcome)
                 _log.info(
                     'command reached terminal state',
                     command_id=outcome.command_id,
@@ -486,6 +555,59 @@ class ShutdownSequencer:
                 )
 
         return remaining
+
+    def _apply_terminal_outcome(self, outcome: object) -> None:
+        '''Apply a shutdown-EXIT terminal outcome to instance state.
+
+        PT-FIX-31: pre-fix the shutdown sequencer drained terminal
+        outcomes from `praxis_inbound` purely as a "did the venue
+        confirm?" signal; it never invoked `OutcomeProcessor.process`.
+        Because `OutcomeLoop._dispatch` is already stopped by
+        `_stop_outcome_loop` before `_submit_actions` runs, no other
+        code path applied the EXIT FILL to `state.positions` or
+        `state.capital`. Result: shutdown-EXIT FILLs were silently
+        dropped at the state level, leaving the next boot to recover
+        a stale `Position` and `position_notional` that the venue had
+        already closed.
+
+        Post-fix: when an outcome is FILLED for a tracked shutdown
+        EXIT, route it through the wired `OutcomeProcessor`. The
+        non-entry FILL path inside `OutcomeProcessor` skips the
+        capital-controller `order_fill` lookup (the shutdown EXIT was
+        never registered via `bridge_to_capital`) and updates only
+        `state.positions` via `_reduce_position`. Other terminal
+        outcomes (REJECTED / CANCELED / EXPIRED) are deliberately
+        skipped: they mean the venue did NOT close the position, so
+        leaving `state.positions` untouched is the correct semantic.
+        '''
+
+        command_id = outcome.command_id  # type: ignore[attr-defined]
+        outcome_type = outcome.outcome_type  # type: ignore[attr-defined]
+
+        context = self._exit_contexts.get(command_id)
+        if context is None:
+            return
+
+        if outcome_type != TradeOutcomeType.FILLED:
+            return
+
+        if self._outcome_processor is None:
+            _log.warning(
+                'no outcome_processor wired; shutdown EXIT FILL state '
+                'update skipped — next boot may see stale Position',
+                command_id=command_id,
+                trade_id=context.trade_id,
+            )
+            return
+
+        try:
+            self._outcome_processor.process(outcome, context)  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001 - state-update failure must not abort shutdown
+            _log.exception(
+                'outcome_processor.process raised during shutdown',
+                command_id=command_id,
+                trade_id=context.trade_id,
+            )
 
     def _escalate_abort_pending(self, pending: set[str]) -> None:
         '''Send ABORT for each still-pending command and log outcomes.'''
