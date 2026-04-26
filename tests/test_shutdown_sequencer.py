@@ -1426,3 +1426,162 @@ class TestShutdownExitPartialFill:
         sequencer._wait_terminal()
 
         assert 't-1' not in state.positions
+
+
+class TestNonPendingOutcomeHandler:
+    '''PT-FIX-44: outcomes for command_ids NOT in `_submitted_command_ids`
+    (i.e., pre-shutdown commands whose outcomes were queued before the
+    OutcomeLoop stopped) must be routed to the launcher's
+    `process_outcome` handler rather than silently discarded. Pre-fix
+    `_poll_until_terminal` skipped them with `continue`, leaking the
+    fill from `state.positions` and `CapitalController` perspective.'''
+
+    def test_non_pending_outcome_routed_to_handler(
+        self, tmp_path: Path,
+    ) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+
+        captured: list[TradeOutcome] = []
+
+        def _handler(outcome: TradeOutcome) -> None:
+            captured.append(outcome)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        pre_shutdown_outcome = TradeOutcome(
+            outcome_id='out-pre',
+            command_id='pre-shutdown-cmd-99',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime.now(tz=timezone.utc),
+            fill_size=Decimal('0.5'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('25000'),
+            actual_fees=Decimal('0'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(pre_shutdown_outcome)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.1,
+            config=config,
+            non_pending_outcome_handler=_handler,
+        )
+        sequencer._submitted_command_ids = ['shutdown-exit-cmd-1']
+
+        sequencer._wait_terminal()
+
+        assert len(captured) == 1
+        assert captured[0].command_id == 'pre-shutdown-cmd-99'
+        assert captured[0].outcome_type == TradeOutcomeType.FILLED
+
+    def test_non_pending_outcome_without_handler_drains_silently(
+        self, tmp_path: Path,
+    ) -> None:
+        '''Without a handler wired, the outcome is still consumed from
+        the queue (so it doesn't pile up indefinitely) and shutdown
+        completes. A warning is logged via structlog.'''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        pre_shutdown_outcome = TradeOutcome(
+            outcome_id='out-pre',
+            command_id='pre-shutdown-cmd-99',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime.now(tz=timezone.utc),
+            fill_size=Decimal('0.5'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('25000'),
+            actual_fees=Decimal('0'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(pre_shutdown_outcome)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.1,
+            config=config,
+        )
+        sequencer._submitted_command_ids = ['shutdown-exit-cmd-1']
+
+        sequencer._wait_terminal()
+
+        assert q.empty(), 'pre-shutdown outcome should be consumed even without handler'
+
+    def test_handler_exception_does_not_abort_shutdown(
+        self, tmp_path: Path,
+    ) -> None:
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+
+        def _raising_handler(_outcome: TradeOutcome) -> None:
+            msg = 'simulated handler failure'
+            raise RuntimeError(msg)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+
+        outcome = TradeOutcome(
+            outcome_id='out-pre',
+            command_id='pre-shutdown-cmd-99',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime.now(tz=timezone.utc),
+            fill_size=Decimal('0.5'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('25000'),
+            actual_fees=Decimal('0'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(outcome)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=0.1,
+            config=config,
+            non_pending_outcome_handler=_raising_handler,
+        )
+        sequencer._submitted_command_ids = ['shutdown-exit-cmd-1']
+
+        sequencer._wait_terminal()

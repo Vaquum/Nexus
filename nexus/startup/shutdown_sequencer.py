@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -25,6 +26,7 @@ from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.translate import translate_to_trade_command
 from nexus.infrastructure.state_store import StateStore
 from nexus.instance_config import InstanceConfig
@@ -91,6 +93,7 @@ class ShutdownSequencer:
         shutdown_timeout: float = 120.0,
         config: InstanceConfig | None = None,
         outcome_processor: OutcomeProcessor | None = None,
+        non_pending_outcome_handler: Callable[[TradeOutcome], None] | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -145,6 +148,7 @@ class ShutdownSequencer:
         self._save_blobs: dict[str, bytes] = {}
         self._outcome_processor = outcome_processor
         self._exit_contexts: dict[str, OrderContext] = {}
+        self._non_pending_outcome_handler = non_pending_outcome_handler
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
@@ -553,6 +557,7 @@ class ShutdownSequencer:
                 continue
 
             if outcome.command_id not in remaining:
+                self._dispatch_non_pending_outcome(outcome)
                 continue
 
             if outcome.outcome_type.is_fill:
@@ -569,6 +574,44 @@ class ShutdownSequencer:
                 )
 
         return remaining
+
+    def _dispatch_non_pending_outcome(self, outcome: TradeOutcome) -> None:
+        '''Route a queued outcome whose command_id is NOT a shutdown EXIT.
+
+        PT-FIX-44: after `_stop_outcome_loop` halts the OutcomeLoop,
+        `_poll_until_terminal` is the sole consumer of `praxis_inbound`.
+        Pre-shutdown commands (ENTERs in flight when shutdown began)
+        whose outcomes were queued before the OutcomeLoop stopped
+        arrive here. Pre-fix the `not in remaining` guard discarded
+        them with `continue`, so the FILLED outcome was lost: position
+        never grew in `state.positions`, capital stayed in
+        `in_flight_order_notional` (released only by next boot's
+        `reconcile_at_boot`), and the persisted snapshot drifted from
+        venue truth.
+
+        Post-fix: when `non_pending_outcome_handler` is wired (the
+        launcher passes its `process_outcome` closure), route the
+        outcome through it. The handler applies the outcome to state
+        and capital exactly as the OutcomeLoop would have.
+        '''
+
+        if self._non_pending_outcome_handler is None:
+            _log.warning(
+                'shutdown drained pre-shutdown outcome with no handler '
+                'wired; state may drift from venue',
+                command_id=outcome.command_id,
+                outcome_type=outcome.outcome_type.value,
+            )
+            return
+
+        try:
+            self._non_pending_outcome_handler(outcome)
+        except Exception:  # noqa: BLE001 - handler failure must not abort shutdown
+            _log.exception(
+                'non_pending_outcome_handler raised during shutdown',
+                command_id=outcome.command_id,
+                outcome_type=outcome.outcome_type.value,
+            )
 
     def _apply_terminal_outcome(self, outcome: object) -> None:
         '''Apply a shutdown-EXIT fill outcome to instance state.
