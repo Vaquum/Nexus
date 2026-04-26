@@ -550,15 +550,30 @@ class TestOrderReject:
         rejected = ctrl.order_reject('nonexistent')
         assert rejected.success is False
 
-    def test_order_reject_wrong_state(self) -> None:
+    def test_order_reject_after_ack_succeeds_and_releases_working(self) -> None:
+        '''PT-FIX-40: a REJECTED outcome can race past an ACK, leaving
+        the tracked order in WORKING state when the reject arrives.
+        Pre-fix `order_reject` rejected anything not in IN_FLIGHT,
+        leaving `working_order_notional` parked permanently (TTL
+        eviction only covers `_reservations`, not `_orders`).
+        Post-fix WORKING is also accepted; the order is removed and
+        the working notional is released.'''
+
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._state.in_flight_order_notional == _ZERO
 
         rejected = ctrl.order_reject('ORD-001')
-        assert rejected.success is False
+
+        assert rejected.success is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
 class TestOrderFill:

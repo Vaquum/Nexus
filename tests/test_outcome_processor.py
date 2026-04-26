@@ -240,6 +240,36 @@ class TestOutcomeProcessorReject:
         assert result.capital_updated is True
         assert result.position_updated is False
 
+    def test_reject_after_ack_releases_working_capital(self) -> None:
+        '''PT-FIX-40 end-to-end: ENTER → ACK → REJECTED. Pre-fix the
+        REJECTED outcome arrived after the order was promoted from
+        IN_FLIGHT to WORKING by the ACK; `order_reject` rejected the
+        WORKING state and `working_order_notional` was leaked. Post-
+        fix `order_reject` accepts WORKING and releases the capital;
+        OutcomeProcessor returns success.'''
+
+        proc, ctrl, _, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.REJECTED,
+            timestamp=_now(),
+            reject_reason='venue late reject after ack',
+        )
+
+        result = proc.process(outcome, _entry_context())
+
+        assert result.success is True
+        assert result.outcome_type == TradeOutcomeType.REJECTED
+        assert result.capital_updated is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
     def test_reject_exit_order_clears_pending_exit(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
         _setup_in_flight_order(ctrl)

@@ -469,9 +469,16 @@ class CapitalController:
             return LifecycleResult(success=True)
 
     def order_reject(self, order_id: str) -> LifecycleResult:
-        '''Handle venue rejection of an in-flight order.
+        '''Handle venue rejection of an order.
 
         Removes the order and releases capital back to available.
+        Accepts both IN_FLIGHT (the typical case — venue rejects at
+        submission before ACK) AND WORKING (PT-FIX-40 — venue may
+        queue a reject while an ACK is in transit, transitioning the
+        tracked order to WORKING before the REJECTED arrives;
+        without this branch the WORKING capital would stay parked
+        permanently because TTL eviction only covers
+        `_reservations`, not `_orders`).
 
         Args:
             order_id: ID of the rejected order.
@@ -490,15 +497,21 @@ class CapitalController:
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
-            if order.state != OrderLifecycleState.IN_FLIGHT:
+            if order.state == OrderLifecycleState.IN_FLIGHT:
+                self._state.in_flight_order_notional -= order.total
+            elif order.state == OrderLifecycleState.WORKING:
+                self._state.working_order_notional -= order.total
+            else:
                 return LifecycleResult(
                     success=False,
-                    reason=f'order {order_id!r} in {order.state.value}, expected IN_FLIGHT',
+                    reason=(
+                        f'order {order_id!r} in {order.state.value}, '
+                        'expected IN_FLIGHT or WORKING'
+                    ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
             self._orders.pop(order_id)
-            self._state.in_flight_order_notional -= order.total
             self._adjust_strategy_deployed(order.strategy_id, -order.total)
 
             return LifecycleResult(success=True)
