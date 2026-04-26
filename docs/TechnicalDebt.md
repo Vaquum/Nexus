@@ -358,16 +358,19 @@ Without a live health source, `_determine_mode()` defaults to ACTIVE at startup,
 
 ---
 
-## TD-028: TOCTOU in `_build_exit_order_context` if `OutcomeLoop.stop()` join times out
+## TD-028: Loop `.stop()` methods cancel future ticks but do not join in-flight callbacks
 
-**Origin**: Round-7 audit (Praxis issue #77)
+**Origin**: Round-7 + Round-8 audits (Praxis issue #77)
 **Severity**: Major (degraded shutdown only)
-**Module**: `nexus/startup/shutdown_sequencer.py:405-414`, `nexus/core/outcome_loop.py:140-147`
+**Modules**: `nexus/core/outcome_loop.py:140-147`, `nexus/strategy/predict_loop.py:stop`, `nexus/strategy/timer_loop.py:stop`, `nexus/core/health_loop.py:78-85` (the HealthLoop case is also tracked separately as PT-FIX-42 because it directly defeats PT-FIX-25's HALTED flip)
 
-`OutcomeLoop.stop()` signals the worker but does not block; if the worker doesn't terminate within `join_timeout=5.0`, the log-and-keep path leaves it alive. During `_submit_actions` a concurrent FILL processed by the still-live worker can remove a position from `state.positions` between `_build_exit_context` (`.get()`-checks the position) and `_build_exit_order_context` (uses `.get()` post-PT-FIX-36). The latter raises `ValueError`, the surrounding `try/except ValueError` catches it, and the shutdown EXIT command_id is appended to `_submitted_command_ids` without an entry in `_exit_contexts`. When the FILLED outcome later arrives, `_apply_terminal_outcome` finds `_exit_contexts.get(command_id) is None` and silently no-ops — the shutdown EXIT's fill is not applied to state.
+**Round-7 surface (OutcomeLoop):** `OutcomeLoop.stop()` signals the worker but does not block; if the worker doesn't terminate within `join_timeout=5.0`, the log-and-keep path leaves it alive. During `_submit_actions` a concurrent FILL processed by the still-live worker can remove a position from `state.positions` between `_build_exit_context` (`.get()`-checks the position) and `_build_exit_order_context` (uses `.get()` post-PT-FIX-36). The latter raises `ValueError`, the surrounding `try/except ValueError` catches it, and the shutdown EXIT command_id is appended to `_submitted_command_ids` without an entry in `_exit_contexts`. When the FILLED outcome later arrives, `_apply_terminal_outcome` finds `_exit_contexts.get(command_id) is None` and silently no-ops — the shutdown EXIT's fill is not applied to state.
 
-**When to fix**: Before any deployment where shutdown can race with active fills.
-**Migration**: Either (a) make `OutcomeLoop.stop()` block until the worker actually terminates (raise on timeout so shutdown aborts loudly), or (b) when `_build_exit_order_context` raises, also remove `command_id` from `_submitted_command_ids` so `_wait_terminal` doesn't include it.
+**Round-8 surface (PredictLoop / TimerLoop):** Same cancel-but-no-join pattern. Their `.stop()` methods cancel future-scheduled timers but do not join the currently-executing callback. A predict tick or timer callback dispatched just before `.stop()` can still be running while the shutdown sequencer mutates `state.positions` (via `_apply_terminal_outcome` → `OutcomeProcessor._reduce_position` → `del self._state.positions[trade_id]`). `state.positions` is a plain dict with no lock; concurrent structural mutation while the predict callback iterates `state.positions.values()` inside `context_provider` is undefined under CPython's GIL for iteration.
+
+**When to fix**: Before any deployment where shutdown can race with active fills, predict ticks, or timer callbacks.
+
+**Migration**: Either (a) make every loop's `.stop()` block until the in-flight callback actually terminates (raise on timeout so shutdown aborts loudly), or (b) wrap `state.positions` in a lock that all callers acquire (extends the launcher's existing `positions_lock` from PT-FIX-28 into Nexus state mutations as well), or (c) take the cleanup-then-mutation approach: before `_submit_actions`, ensure ALL background loops have terminated by joining their threads with explicit timeouts and raising on overrun.
 
 ---
 
