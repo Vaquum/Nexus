@@ -190,7 +190,7 @@ class ShutdownSequencer:
         self._state.mode = ModeState(
             mode=OperationalMode.HALTED,
             trigger='shutdown',
-            transitioned_at=datetime.now(timezone.utc),
+            transitioned_at=datetime.now(tz=timezone.utc),
         )
         _log.info('state mode flipped to HALTED for shutdown')
 
@@ -618,7 +618,7 @@ class ShutdownSequencer:
                 outcome_type=outcome.outcome_type.value,
             )
 
-    def _apply_terminal_outcome(self, outcome: object) -> None:
+    def _apply_terminal_outcome(self, outcome: TradeOutcome) -> None:
         '''Apply a shutdown-EXIT fill outcome to instance state.
 
         PT-FIX-31: pre-fix the shutdown sequencer drained terminal
@@ -650,8 +650,8 @@ class ShutdownSequencer:
         `state.positions` via `_reduce_position`.
         '''
 
-        command_id = outcome.command_id  # type: ignore[attr-defined]
-        outcome_type = outcome.outcome_type  # type: ignore[attr-defined]
+        command_id = outcome.command_id
+        outcome_type = outcome.outcome_type
 
         context = self._exit_contexts.get(command_id)
         if context is None:
@@ -671,7 +671,7 @@ class ShutdownSequencer:
             return
 
         try:
-            self._outcome_processor.process(outcome, context)  # type: ignore[arg-type]
+            self._outcome_processor.process(outcome, context)
         except Exception:  # noqa: BLE001 - state-update failure must not abort shutdown
             _log.exception(
                 'outcome_processor.process raised during shutdown',

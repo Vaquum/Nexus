@@ -699,7 +699,7 @@ class StartupSequencer:
             self._state.mode = ModeState(
                 mode=self._mode,
                 trigger=trigger,
-                transitioned_at=datetime.now(timezone.utc),
+                transitioned_at=datetime.now(tz=timezone.utc),
             )
 
     def _dispatch_startup(self) -> None:

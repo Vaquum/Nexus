@@ -287,9 +287,19 @@ def bridge_to_capital(
     Returns:
         `LifecycleResult` from `controller.send_order` when the
         outcome carries a reservation and a `command_id`; `None`
-        when the outcome did not produce a tracked order (REJECTED,
-        SUBMIT_FAILED, INVALID, or ABORT — none of which reserved
-        capital that needs converting).
+        when the outcome did not produce a tracked order. Three
+        early-return cases:
+
+        * `status != SUBMITTED` (REJECTED, SUBMIT_FAILED, INVALID)
+          — validator/translator/outbound rejected the action, so
+          no capital was reserved.
+        * `status == SUBMITTED` but `command_id is None` — defensive
+          guard; should never trip in production.
+        * `status == SUBMITTED` and `command_id` set, but
+          `decision is None` or `decision.reservation is None` —
+          covers ABORT (validator bypassed entirely, decision is
+          None) and EXIT/MODIFY (validator runs but does not
+          reserve capital).
     '''
 
     if outcome.status != SubmissionStatus.SUBMITTED:

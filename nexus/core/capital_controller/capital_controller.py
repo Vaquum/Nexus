@@ -544,9 +544,9 @@ class CapitalController:
                 )
 
             if order.state == OrderLifecycleState.IN_FLIGHT:
-                self._state.in_flight_order_notional -= order.total
+                self._state.in_flight_order_notional -= order.remaining_total
             elif order.state == OrderLifecycleState.WORKING:
-                self._state.working_order_notional -= order.total
+                self._state.working_order_notional -= order.remaining_total
             else:
                 return LifecycleResult(
                     success=False,
@@ -558,7 +558,7 @@ class CapitalController:
                 )
 
             self._orders.pop(order_id)
-            self._adjust_strategy_deployed(order.strategy_id, -order.total)
+            self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
             return LifecycleResult(success=True)
 

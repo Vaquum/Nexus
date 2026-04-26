@@ -399,17 +399,19 @@ class TestExternalIntegrationStubs:
 
     def test_wire_sensors_with_zero_sensor_specs_raises(self) -> None:
         '''PT-FIX-34: pre-fix the all-sensors-failed guard short-
-        circuited on `attempted > 0`, so a manifest with strategies
-        but no sensor specs (`attempted == 0`) silently passed and
-        boot proceeded with `wired_sensors=[]`. The PredictLoop then
-        had no signal source and the account sat permanently dead.
+        circuited on `attempted > 0`, so any path that produced zero
+        sensor specs (`attempted == 0`) silently passed and boot
+        proceeded with `wired_sensors=[]`. The PredictLoop then had
+        no signal source and the account sat permanently dead.
         Post-fix the guard fires whenever `_wired_sensors` is empty,
         with a distinct error message.
 
         Manifest's own validators today reject empty `strategies` and
-        empty `sensors`, so this case can only arise via direct
-        attribute injection or a future relaxation of those rules.
-        Test exercises that path to keep the defensive guard real.'''
+        empty `sensors`, so the only way to hit `attempted == 0`
+        without relaxing those rules is to skip the strategy loop
+        entirely. The test models that by overriding `manifest.
+        strategies = ()` — no strategies means no sensor specs are
+        attempted — and asserts the guard fires regardless.'''
 
         sequencer = _make_sequencer()
         manifest = _attach_stub_manifest(sequencer)
