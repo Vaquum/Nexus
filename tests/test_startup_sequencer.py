@@ -397,6 +397,27 @@ class TestExternalIntegrationStubs:
         with pytest.raises(StartupError, match='manifest not loaded'):
             sequencer._wire_sensors()
 
+    def test_wire_sensors_with_zero_sensor_specs_raises(self) -> None:
+        '''PT-FIX-34: pre-fix the all-sensors-failed guard short-
+        circuited on `attempted > 0`, so a manifest with strategies
+        but no sensor specs (`attempted == 0`) silently passed and
+        boot proceeded with `wired_sensors=[]`. The PredictLoop then
+        had no signal source and the account sat permanently dead.
+        Post-fix the guard fires whenever `_wired_sensors` is empty,
+        with a distinct error message.
+
+        Manifest's own validators today reject empty `strategies` and
+        empty `sensors`, so this case can only arise via direct
+        attribute injection or a future relaxation of those rules.
+        Test exercises that path to keep the defensive guard real.'''
+
+        sequencer = _make_sequencer()
+        manifest = _attach_stub_manifest(sequencer)
+        manifest.strategies = ()
+
+        with pytest.raises(StartupError, match='manifest declared 0 sensor specs'):
+            sequencer._wire_sensors()
+
     def test_register_timers_without_manifest_raises(self) -> None:
         sequencer = _make_sequencer()
 

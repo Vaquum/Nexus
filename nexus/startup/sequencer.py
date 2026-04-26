@@ -623,7 +623,14 @@ class StartupSequencer:
                         interval_seconds=sensor_spec.interval_seconds,
                     )
 
-        if attempted > 0 and not self._wired_sensors:
+        if not self._wired_sensors:
+            if attempted == 0:
+                raise StartupError(
+                    'wire_sensors',
+                    'manifest declared 0 sensor specs across all strategies; '
+                    'refusing to start an account with no signal source',
+                )
+
             raised = attempted - train_succeeded
             empty = train_succeeded
             raise StartupError(
