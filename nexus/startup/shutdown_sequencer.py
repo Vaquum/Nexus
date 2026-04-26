@@ -418,7 +418,12 @@ class ShutdownSequencer:
         approx_notional = position.entry_price * action.size
 
         if approx_notional <= _ZERO:
-            approx_notional = action.size
+            msg = (
+                f'shutdown EXIT for trade_id {action.trade_id!r} produced '
+                f'non-positive notional: entry_price={position.entry_price} '
+                f'action.size={action.size}; refusing to construct OrderContext'
+            )
+            raise ValueError(msg)
 
         return OrderContext(
             command_id=command_id,

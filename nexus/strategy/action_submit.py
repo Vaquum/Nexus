@@ -293,12 +293,25 @@ def bridge_to_capital(
     '''
 
     if outcome.status != SubmissionStatus.SUBMITTED:
+        _log.debug(
+            'bridge_to_capital skipped: status=%s (no tracked order to convert)',
+            outcome.status.value,
+        )
         return None
 
     if outcome.command_id is None:
+        _log.warning(
+            'bridge_to_capital skipped: SUBMITTED outcome has no command_id; '
+            'OutcomeProcessor will not be able to match capital lifecycle',
+        )
         return None
 
     if outcome.decision is None or outcome.decision.reservation is None:
+        _log.debug(
+            'bridge_to_capital skipped: command_id=%s has no reservation '
+            '(EXIT/MODIFY paths bypass capital reservation)',
+            outcome.command_id,
+        )
         return None
 
     return controller.send_order(
