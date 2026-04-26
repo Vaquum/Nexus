@@ -342,3 +342,81 @@ Without a live health source, `_determine_mode()` defaults to ACTIVE at startup,
 
 **When to fix**: When Praxis TD-016 exposes health signals.
 **Migration**: Add a health signal delivery mechanism from Praxis (either via the outcome queue or a separate channel). Implement periodic health re-evaluation in the Nexus instance thread. Update mode on each evaluation and trigger mode transitions (ACTIVE → REDUCE_ONLY → HALTED) with alerts.
+
+---
+
+## TD-027: Bare `assert` in `OutcomeProcessor` fill handlers
+
+**Origin**: Round-7 audit (Praxis issue #77)
+**Severity**: Major (only fires under `python -O`)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:116-119, 232-235, 268-269`
+
+`_handle_fill`, `_grow_position`, and `_reduce_position` use `assert` to guard against `None` fill fields (`fill_notional`, `fill_size`, `fill_price`, `actual_fees`). Python `-O` strips `assert` statements; under `python -O`, a malformed PARTIAL/FILLED outcome with `None` fields raises `TypeError` deep inside capital arithmetic instead of returning a controlled `ProcessResult(success=False)`. `OutcomeLoop._dispatch`'s broad except catches and drops it silently. Production trading systems rarely use `python -O`, but the silent-failure mode is unsafe.
+
+**When to fix**: Before any deployment that might inadvertently use `python -O` (e.g., CI artifacts, container images that strip bytecode for size).
+**Migration**: Replace each `assert X is not None` with explicit `if X is None: return ProcessResult(success=False, ...)`.
+
+---
+
+## TD-028: TOCTOU in `_build_exit_order_context` if `OutcomeLoop.stop()` join times out
+
+**Origin**: Round-7 audit (Praxis issue #77)
+**Severity**: Major (degraded shutdown only)
+**Module**: `nexus/startup/shutdown_sequencer.py:405-414`, `nexus/core/outcome_loop.py:140-147`
+
+`OutcomeLoop.stop()` signals the worker but does not block; if the worker doesn't terminate within `join_timeout=5.0`, the log-and-keep path leaves it alive. During `_submit_actions` a concurrent FILL processed by the still-live worker can remove a position from `state.positions` between `_build_exit_context` (`.get()`-checks the position) and `_build_exit_order_context` (uses `.get()` post-PT-FIX-36). The latter raises `ValueError`, the surrounding `try/except ValueError` catches it, and the shutdown EXIT command_id is appended to `_submitted_command_ids` without an entry in `_exit_contexts`. When the FILLED outcome later arrives, `_apply_terminal_outcome` finds `_exit_contexts.get(command_id) is None` and silently no-ops — the shutdown EXIT's fill is not applied to state.
+
+**When to fix**: Before any deployment where shutdown can race with active fills.
+**Migration**: Either (a) make `OutcomeLoop.stop()` block until the worker actually terminates (raise on timeout so shutdown aborts loudly), or (b) when `_build_exit_order_context` raises, also remove `command_id` from `_submitted_command_ids` so `_wait_terminal` doesn't include it.
+
+---
+
+## TD-029: `_grow_position` defensive gap on `trade_id=None`
+
+**Origin**: Round-6 audit (Praxis issue #77)
+**Severity**: Major (defensive — current launcher prevents)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:230-260`
+
+`OrderContext.trade_id` is typed `str | None`; `_grow_position` raises `RuntimeError('entry fill without trade_id')` when None. The current launcher (PT-FIX-20) always populates `trade_id` for ENTER via `forced_trade_id=outcome.command_id`, so this never fires in practice. A future launcher rewrite or alternative caller could trigger the crash; capital state would also diverge because `_capital.order_fill` runs first and commits before the position mutation is attempted.
+
+**When to fix**: Before any launcher refactor that could relax the trade_id-is-always-set invariant.
+**Migration**: Either tighten `OrderContext.trade_id: str` (no None) and have ENTER always allocate one, or rework `_handle_fill` so the position mutation runs BEFORE the capital commit (no commit if mutation fails).
+
+---
+
+## TD-030: `_poll_until_terminal` misleading double-dispatch structure
+
+**Origin**: Round-6 audit (Praxis issue #77)
+**Severity**: Low (maintenance hazard, no current bug)
+**Module**: `nexus/startup/shutdown_sequencer.py:_poll_until_terminal`
+
+The PT-FIX-38 implementation has two `_apply_terminal_outcome` call sites: one for `is_fill` (PARTIAL + FILLED) and one for `is_terminal and not is_fill` (REJECTED/EXPIRED/CANCELED). The control flow is correct (no double-dispatch on FILLED) but the dual-call structure is fragile — a future modification to `_apply_terminal_outcome`'s gate could expose double-decrement.
+
+**When to fix**: Next time `_apply_terminal_outcome` is touched.
+**Migration**: Restructure to a single `_apply_terminal_outcome` call with an explicit `should_apply: bool` flag computed once.
+
+---
+
+## TD-031: `PraxisOutbound` trade_id/command_id contract not asserted
+
+**Origin**: Round-6 audit (Praxis issue #77)
+**Severity**: Low (contract risk; verified safe today)
+**Module**: `nexus/infrastructure/praxis_connector/praxis_outbound.py:79-116`
+
+`send_command` passes `trade_id=command.trade_id or command.command_id` to Praxis's `submit_fn` and uses the returned `command_id` as the round-trip key. Praxis (`praxis/core/execution_manager.py:634`) generates its own UUID and returns it — so the Nexus `command_id` and Praxis `command_id` are distinct, and the Nexus side correctly uses the returned Praxis ID throughout. The contract is implicit in the Praxis implementation and not asserted in either side. A future Praxis change that uses the input `trade_id` as its returned `command_id` would silently break the round trip.
+
+**When to fix**: Before any change to Praxis's `submit_command` ID-generation logic.
+**Migration**: Add an assertion in `send_command` that the returned `command_id != command.trade_id` for ENTER actions, OR document the contract on the `PraxisOutbound.send_command` signature.
+
+---
+
+## TD-032: `on_startup` `capital_available` shows gross budget, not net of deployed
+
+**Origin**: Round-7 audit (Praxis issue #77)
+**Severity**: Low (cosmetic; capital stage validator catches over-reservation)
+**Module**: `nexus/startup/sequencer.py:741`
+
+`_dispatch_startup` builds `StrategyContext.capital_available = manifest.capital_pool * spec.capital_pct / _HUNDRED` — this is the gross strategy budget, not net of `state.capital.position_notional`. On crash-recovery boot with open positions, the strategy's `on_startup` callback receives an inflated capital figure. Any ENTER sized against it correctly fails the capital stage validator, but the strategy's view is misleading at the most consequential boot callback.
+
+**When to fix**: Before strategies make decisions based on `capital_available` in `on_startup`.
+**Migration**: Compute `capital_available = max(strategy_budget - per_strategy_deployed.get(strategy_id, _ZERO), _ZERO)` and pass that.
