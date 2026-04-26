@@ -372,6 +372,8 @@ Without a live health source, `_determine_mode()` defaults to ACTIVE at startup,
 
 **Migration**: Either (a) make every loop's `.stop()` block until the in-flight callback actually terminates (raise on timeout so shutdown aborts loudly), or (b) wrap `state.positions` in a lock that all callers acquire (extends the launcher's existing `positions_lock` from PT-FIX-28 into Nexus state mutations as well), or (c) take the cleanup-then-mutation approach: before `_submit_actions`, ensure ALL background loops have terminated by joining their threads with explicit timeouts and raising on overrun.
 
+**Round-9 refinement** (related but distinct): when `_build_exit_order_context` raises `ValueError` (via the `.get()` + None check from PT-FIX-36), `_submit_exit` catches the exception but leaves the just-appended `command_id` in `_submitted_command_ids`. `_wait_terminal` then waits for that command's terminal outcome and times out (no `OrderContext` stored → `_apply_terminal_outcome` silently no-ops on the eventual fill). The dropped fill is BENIGN at the state level (the position was already absent — that's why `_build_exit_order_context` raised) but causes a wait-then-timeout penalty in shutdown latency. Quick fix: in the `except ValueError` block of `_submit_exit`, also `_submitted_command_ids.remove(returned_id)` so `_wait_terminal` doesn't include it.
+
 ---
 
 ## TD-029: `_grow_position` defensive gap on `trade_id=None`
@@ -423,3 +425,17 @@ The PT-FIX-38 implementation has two `_apply_terminal_outcome` call sites: one f
 
 **When to fix**: Before strategies make decisions based on `capital_available` in `on_startup`.
 **Migration**: Compute `capital_available = max(strategy_budget - per_strategy_deployed.get(strategy_id, _ZERO), _ZERO)` and pass that.
+
+---
+
+## TD-033: WAL file TOCTOU between `StateStore.__init__` and `recover()`
+
+**Origin**: Round-9 audit (Praxis issue #77)
+**Severity**: Low (multi-process scenario only — single-process paper-trade is safe)
+**Module**: `nexus/infrastructure/state_store.py:57-61, 112-137`
+
+`StateStore.__init__` initialises `self._sequence` from `read_safe()` on the existing WAL (line 61). `recover()` re-reads the same WAL and overwrites `self._sequence` at line 137 only when `wal_entries` is non-empty. The two reads are separate `stat`+`open` pairs with no lock between them. Single-process paper trade is safe (no concurrent writer). In a multi-process scenario where two Manager instances share a WAL path, a write between the two reads can cause `_sequence` to be one step ahead of what `recover()` will see, producing a sequence-number gap. `validate_magic` running between the two reads can also see a different file size than `read_safe` did.
+
+**When to fix**: Before any deployment that runs multiple Manager instances against a shared state directory (current single-instance paper-trade design forbids this, but the constraint is documentation-only).
+
+**Migration**: Either (a) hold a fcntl/flock around both reads in `__init__` + `recover()`, OR (b) read the WAL once into memory at `__init__` and have `recover()` consume the cached entries instead of re-reading, OR (c) document that a `state_dir` MUST be exclusive to a single Manager instance and add a startup lock-file check that errors out loudly if a sibling holds the lock.
