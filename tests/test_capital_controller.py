@@ -18,6 +18,8 @@ from nexus.core.capital_controller.capital_controller import (
 from nexus.core.capital_controller.reservation import Reservation, ReservationResult
 from nexus.core.capital_controller.tracked_order import OrderLifecycleState
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.position import Position
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
@@ -1078,3 +1080,139 @@ class TestReconcileAtBoot:
 
         with pytest.raises(RuntimeError, match='reconcile_at_boot called after'):
             ctrl.reconcile_at_boot()
+
+
+def _position(
+    trade_id: str,
+    strategy_id: str | None,
+    *,
+    size: Decimal = Decimal('1'),
+    entry_price: Decimal = Decimal('100'),
+) -> Position:
+    return Position(
+        trade_id=trade_id,
+        strategy_id=strategy_id or 'placeholder',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=size,
+        entry_price=entry_price,
+    )
+
+
+class TestReconcileAtBootRebuildsPerStrategyDeployed:
+    '''PT-FIX-41: PT-FIX-35's `reconcile_at_boot` zeros stranded
+    reservation/in_flight/working aggregates but pre-fix did NOT
+    touch `per_strategy_deployed`. The persisted attribution map
+    still summed to the pre-crash total (position + working +
+    in_flight + reservation), but `total_deployed` after reconcile
+    only includes `position_notional`. The next `check_and_reserve`
+    fires the attribution-mismatch denial and permanently blocks
+    new ENTERs.
+
+    Post-fix: `reconcile_at_boot(positions=...)` rebuilds
+    `per_strategy_deployed` from live positions so it sums to
+    `position_notional` exactly.'''
+
+    def test_rebuilds_per_strategy_deployed_from_positions(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            working_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('150')},
+        )
+        positions = [_position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('100')}
+
+    def test_first_check_and_reserve_after_reconcile_passes_attribution(self) -> None:
+        '''The actual fix-validation: after a crash-recovery boot with
+        stranded aggregates and stale per_strategy_deployed, calling
+        `check_and_reserve` for a fresh ENTER must NOT hit the
+        attribution-mismatch denial.'''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            in_flight_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('150')},
+        )
+        positions = [_position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_b',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+
+        assert result.granted is True
+        assert result.denial_reason is None
+
+    def test_omitting_positions_preserves_existing_per_strategy(self) -> None:
+        '''Backwards compatibility: callers (e.g., tests) that pass no
+        `positions` get only the aggregate reset (PT-FIX-35 behavior).
+        `per_strategy_deployed` is left unchanged.'''
+
+        ctrl = _make_controller(
+            in_flight_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('50')},
+        )
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('50')}
+
+    def test_empty_positions_clears_per_strategy(self) -> None:
+        '''A flat-state recovery (no open positions) with stale per-
+        strategy entries clears the map entirely.'''
+
+        ctrl = _make_controller(
+            in_flight_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('50')},
+        )
+
+        ctrl.reconcile_at_boot(positions=[])
+
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed == {}
+
+    def test_multi_strategy_attribution_summed_correctly(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            working_order_notional=Decimal('100'),
+            per_strategy_deployed={
+                'strat_a': Decimal('200'),
+                'strat_b': Decimal('400'),
+            },
+        )
+        positions = [
+            _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100')),
+            _position('t-2', 'strat_a', size=Decimal('1'), entry_price=Decimal('100')),
+            _position('t-3', 'strat_b', size=Decimal('3'), entry_price=Decimal('100')),
+        ]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        assert ctrl._state.per_strategy_deployed == {
+            'strat_a': Decimal('200'),
+            'strat_b': Decimal('300'),
+        }
+
+    def test_logs_warning_when_per_strategy_changes(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('150')},
+        )
+        positions = [_position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))]
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot(positions=positions)
+
+        assert 'per_strategy_deployed' in caplog.text

@@ -10,6 +10,7 @@ import heapq
 import logging
 import threading
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -26,6 +27,7 @@ from nexus.core.capital_controller.tracked_order import (
     TrackedOrder,
 )
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.position import Position
 
 __all__ = ['CapitalController']
 
@@ -53,7 +55,10 @@ class CapitalController:
         self._expiry_heap: list[tuple[datetime, str]] = []
         self._orders: dict[str, TrackedOrder] = {}
 
-    def reconcile_at_boot(self) -> CapitalState:
+    def reconcile_at_boot(
+        self,
+        positions: Iterable[Position] | None = None,
+    ) -> CapitalState:
         '''Reset stranded in-flight / working / reservation aggregates at boot.
 
         PT-FIX-35: `_reservations` and `_orders` are in-memory only —
@@ -75,6 +80,27 @@ class CapitalController:
         the strategy may double-spend. For paper-trade testnet this
         is acceptable. A production deployment should pair this with
         a venue `query_open_orders` reconciliation pass.
+
+        PT-FIX-41: when `positions` is provided, also rebuild
+        `per_strategy_deployed` from the live positions so it sums
+        to `position_notional` (the only non-zero aggregate after
+        this method runs). Without this rebuild, the persisted
+        per-strategy attribution still includes the pre-crash
+        reservation/in-flight/working amounts; the next
+        `check_and_reserve` then fires the
+        `'Per-strategy deployed attribution mismatch for non-flat
+        state'` denial and permanently blocks all new ENTERs.
+
+        Callers that omit `positions` get only the aggregate reset
+        (the original PT-FIX-35 behavior) — used by tests that don't
+        need the per-strategy invariant rebuilt.
+
+        Args:
+            positions: live `Position`s recovered from snapshot/WAL,
+                used to rebuild `per_strategy_deployed`. The launcher's
+                `_build_nexus_runtime` passes
+                `state.positions.values()` after `_reconcile_capital`
+                settles `position_notional`.
 
         Returns:
             CapitalState: snapshot of the (possibly mutated) state for
@@ -113,6 +139,26 @@ class CapitalController:
                     stranded_working,
                 )
                 self._state.working_order_notional = _ZERO
+
+            if positions is not None:
+                rebuilt: dict[str, Decimal] = {}
+                for pos in positions:
+                    if pos.strategy_id is None:
+                        continue
+                    contribution = pos.size * pos.entry_price
+                    rebuilt[pos.strategy_id] = (
+                        rebuilt.get(pos.strategy_id, _ZERO) + contribution
+                    )
+
+                prior = dict(self._state.per_strategy_deployed)
+                if prior != rebuilt:
+                    _logger.warning(
+                        'reconcile_at_boot rebuilding per_strategy_deployed '
+                        'from positions: prior=%s, rebuilt=%s',
+                        prior, rebuilt,
+                    )
+                self._state.per_strategy_deployed.clear()
+                self._state.per_strategy_deployed.update(rebuilt)
 
             return self._state
 
