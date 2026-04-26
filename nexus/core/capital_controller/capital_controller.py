@@ -674,9 +674,15 @@ class CapitalController:
             return LifecycleResult(success=True)
 
     def order_cancel(self, order_id: str) -> LifecycleResult:
-        '''Handle cancellation of a working order.
+        '''Handle cancellation or expiration of an order.
 
         Removes the order and releases remaining capital back to available.
+        Accepts both WORKING (typical case — venue cancels a resting
+        order) AND IN_FLIGHT (PT-FIX-43, mirrors PT-FIX-40 for
+        `order_reject` — venue may EXPIRE / CANCEL an order that
+        never received an ACK; without this branch the IN_FLIGHT
+        capital would stay parked permanently because TTL eviction
+        only covers `_reservations`, not `_orders`).
 
         Args:
             order_id: ID of the canceled order.
@@ -695,15 +701,21 @@ class CapitalController:
                     category=FailureCategory.EXPECTED_MISS,
                 )
 
-            if order.state != OrderLifecycleState.WORKING:
+            if order.state == OrderLifecycleState.WORKING:
+                self._state.working_order_notional -= order.remaining_total
+            elif order.state == OrderLifecycleState.IN_FLIGHT:
+                self._state.in_flight_order_notional -= order.remaining_total
+            else:
                 return LifecycleResult(
                     success=False,
-                    reason=f'order {order_id!r} in {order.state.value}, expected WORKING',
+                    reason=(
+                        f'order {order_id!r} in {order.state.value}, '
+                        'expected WORKING or IN_FLIGHT'
+                    ),
                     category=FailureCategory.EXPECTED_MISS,
                 )
 
             self._orders.pop(order_id)
-            self._state.working_order_notional -= order.remaining_total
             self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
             return LifecycleResult(success=True)

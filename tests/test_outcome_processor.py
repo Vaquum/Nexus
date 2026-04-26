@@ -330,6 +330,36 @@ class TestOutcomeProcessorCancel:
         assert result.success is True
         assert result.outcome_type == TradeOutcomeType.EXPIRED
 
+    def test_cancel_in_flight_releases_in_flight_capital(self) -> None:
+        '''PT-FIX-43 end-to-end: ENTER → no ACK → EXPIRED. Pre-fix the
+        EXPIRED outcome arrived while the order was still IN_FLIGHT
+        (venue rejected before ACK or the ACK never landed);
+        `order_cancel` rejected the IN_FLIGHT state and
+        `in_flight_order_notional` was leaked. Post-fix `order_cancel`
+        accepts IN_FLIGHT and releases the capital; OutcomeProcessor
+        returns success.'''
+
+        proc, ctrl, _, _, _tmp = _make_processor()
+        _setup_in_flight_order(ctrl)
+
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert ctrl._state.working_order_notional == _ZERO
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.EXPIRED,
+            timestamp=_now(),
+        )
+
+        result = proc.process(outcome, _entry_context())
+
+        assert result.success is True
+        assert result.outcome_type == TradeOutcomeType.EXPIRED
+        assert result.capital_updated is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+
     def test_cancel_exit_order_clears_pending_exit(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
         _setup_working_order(ctrl)

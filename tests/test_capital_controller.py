@@ -732,14 +732,29 @@ class TestOrderCancel:
         canceled = ctrl.order_cancel('nonexistent')
         assert canceled.success is False
 
-    def test_order_cancel_wrong_state(self) -> None:
+    def test_order_cancel_in_flight_succeeds_and_releases_in_flight(self) -> None:
+        '''PT-FIX-43: an EXPIRED or CANCELED outcome can arrive from the
+        venue for an order that never received an ACK (still IN_FLIGHT).
+        Pre-fix `order_cancel` rejected anything not WORKING, leaving
+        `in_flight_order_notional` parked permanently. Mirrors the
+        PT-FIX-40 fix for `order_reject`. Post-fix IN_FLIGHT is also
+        accepted; the order is removed and the in-flight notional is
+        released.'''
+
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert ctrl._state.working_order_notional == _ZERO
 
         canceled = ctrl.order_cancel('ORD-001')
-        assert canceled.success is False
+
+        assert canceled.success is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
 class TestLifecycleHappyPath:
