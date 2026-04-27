@@ -217,6 +217,9 @@ def test_in_flight_tick_does_not_overwrite_mode_after_stop() -> None:
     if not snapshot_started.wait(timeout=2.0):
         pytest.fail('provider was not called within timeout')
 
+    in_flight_timer = loop._timer
+    assert in_flight_timer is not None, 'in-flight tick timer should still be set before stop()'
+
     loop.stop()
 
     sentinel_trigger = 'sentinel-shutdown-ratchet'
@@ -224,8 +227,9 @@ def test_in_flight_tick_does_not_overwrite_mode_after_stop() -> None:
 
     release_snapshot.set()
 
-    import time
-    time.sleep(0.2)
+    in_flight_timer.join(timeout=5.0)
+    if in_flight_timer.is_alive():
+        pytest.fail('in-flight tick did not complete within 5s after release_snapshot.set()')
 
     assert state.mode.trigger == sentinel_trigger, (
         'post-stop tick overwrote state.mode after stop() returned; '
