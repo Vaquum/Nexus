@@ -143,8 +143,6 @@ class CapitalController:
             if positions is not None:
                 rebuilt: dict[str, Decimal] = {}
                 for pos in positions:
-                    if pos.strategy_id is None:
-                        continue
                     contribution = pos.size * pos.entry_price
                     rebuilt[pos.strategy_id] = (
                         rebuilt.get(pos.strategy_id, _ZERO) + contribution
