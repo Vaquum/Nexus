@@ -125,6 +125,31 @@ def _validate_validators(
 
 
 def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bool:
+    '''Decide whether to skip a validator stage for a given action.
+
+    EXIT / ABORT / CANCEL are exit-type actions whose only purpose is
+    to reduce existing exposure. Any stage that gates *new* exposure
+    must not block exits — otherwise the very conditions that make an
+    exit critical (drawdown, degraded venue health, capital pressure,
+    stale orderbook) prevent the strategy from cutting risk.
+
+    The bypass set has grown incrementally as each gating stage was
+    audited:
+    - CAPITAL / HEALTH / PLATFORM_LIMITS — original safety bypass.
+    - PT-FIX-32 added `RISK` (drawdown / portfolio-risk checks).
+    - PT-FIX-37 added `PRICE` (book-staleness / spread checks). A
+      stale or wide-spread market is exactly when a fast EXIT
+      matters most; pre-fix `PRICE_BOOK_STALE` and
+      `PRICE_SPREAD_LIMIT` denials silently dropped the EXIT.
+
+    `INTAKE` is deliberately NOT in the bypass set — it handles
+    symbol normalization, schema sanity, and operational-mode gating
+    that must apply to every action. The intake stage's
+    `INTAKE_ORDER_NOTIONAL_ZERO` check is exempted for safety
+    actions inside that stage's logic (PT-FIX-33), not via this
+    bypass set.
+    '''
+
     if action not in (
         ValidationAction.EXIT,
         ValidationAction.ABORT,
@@ -136,4 +161,6 @@ def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bo
         ValidationStage.CAPITAL,
         ValidationStage.HEALTH,
         ValidationStage.PLATFORM_LIMITS,
+        ValidationStage.RISK,
+        ValidationStage.PRICE,
     )

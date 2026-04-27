@@ -66,6 +66,41 @@ class TestIntakeBuiltins:
         assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_ORDER_NOTIONAL_ZERO'
 
+    @pytest.mark.parametrize(
+        ('action', 'side'),
+        [
+            (ValidationAction.EXIT, OrderSide.SELL),
+            (ValidationAction.ABORT, OrderSide.BUY),
+            (ValidationAction.CANCEL, OrderSide.BUY),
+        ],
+    )
+    def test_zero_order_notional_allowed_for_safety_actions(
+        self,
+        action: ValidationAction,
+        side: OrderSide,
+    ) -> None:
+        '''PT-FIX-33: EXIT / ABORT / CANCEL are size-denominated — context
+        builders that legitimately compute `order_notional == 0` for
+        size-only exits must NOT be rejected at intake. Pre-fix the
+        zero check fired for every action, so a runtime EXIT
+        returning from `Strategy.on_signal` was blocked at intake
+        before the validator's safety bypass could apply (intake
+        itself is not in the bypass list — by design, intake handles
+        symbol normalization and schema sanity that must run for all
+        actions).'''
+
+        decision = validate_intake_stage(
+            _make_context(
+                action=action,
+                order_side=side,
+                order_notional=Decimal('0'),
+            )
+        )
+        assert decision.allowed is True, (
+            f'{action.value} with order_notional=0 was rejected: '
+            f'{decision.reason_code}'
+        )
+
     def test_rejects_zero_strategy_budget(self) -> None:
         decision = validate_intake_stage(_make_context(strategy_budget=Decimal('0')))
         assert decision.allowed is False

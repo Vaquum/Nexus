@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,7 @@ from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.operational_mode import ModeState
 from nexus.core.domain.position import Position
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
@@ -621,7 +623,14 @@ class StartupSequencer:
                         interval_seconds=sensor_spec.interval_seconds,
                     )
 
-        if attempted > 0 and not self._wired_sensors:
+        if not self._wired_sensors:
+            if attempted == 0:
+                raise StartupError(
+                    'wire_sensors',
+                    'manifest declared 0 sensor specs across all strategies; '
+                    'refusing to start an account with no signal source',
+                )
+
             raised = attempted - train_succeeded
             empty = train_succeeded
             raise StartupError(
@@ -660,16 +669,38 @@ class StartupSequencer:
         '''Determine operational mode based on health.
 
         Evaluates health snapshot against thresholds if a health_evaluator
-        and health_snapshot are configured. Defaults to ACTIVE when health
-        data is unavailable (no health signal source wired yet — TD-026).
+        and health_snapshot are configured. When health data is
+        unavailable (no `health_snapshot` wired at boot, before the first
+        HealthLoop tick lands), defaults to `REDUCE_ONLY` instead of
+        `ACTIVE` (PT-FIX-26). The HealthLoop's first tick promotes the
+        mode to `ACTIVE` if Praxis health is good — but until then any
+        `on_startup` ENTER action gets blocked by the validator's
+        `_check_operational_mode` stage rather than landing on the venue
+        in a permissive ~5 s window before health is known.
+
+        Mirrors the resolved mode into `state.mode` (with a fresh
+        `ModeState`) so the validator sees the same value the
+        sequencer-local `_mode` carries into `StrategyContext`.
         '''
 
         if self._health_evaluator is not None and self._health_snapshot is not None:
             self._mode = self._health_evaluator.evaluate(self._health_snapshot)
+            trigger = 'boot_health_evaluation'
             _log.info('mode determined from health', mode=self._mode.value)
         else:
-            _log.warning('no health data available, defaulting to ACTIVE')
-            self._mode = OperationalMode.ACTIVE
+            self._mode = OperationalMode.REDUCE_ONLY
+            trigger = 'boot_no_health_data'
+            _log.warning(
+                'no health data available, defaulting to REDUCE_ONLY '
+                'until first HealthLoop tick',
+            )
+
+        if self._state is not None:
+            self._state.mode = ModeState(
+                mode=self._mode,
+                trigger=trigger,
+                transitioned_at=datetime.now(tz=timezone.utc),
+            )
 
     def _dispatch_startup(self) -> None:
         '''Dispatch on_startup to all strategies.

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import tempfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.capital_controller.reservation import Reservation
+from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
@@ -19,10 +23,17 @@ from nexus.core.validator.pipeline_models import (
     ValidationRequestContext,
     ValidationStage,
 )
+from nexus.infrastructure.praxis_connector.order_context import OrderContext
+from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
+from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
+from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
+from nexus.infrastructure.state_store import StateStore
 from nexus.instance_config import InstanceConfig
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.action_submit import (
+    SubmissionOutcome,
     SubmissionStatus,
+    bridge_to_capital,
     submit_actions,
 )
 
@@ -406,3 +417,117 @@ class TestSubmitActions:
 
         assert [r[1].command_id for r in results] == ['cmd_a', 'cmd_b', 'cmd_c']
         assert [r[0] for r in results] == actions
+
+
+class TestBridgeToCapital:
+    '''PT-FIX-27: `bridge_to_capital` converts a SUBMITTED reservation
+    into a tracked IN_FLIGHT order via `CapitalController.send_order`.
+    Without this call every later ACK / FILL / REJECT / CANCEL fails
+    with `order not found` because `OutcomeProcessor.process` looks up
+    `self._capital._orders[outcome.command_id]` — only `send_order`
+    populates that dict.'''
+
+    def _build_capital(self) -> tuple[CapitalController, Reservation, SubmissionOutcome]:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        reservation_result = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert reservation_result.reservation is not None
+        outcome = SubmissionOutcome(
+            status=SubmissionStatus.SUBMITTED,
+            command_id='cmd_xyz',
+            decision=ValidationDecision(
+                allowed=True,
+                reservation=reservation_result.reservation,
+            ),
+        )
+        return controller, reservation_result.reservation, outcome
+
+    def test_bridge_calls_send_order_for_submitted_outcome(self) -> None:
+        controller, reservation, outcome = self._build_capital()
+
+        result = bridge_to_capital(controller, outcome)
+
+        assert result is not None
+        assert result.success is True
+        assert reservation.reservation_id not in controller._reservations
+        assert 'cmd_xyz' in controller._orders
+
+    def test_bridge_round_trip_via_outcome_processor(self) -> None:
+        '''Full round trip without launcher-side `send_order`. Drives an
+        ACK through `OutcomeProcessor.process` and asserts capital state
+        reflects the in-flight → working transition. Pre-fix the helper
+        did not exist; without launcher wiring, the ACK would fail with
+        `INVARIANT_BREACH: order not found`.'''
+
+        capital_state = CapitalState(capital_pool=Decimal('10000'))
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+
+        reservation_result = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert reservation_result.reservation is not None
+        outcome = SubmissionOutcome(
+            status=SubmissionStatus.SUBMITTED,
+            command_id='cmd_round_trip',
+            decision=ValidationDecision(
+                allowed=True,
+                reservation=reservation_result.reservation,
+            ),
+        )
+
+        bridge_to_capital(controller, outcome)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            processor = OutcomeProcessor(
+                controller, instance_state, StateStore(Path(tmp)),
+            )
+            ack_outcome = TradeOutcome(
+                outcome_id='out_001',
+                command_id='cmd_round_trip',
+                outcome_type=TradeOutcomeType.ACK,
+                timestamp=_NOW,
+            )
+            ctx = OrderContext(
+                command_id='cmd_round_trip',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.BUY,
+                order_size=Decimal('0.01'),
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                is_entry=True,
+            )
+
+            result = processor.process(ack_outcome, ctx)
+
+        assert result.success is True
+        assert result.error_reason is None
+
+    def test_bridge_no_op_for_rejected_outcome(self) -> None:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        outcome = SubmissionOutcome(
+            status=SubmissionStatus.REJECTED,
+            decision=_deny_decision(),
+        )
+
+        assert bridge_to_capital(controller, outcome) is None
+        assert controller._orders == {}
+
+    def test_bridge_no_op_when_decision_missing_reservation(self) -> None:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        outcome = SubmissionOutcome(
+            status=SubmissionStatus.SUBMITTED,
+            command_id='cmd_no_res',
+            decision=ValidationDecision(allowed=True),
+        )
+
+        assert bridge_to_capital(controller, outcome) is None
+        assert controller._orders == {}

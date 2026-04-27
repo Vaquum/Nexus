@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 
+from nexus.core.capital_controller.capital_controller import CapitalController
+from nexus.core.capital_controller.lifecycle_result import LifecycleResult
 from nexus.core.validator.pipeline_executor import ValidationPipeline
 from nexus.core.validator.pipeline_models import (
     ValidationDecision,
@@ -34,7 +36,13 @@ from nexus.infrastructure.praxis_connector.translate import (
 from nexus.instance_config import InstanceConfig
 from nexus.strategy.action import Action, ActionType
 
-__all__ = ['ContextBuilder', 'SubmissionOutcome', 'SubmissionStatus', 'submit_actions']
+__all__ = [
+    'ContextBuilder',
+    'SubmissionOutcome',
+    'SubmissionStatus',
+    'bridge_to_capital',
+    'submit_actions',
+]
 
 _log = logging.getLogger(__name__)
 
@@ -244,6 +252,82 @@ def submit_actions(
         ))
 
     return results
+
+
+def bridge_to_capital(
+    controller: CapitalController,
+    outcome: SubmissionOutcome,
+) -> LifecycleResult | None:
+    '''Convert a SUBMITTED reservation into a tracked IN_FLIGHT order.
+
+    `submit_actions` returns the Praxis-assigned `command_id` and the
+    capital-stage `Reservation` on the `SubmissionOutcome`, but does
+    not invoke `CapitalController.send_order(reservation_id, command_id)`
+    itself. Without that call, every later `OutcomeProcessor.process(...)`
+    looks up `self._orders[command_id]` and gets `None` →
+    `INVARIANT_BREACH: order not found` → ACK / FILL / REJECT / CANCEL
+    silently no-op, capital stays parked in `reservation_notional`
+    until TTL expiry, and `position_notional` never grows.
+
+    The launcher must thread this for every SUBMITTED action. This
+    helper centralises the wiring so the contract lives next to
+    `submit_actions` instead of being re-implemented (and forgotten)
+    in every launcher.
+
+    The `command_id` argument to `CapitalController.send_order` is the
+    `order_id` that `OutcomeProcessor.process(outcome, context)` will
+    look up in `self._orders` via `outcome.command_id`. Renaming
+    either side without renaming the other will break the round trip
+    silently — see the contract note on `OutcomeProcessor.process`.
+
+    Args:
+        controller: Per-account `CapitalController` to mutate.
+        outcome: Result of a single action's `submit_actions` pass.
+
+    Returns:
+        `LifecycleResult` from `controller.send_order` when the
+        outcome carries a reservation and a `command_id`; `None`
+        when the outcome did not produce a tracked order. Three
+        early-return cases:
+
+        * `status != SUBMITTED` (REJECTED, SUBMIT_FAILED, INVALID)
+          — validator/translator/outbound rejected the action, so
+          no capital was reserved.
+        * `status == SUBMITTED` but `command_id is None` — defensive
+          guard; should never trip in production.
+        * `status == SUBMITTED` and `command_id` set, but
+          `decision is None` or `decision.reservation is None` —
+          covers ABORT (validator bypassed entirely, decision is
+          None) and EXIT/MODIFY (validator runs but does not
+          reserve capital).
+    '''
+
+    if outcome.status != SubmissionStatus.SUBMITTED:
+        _log.debug(
+            'bridge_to_capital skipped: status=%s (no tracked order to convert)',
+            outcome.status.value,
+        )
+        return None
+
+    if outcome.command_id is None:
+        _log.warning(
+            'bridge_to_capital skipped: SUBMITTED outcome has no command_id; '
+            'OutcomeProcessor will not be able to match capital lifecycle',
+        )
+        return None
+
+    if outcome.decision is None or outcome.decision.reservation is None:
+        _log.debug(
+            'bridge_to_capital skipped: command_id=%s has no reservation '
+            '(EXIT/MODIFY paths bypass capital reservation)',
+            outcome.command_id,
+        )
+        return None
+
+    return controller.send_order(
+        reservation_id=outcome.decision.reservation.reservation_id,
+        order_id=outcome.command_id,
+    )
 
 
 def _submit_abort(

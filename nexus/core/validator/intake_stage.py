@@ -373,7 +373,11 @@ def validate_intake_stage(
             message='strategy_id must not contain leading or trailing whitespace',
         )
 
-    if context.order_notional == 0:
+    if context.order_notional == 0 and context.action not in (
+        ValidationAction.EXIT,
+        ValidationAction.ABORT,
+        ValidationAction.CANCEL,
+    ):
         return ValidationDecision(
             allowed=False,
             failed_stage=ValidationStage.INTAKE,

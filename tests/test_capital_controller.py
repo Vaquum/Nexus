@@ -18,6 +18,8 @@ from nexus.core.capital_controller.capital_controller import (
 from nexus.core.capital_controller.reservation import Reservation, ReservationResult
 from nexus.core.capital_controller.tracked_order import OrderLifecycleState
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OrderSide
+from nexus.core.domain.position import Position
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
@@ -550,15 +552,30 @@ class TestOrderReject:
         rejected = ctrl.order_reject('nonexistent')
         assert rejected.success is False
 
-    def test_order_reject_wrong_state(self) -> None:
+    def test_order_reject_after_ack_succeeds_and_releases_working(self) -> None:
+        '''PT-FIX-40: a REJECTED outcome can race past an ACK, leaving
+        the tracked order in WORKING state when the reject arrives.
+        Pre-fix `order_reject` rejected anything not in IN_FLIGHT,
+        leaving `working_order_notional` parked permanently (TTL
+        eviction only covers `_reservations`, not `_orders`).
+        Post-fix WORKING is also accepted; the order is removed and
+        the working notional is released.'''
+
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._state.in_flight_order_notional == _ZERO
 
         rejected = ctrl.order_reject('ORD-001')
-        assert rejected.success is False
+
+        assert rejected.success is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
 class TestOrderFill:
@@ -715,14 +732,29 @@ class TestOrderCancel:
         canceled = ctrl.order_cancel('nonexistent')
         assert canceled.success is False
 
-    def test_order_cancel_wrong_state(self) -> None:
+    def test_order_cancel_in_flight_succeeds_and_releases_in_flight(self) -> None:
+        '''PT-FIX-43: an EXPIRED or CANCELED outcome can arrive from the
+        venue for an order that never received an ACK (still IN_FLIGHT).
+        Pre-fix `order_cancel` rejected anything not WORKING, leaving
+        `in_flight_order_notional` parked permanently. Mirrors the
+        PT-FIX-40 fix for `order_reject`. Post-fix IN_FLIGHT is also
+        accepted; the order is removed and the in-flight notional is
+        released.'''
+
         ctrl = _make_controller()
         result = _reserve(ctrl, notional='100', fees='1')
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert ctrl._state.working_order_notional == _ZERO
 
         canceled = ctrl.order_cancel('ORD-001')
-        assert canceled.success is False
+
+        assert canceled.success is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
 class TestLifecycleHappyPath:
@@ -951,3 +983,251 @@ class TestPerStrategyDeployedInvariants:
 
         assert 'Per-strategy deployed underflow' in caplog.text
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+
+class TestReconcileAtBoot:
+    '''PT-FIX-35: stranded `in_flight_order_notional` /
+    `working_order_notional` / `reservation_notional` carried over from
+    a crashed prior boot must be reset to zero so capital is available
+    for the freshly-booting strategy.
+
+    `_orders` and `_reservations` are in-memory only and rebuilt fresh
+    per `CapitalController` construction. The persisted aggregates
+    have no corresponding TrackedOrders to release them via the
+    normal `order_ack` / `order_fill` / `order_reject` /
+    `order_cancel` lifecycle.
+
+    PT-FIX-30 added Praxis-side orphan reconciliation that synthesizes
+    `TradeOutcome(REJECTED, reason='boot_orphan_command')` for spine
+    `CommandAccepted` events with no follow-up `OrderSubmitIntent`.
+    Those outcomes flow through the launcher's per-account queue, but
+    the launcher's `command_contexts` is empty for orphan command_ids,
+    so the OutcomeProcessor is bypassed. Even if it weren't bypassed,
+    `CapitalController._orders` is empty so `order_reject` would
+    return `success=False`. This boot-time aggregate reset is the
+    pragmatic recovery path.
+    '''
+
+    def test_no_op_when_aggregates_are_zero(self) -> None:
+        ctrl = _make_controller()
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+
+    def test_resets_stranded_in_flight_aggregate(self) -> None:
+        ctrl = _make_controller(in_flight_order_notional=Decimal('250'))
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+    def test_resets_stranded_working_aggregate(self) -> None:
+        ctrl = _make_controller(working_order_notional=Decimal('500'))
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.working_order_notional == _ZERO
+
+    def test_resets_stranded_reservation_aggregate(self) -> None:
+        ctrl = _make_controller(reservation_notional=Decimal('120'))
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.reservation_notional == _ZERO
+
+    def test_resets_all_three_simultaneously(self) -> None:
+        ctrl = _make_controller(
+            reservation_notional=Decimal('10'),
+            in_flight_order_notional=Decimal('20'),
+            working_order_notional=Decimal('30'),
+        )
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == _ZERO
+
+    def test_does_not_touch_position_or_per_strategy_aggregates(self) -> None:
+        '''Position notional and per_strategy_deployed are unaffected —
+        positions are real (in `state.positions`) and per_strategy
+        deployment is derived from positions.'''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={'strat_a': Decimal('500')},
+            in_flight_order_notional=Decimal('100'),
+        )
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.position_notional == Decimal('1000')
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('500')}
+
+    def test_logs_warning_for_each_reset_aggregate(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            reservation_notional=Decimal('10'),
+            in_flight_order_notional=Decimal('20'),
+            working_order_notional=Decimal('30'),
+        )
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot()
+
+        assert 'reservation_notional' in caplog.text
+        assert 'in_flight_order_notional' in caplog.text
+        assert 'working_order_notional' in caplog.text
+
+    def test_raises_when_called_after_orders_tracked(self) -> None:
+        '''reconcile_at_boot is a boot-time invariant. Calling it after
+        any reservation or send_order has been processed indicates a
+        misuse — raise loudly rather than silently corrupt state.'''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl)
+        assert result.granted is True
+
+        with pytest.raises(RuntimeError, match='reconcile_at_boot called after'):
+            ctrl.reconcile_at_boot()
+
+
+def _position(
+    trade_id: str,
+    strategy_id: str | None,
+    *,
+    size: Decimal = Decimal('1'),
+    entry_price: Decimal = Decimal('100'),
+) -> Position:
+    return Position(
+        trade_id=trade_id,
+        strategy_id=strategy_id or 'placeholder',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=size,
+        entry_price=entry_price,
+    )
+
+
+class TestReconcileAtBootRebuildsPerStrategyDeployed:
+    '''PT-FIX-41: PT-FIX-35's `reconcile_at_boot` zeros stranded
+    reservation/in_flight/working aggregates but pre-fix did NOT
+    touch `per_strategy_deployed`. The persisted attribution map
+    still summed to the pre-crash total (position + working +
+    in_flight + reservation), but `total_deployed` after reconcile
+    only includes `position_notional`. The next `check_and_reserve`
+    fires the attribution-mismatch denial and permanently blocks
+    new ENTERs.
+
+    Post-fix: `reconcile_at_boot(positions=...)` rebuilds
+    `per_strategy_deployed` from live positions so it sums to
+    `position_notional` exactly.'''
+
+    def test_rebuilds_per_strategy_deployed_from_positions(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            working_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('150')},
+        )
+        positions = [_position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('100')}
+
+    def test_first_check_and_reserve_after_reconcile_passes_attribution(self) -> None:
+        '''The actual fix-validation: after a crash-recovery boot with
+        stranded aggregates and stale per_strategy_deployed, calling
+        `check_and_reserve` for a fresh ENTER must NOT hit the
+        attribution-mismatch denial.'''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            in_flight_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('150')},
+        )
+        positions = [_position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_b',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+
+        assert result.granted is True
+        assert result.denial_reason is None
+
+    def test_omitting_positions_preserves_existing_per_strategy(self) -> None:
+        '''Backwards compatibility: callers (e.g., tests) that pass no
+        `positions` get only the aggregate reset (PT-FIX-35 behavior).
+        `per_strategy_deployed` is left unchanged.'''
+
+        ctrl = _make_controller(
+            in_flight_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('50')},
+        )
+
+        ctrl.reconcile_at_boot()
+
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('50')}
+
+    def test_empty_positions_clears_per_strategy(self) -> None:
+        '''A flat-state recovery (no open positions) with stale per-
+        strategy entries clears the map entirely.'''
+
+        ctrl = _make_controller(
+            in_flight_order_notional=Decimal('50'),
+            per_strategy_deployed={'strat_a': Decimal('50')},
+        )
+
+        ctrl.reconcile_at_boot(positions=[])
+
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed == {}
+
+    def test_multi_strategy_attribution_summed_correctly(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            working_order_notional=Decimal('100'),
+            per_strategy_deployed={
+                'strat_a': Decimal('200'),
+                'strat_b': Decimal('400'),
+            },
+        )
+        positions = [
+            _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100')),
+            _position('t-2', 'strat_a', size=Decimal('1'), entry_price=Decimal('100')),
+            _position('t-3', 'strat_b', size=Decimal('3'), entry_price=Decimal('100')),
+        ]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        assert ctrl._state.per_strategy_deployed == {
+            'strat_a': Decimal('200'),
+            'strat_b': Decimal('300'),
+        }
+
+    def test_logs_warning_when_per_strategy_changes(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('150')},
+        )
+        positions = [_position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))]
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot(positions=positions)
+
+        assert 'per_strategy_deployed' in caplog.text

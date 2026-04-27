@@ -10,6 +10,7 @@ import heapq
 import logging
 import threading
 import uuid
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -26,6 +27,7 @@ from nexus.core.capital_controller.tracked_order import (
     TrackedOrder,
 )
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.position import Position
 
 __all__ = ['CapitalController']
 
@@ -52,6 +54,111 @@ class CapitalController:
         self._reservations: dict[str, Reservation] = {}
         self._expiry_heap: list[tuple[datetime, str]] = []
         self._orders: dict[str, TrackedOrder] = {}
+
+    def reconcile_at_boot(
+        self,
+        positions: Iterable[Position] | None = None,
+    ) -> CapitalState:
+        '''Reset stranded in-flight / working / reservation aggregates at boot.
+
+        PT-FIX-35: `_reservations` and `_orders` are in-memory only —
+        they are rebuilt fresh per `CapitalController` construction.
+        The persisted `CapitalState` carries the AGGREGATE
+        `reservation_notional`, `in_flight_order_notional`, and
+        `working_order_notional` from the prior boot. After a clean
+        shutdown those aggregates are zero (every command reached a
+        terminal outcome via `_wait_terminal`), so this method is a
+        no-op. After a crash / SIGKILL between `submit_command` and
+        the venue ACK / FILL, the aggregates carry non-zero values
+        with no corresponding tracked orders to release them via
+        `order_ack` / `order_fill` / `order_reject` / `order_cancel`.
+
+        The pragmatic recovery path: declare the in-flight from the
+        prior boot lost — reset the aggregates to zero so capital is
+        again available for the freshly-booting strategy. Tradeoff:
+        if the venue still has stale orders open from the prior boot,
+        the strategy may double-spend. For paper-trade testnet this
+        is acceptable. A production deployment should pair this with
+        a venue `query_open_orders` reconciliation pass.
+
+        PT-FIX-41: when `positions` is provided, also rebuild
+        `per_strategy_deployed` from the live positions so it sums
+        to `position_notional` (the only non-zero aggregate after
+        this method runs). Without this rebuild, the persisted
+        per-strategy attribution still includes the pre-crash
+        reservation/in-flight/working amounts; the next
+        `check_and_reserve` then fires the
+        `'Per-strategy deployed attribution mismatch for non-flat
+        state'` denial and permanently blocks all new ENTERs.
+
+        Callers that omit `positions` get only the aggregate reset
+        (the original PT-FIX-35 behavior) — used by tests that don't
+        need the per-strategy invariant rebuilt.
+
+        Args:
+            positions: live `Position`s recovered from snapshot/WAL,
+                used to rebuild `per_strategy_deployed`. The launcher's
+                `_build_nexus_runtime` passes
+                `state.positions.values()` after `_reconcile_capital`
+                settles `position_notional`.
+
+        Returns:
+            CapitalState: snapshot of the (possibly mutated) state for
+                callers that want to log the change.
+        '''
+
+        with self._lock:
+            if self._reservations or self._orders:
+                msg = (
+                    'reconcile_at_boot called after orders or reservations '
+                    'were tracked; expected empty in-memory state at boot'
+                )
+                raise RuntimeError(msg)
+
+            stranded_reservation = self._state.reservation_notional
+            stranded_in_flight = self._state.in_flight_order_notional
+            stranded_working = self._state.working_order_notional
+
+            if stranded_reservation > _ZERO:
+                _logger.warning(
+                    'reconcile_at_boot resetting stranded reservation_notional: %s',
+                    stranded_reservation,
+                )
+                self._state.reservation_notional = _ZERO
+
+            if stranded_in_flight > _ZERO:
+                _logger.warning(
+                    'reconcile_at_boot resetting stranded in_flight_order_notional: %s',
+                    stranded_in_flight,
+                )
+                self._state.in_flight_order_notional = _ZERO
+
+            if stranded_working > _ZERO:
+                _logger.warning(
+                    'reconcile_at_boot resetting stranded working_order_notional: %s',
+                    stranded_working,
+                )
+                self._state.working_order_notional = _ZERO
+
+            if positions is not None:
+                rebuilt: dict[str, Decimal] = {}
+                for pos in positions:
+                    contribution = pos.size * pos.entry_price
+                    rebuilt[pos.strategy_id] = (
+                        rebuilt.get(pos.strategy_id, _ZERO) + contribution
+                    )
+
+                prior = dict(self._state.per_strategy_deployed)
+                if prior != rebuilt:
+                    _logger.warning(
+                        'reconcile_at_boot rebuilding per_strategy_deployed '
+                        'from positions: prior=%s, rebuilt=%s',
+                        prior, rebuilt,
+                    )
+                self._state.per_strategy_deployed.clear()
+                self._state.per_strategy_deployed.update(rebuilt)
+
+            return self._state
 
     def check_and_reserve(
         self,
@@ -406,9 +513,16 @@ class CapitalController:
             return LifecycleResult(success=True)
 
     def order_reject(self, order_id: str) -> LifecycleResult:
-        '''Handle venue rejection of an in-flight order.
+        '''Handle venue rejection of an order.
 
         Removes the order and releases capital back to available.
+        Accepts both IN_FLIGHT (the typical case — venue rejects at
+        submission before ACK) AND WORKING (PT-FIX-40 — venue may
+        queue a reject while an ACK is in transit, transitioning the
+        tracked order to WORKING before the REJECTED arrives;
+        without this branch the WORKING capital would stay parked
+        permanently because TTL eviction only covers
+        `_reservations`, not `_orders`).
 
         Args:
             order_id: ID of the rejected order.
@@ -427,16 +541,22 @@ class CapitalController:
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
-            if order.state != OrderLifecycleState.IN_FLIGHT:
+            if order.state == OrderLifecycleState.IN_FLIGHT:
+                self._state.in_flight_order_notional -= order.remaining_total
+            elif order.state == OrderLifecycleState.WORKING:
+                self._state.working_order_notional -= order.remaining_total
+            else:
                 return LifecycleResult(
                     success=False,
-                    reason=f'order {order_id!r} in {order.state.value}, expected IN_FLIGHT',
+                    reason=(
+                        f'order {order_id!r} in {order.state.value}, '
+                        'expected IN_FLIGHT or WORKING'
+                    ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
             self._orders.pop(order_id)
-            self._state.in_flight_order_notional -= order.total
-            self._adjust_strategy_deployed(order.strategy_id, -order.total)
+            self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
             return LifecycleResult(success=True)
 
@@ -552,9 +672,15 @@ class CapitalController:
             return LifecycleResult(success=True)
 
     def order_cancel(self, order_id: str) -> LifecycleResult:
-        '''Handle cancellation of a working order.
+        '''Handle cancellation or expiration of an order.
 
         Removes the order and releases remaining capital back to available.
+        Accepts both WORKING (typical case — venue cancels a resting
+        order) AND IN_FLIGHT (PT-FIX-43, mirrors PT-FIX-40 for
+        `order_reject` — venue may EXPIRE / CANCEL an order that
+        never received an ACK; without this branch the IN_FLIGHT
+        capital would stay parked permanently because TTL eviction
+        only covers `_reservations`, not `_orders`).
 
         Args:
             order_id: ID of the canceled order.
@@ -573,15 +699,21 @@ class CapitalController:
                     category=FailureCategory.EXPECTED_MISS,
                 )
 
-            if order.state != OrderLifecycleState.WORKING:
+            if order.state == OrderLifecycleState.WORKING:
+                self._state.working_order_notional -= order.remaining_total
+            elif order.state == OrderLifecycleState.IN_FLIGHT:
+                self._state.in_flight_order_notional -= order.remaining_total
+            else:
                 return LifecycleResult(
                     success=False,
-                    reason=f'order {order_id!r} in {order.state.value}, expected WORKING',
+                    reason=(
+                        f'order {order_id!r} in {order.state.value}, '
+                        'expected WORKING or IN_FLIGHT'
+                    ),
                     category=FailureCategory.EXPECTED_MISS,
                 )
 
             self._orders.pop(order_id)
-            self._state.working_order_notional -= order.remaining_total
             self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
 
             return LifecycleResult(success=True)

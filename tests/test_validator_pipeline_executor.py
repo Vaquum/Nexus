@@ -155,10 +155,16 @@ class TestValidationPipelineRun:
         'action',
         [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
     )
-    def test_safety_actions_bypass_capital_health_and_platform_limits(
+    def test_safety_actions_bypass_capital_health_platform_limits_risk_and_price(
         self,
         action: ValidationAction,
     ) -> None:
+        '''PT-FIX-32 + PT-FIX-37: bypass set is CAPITAL / HEALTH /
+        PLATFORM_LIMITS / RISK / PRICE for EXIT / ABORT / CANCEL.
+        Each gates *new* exposure, not exit. Stale orderbook is
+        exactly when a fast EXIT matters most; pre-PT-FIX-37 a
+        `PRICE_BOOK_STALE` denial silently dropped the EXIT.'''
+
         order_seen: list[ValidationStage] = []
 
         def make_stage(
@@ -170,6 +176,8 @@ class TestValidationPipelineRun:
                     ValidationStage.CAPITAL,
                     ValidationStage.HEALTH,
                     ValidationStage.PLATFORM_LIMITS,
+                    ValidationStage.RISK,
+                    ValidationStage.PRICE,
                 ):
                     return ValidationDecision(
                         allowed=False,
@@ -192,6 +200,145 @@ class TestValidationPipelineRun:
         assert ValidationStage.CAPITAL not in order_seen
         assert ValidationStage.HEALTH not in order_seen
         assert ValidationStage.PLATFORM_LIMITS not in order_seen
+        assert ValidationStage.RISK not in order_seen
+        assert ValidationStage.PRICE not in order_seen
+
+    @pytest.mark.parametrize(
+        'action',
+        [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
+    )
+    def test_risk_stage_failure_does_not_block_exit_actions(
+        self,
+        action: ValidationAction,
+    ) -> None:
+        '''PT-FIX-32 regression: a RISK validator that always denies
+        must NOT block EXIT / ABORT / CANCEL. Pre-fix the EXIT was
+        rejected with the RISK stage's reason code; post-fix the
+        bypass returns `allowed=True` and the action progresses to
+        the venue.'''
+
+        def risk_always_denies(
+            _: ValidationRequestContext,
+        ) -> ValidationDecision:
+            return ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.RISK,
+                reason_code='RISK_DRAWDOWN_BREACH',
+                message='drawdown limit hit',
+            )
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.RISK] = risk_always_denies
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=action))
+
+        assert decision.allowed is True
+        assert decision.failed_stage is None
+
+    def test_risk_stage_still_runs_for_enter_actions(self) -> None:
+        '''PT-FIX-32 must not regress entry gating. RISK still runs
+        (and can deny) for ENTER actions.'''
+
+        def risk_always_denies(
+            _: ValidationRequestContext,
+        ) -> ValidationDecision:
+            return ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.RISK,
+                reason_code='RISK_DRAWDOWN_BREACH',
+                message='drawdown limit hit',
+            )
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.RISK] = risk_always_denies
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.ENTER))
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.RISK
+        assert decision.reason_code == 'RISK_DRAWDOWN_BREACH'
+
+    @pytest.mark.parametrize(
+        'action',
+        [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
+    )
+    def test_price_stage_failure_does_not_block_exit_actions(
+        self,
+        action: ValidationAction,
+    ) -> None:
+        '''PT-FIX-37 regression: a PRICE validator that always denies
+        (e.g. `PRICE_BOOK_STALE` on a stale orderbook) must NOT block
+        EXIT / ABORT / CANCEL. Pre-fix the EXIT was rejected before
+        translate; post-fix the bypass returns `allowed=True`.'''
+
+        def price_always_denies(
+            _: ValidationRequestContext,
+        ) -> ValidationDecision:
+            return ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_BOOK_STALE',
+                message='orderbook staleness exceeded threshold',
+            )
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.PRICE] = price_always_denies
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=action))
+
+        assert decision.allowed is True
+        assert decision.failed_stage is None
+
+    def test_price_stage_still_runs_for_enter_actions(self) -> None:
+        '''PT-FIX-37 must not regress entry gating. PRICE still runs
+        (and can deny) for ENTER actions.'''
+
+        def price_always_denies(
+            _: ValidationRequestContext,
+        ) -> ValidationDecision:
+            return ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_BOOK_STALE',
+                message='orderbook staleness exceeded threshold',
+            )
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.PRICE] = price_always_denies
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.ENTER))
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.PRICE
+        assert decision.reason_code == 'PRICE_BOOK_STALE'
 
     def test_enter_does_not_bypass_health_and_platform_limits(self) -> None:
         order_seen: list[ValidationStage] = []
@@ -455,3 +602,95 @@ class TestValidationPipelineRun:
 
         assert decision.allowed is True
         assert decision.reservation is None
+
+
+class TestSafetyBypassContract:
+    '''The contract behind PT-FIX-32 + PT-FIX-37: every validator stage that
+    gates *new* exposure must be in the EXIT/ABORT/CANCEL bypass set, so a
+    stage that legitimately denies an ENTER (drawdown, stale orderbook,
+    capital pressure, health degradation, platform limit breach) cannot
+    block the strategy from cutting risk.
+
+    INTAKE is the only stage NOT bypassed for safety actions — it handles
+    symbol normalization and schema sanity that must run for all actions.
+    Operational-mode gating inside INTAKE explicitly allows EXIT in
+    REDUCE_ONLY (PT-FIX-15) and CANCEL/ABORT in HALTED.
+
+    This test pins the bypass set so a future stage addition that should
+    bypass for exits cannot silently miss the bypass list.
+    '''
+
+    @pytest.mark.parametrize(
+        'action',
+        [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
+    )
+    @pytest.mark.parametrize(
+        'gating_stage',
+        [
+            ValidationStage.RISK,
+            ValidationStage.PRICE,
+            ValidationStage.CAPITAL,
+            ValidationStage.HEALTH,
+            ValidationStage.PLATFORM_LIMITS,
+        ],
+    )
+    def test_every_gating_stage_is_bypassed_for_safety_actions(
+        self,
+        action: ValidationAction,
+        gating_stage: ValidationStage,
+    ) -> None:
+        '''If a future stage is added to `DEFAULT_VALIDATION_STAGE_ORDER`
+        without being added to `_should_bypass_stage`'s bypass set, this
+        test (when extended with the new stage) catches it: the stage
+        denies, the bypass should fire, the action stays allowed.'''
+
+        denying_stage = gating_stage
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[denying_stage] = lambda _: ValidationDecision(
+            allowed=False,
+            failed_stage=denying_stage,
+            reason_code='SHOULD_BE_BYPASSED_FOR_SAFETY',
+            message='gating stage denial that should not block safety actions',
+        )
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=action))
+
+        assert decision.allowed is True, (
+            f'{action.value} was blocked by {gating_stage.value}: '
+            f'{denying_stage.value} must be in the EXIT/ABORT/CANCEL bypass set'
+        )
+
+    def test_intake_is_not_bypassed_for_safety_actions(self) -> None:
+        '''INTAKE handles symbol normalization, schema sanity, and
+        operational-mode gating that must run for every action. It is
+        deliberately excluded from the bypass set; its safety-action
+        behavior is encoded inside `validate_intake_stage` itself
+        (PT-FIX-15 mode gating, PT-FIX-33 zero-notional exemption).'''
+
+        validators: dict[
+            ValidationStage,
+            Callable[[ValidationRequestContext], ValidationDecision],
+        ] = {
+            stage: lambda _: ValidationDecision(allowed=True)
+            for stage in DEFAULT_VALIDATION_STAGE_ORDER
+        }
+        validators[ValidationStage.INTAKE] = lambda _: ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.INTAKE,
+            reason_code='INTAKE_RUNS_FOR_ALL_ACTIONS',
+            message='intake denial must propagate even for safety actions',
+        )
+        pipeline = ValidationPipeline(validators=validators)
+
+        decision = pipeline.validate(_make_context(action=ValidationAction.EXIT))
+
+        assert decision.allowed is False
+        assert decision.failed_stage == ValidationStage.INTAKE
