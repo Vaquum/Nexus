@@ -63,6 +63,7 @@ def _entry_context(trade_id: str = 'trade_001') -> OrderContext:
         order_size=Decimal('0.01'),
         order_notional=Decimal('100'),
         estimated_fees=Decimal('1'),
+        is_entry=True,
     )
 
 
@@ -75,6 +76,7 @@ def _exit_context(trade_id: str = 'trade_001') -> OrderContext:
         order_size=Decimal('0.01'),
         order_notional=Decimal('100'),
         estimated_fees=Decimal('1'),
+        is_entry=False,
     )
 
 
@@ -114,6 +116,7 @@ class TestOutcomeProcessorAck:
             order_size=Decimal('0.01'),
             order_notional=Decimal('100'),
             estimated_fees=Decimal('1'),
+            is_entry=True,
         )
 
         result = proc.process(outcome, ctx)
@@ -213,6 +216,7 @@ class TestOutcomeProcessorFill:
             order_size=Decimal('0.01'),
             order_notional=Decimal('100'),
             estimated_fees=Decimal('1'),
+            is_entry=True,
         )
 
         result = proc.process(outcome, ctx)
@@ -576,6 +580,7 @@ class TestCommandIdMismatch:
             order_size=Decimal('0.01'),
             order_notional=Decimal('100'),
             estimated_fees=Decimal('1'),
+            is_entry=True,
         )
 
         result = proc.process(outcome, mismatched_ctx)
@@ -615,6 +620,7 @@ class TestCancelUsesRemainingSize:
             order_size=Decimal('0.01'),
             order_notional=Decimal('100'),
             estimated_fees=Decimal('1'),
+            is_entry=False,
         )
 
         result = proc.process(outcome, ctx)

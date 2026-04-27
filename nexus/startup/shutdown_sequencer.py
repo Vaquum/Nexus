@@ -433,6 +433,7 @@ class ShutdownSequencer:
             order_size=action.size,
             order_notional=approx_notional,
             estimated_fees=_ZERO,
+            is_entry=False,
         )
 
     def _build_exit_context(

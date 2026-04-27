@@ -503,6 +503,7 @@ class TestBridgeToCapital:
                 order_size=Decimal('0.01'),
                 order_notional=Decimal('100'),
                 estimated_fees=Decimal('1'),
+                is_entry=True,
             )
 
             result = processor.process(ack_outcome, ctx)

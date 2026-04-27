@@ -25,10 +25,21 @@ class OrderContext:
         command_id: Links to TradeCommand and TradeOutcome.
         strategy_id: Which strategy owns this order.
         trade_id: Position reference; None for new entries until assigned.
-        side: Order direction (BUY for entry, SELL for exit).
+        side: Order direction at the venue (BUY/SELL). Independent of
+            entry-vs-exit semantics: a short-position EXIT is a BUY at
+            the venue, and a short-position ENTER is a SELL.
         order_size: Original order size in base asset.
         order_notional: Original order notional in quote asset.
         estimated_fees: Estimated fees at reservation time for reconciliation.
+        is_entry: True when this order grows a position (ENTER), False
+            when it reduces or closes one (EXIT). The caller knows
+            this at construction time from the strategy `Action` (or
+            the shutdown EXIT path); it must not be inferred from
+            `side`, since BUY-to-cover on a short is an EXIT and
+            SELL-to-open on a short is an ENTER. `OutcomeProcessor`
+            uses this flag exclusively to route fills between the
+            entry path (capital `order_fill` + `_grow_position`) and
+            the exit path (`_reduce_position`).
     '''
 
     command_id: str
@@ -38,6 +49,7 @@ class OrderContext:
     order_size: Decimal
     order_notional: Decimal
     estimated_fees: Decimal
+    is_entry: bool
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -90,14 +102,12 @@ class OrderContext:
             msg = 'OrderContext.estimated_fees must be non-negative'
             raise ValueError(msg)
 
-    @property
-    def is_entry(self) -> bool:
-        '''Return True if this is an entry order (BUY side).'''
-
-        return self.side == OrderSide.BUY
+        if not isinstance(self.is_entry, bool):
+            msg = 'OrderContext.is_entry must be a bool'
+            raise ValueError(msg)
 
     @property
     def is_exit(self) -> bool:
-        '''Return True if this is an exit order (SELL side).'''
+        '''Return True if this order reduces a position.'''
 
-        return self.side == OrderSide.SELL
+        return not self.is_entry
