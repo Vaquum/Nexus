@@ -1144,9 +1144,17 @@ class TestSubmitExitMissingPositionRace:
 
     Post-fix: `.get()` returns `None`, the explicit `is None` check
     raises `ValueError` (which IS caught), the OrderContext store is
-    skipped, and shutdown continues. The terminal-outcome handler
-    will gracefully no-op for this command_id since no context is
-    stored.
+    skipped, and shutdown continues.
+
+    Subsequent fix (Copilot review): when `_build_exit_order_context`
+    raises ValueError, `_submit_exit` now also returns BEFORE
+    appending to `_submitted_command_ids`. Without the OrderContext
+    we cannot apply any FILL outcome to state, so waiting on the
+    command_id in `_wait_terminal` only adds shutdown latency and
+    triggers escalation-abort logs for an outcome we cannot use.
+    The tradeoff is that the venue may leave the order open; next
+    boot's `reconcile_at_boot` resets stranded aggregates and a
+    venue reconciliation pass should pick up the dangling order.
     '''
 
     def test_position_removed_between_context_and_order_context_does_not_abort(
@@ -1201,7 +1209,7 @@ class TestSubmitExitMissingPositionRace:
 
         sequencer._submit_actions()
 
-        assert 'praxis_cmd_42' in sequencer._submitted_command_ids
+        assert 'praxis_cmd_42' not in sequencer._submitted_command_ids
         assert 'praxis_cmd_42' not in sequencer._exit_contexts
 
     def test_build_exit_order_context_raises_value_error_for_missing_position(

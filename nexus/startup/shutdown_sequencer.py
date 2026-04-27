@@ -353,8 +353,6 @@ class ShutdownSequencer:
             )
             return
 
-        self._submitted_command_ids.append(returned_id)
-
         try:
             self._exit_contexts[returned_id] = self._build_exit_order_context(
                 strategy_id=strategy_id,
@@ -364,11 +362,18 @@ class ShutdownSequencer:
             )
         except ValueError:
             _log.exception(
-                'shutdown exit OrderContext rejected by invariants',
+                'shutdown exit OrderContext rejected by invariants; '
+                'skipping _wait_terminal for this command — venue may '
+                'leave the order open. Next boot reconcile_at_boot '
+                'will reset stranded aggregates and the venue '
+                'reconciliation pass should pick up the dangling order',
                 strategy_id=strategy_id,
                 trade_id=action.trade_id,
                 command_id=returned_id,
             )
+            return
+
+        self._submitted_command_ids.append(returned_id)
 
         _log.info(
             'exit submitted',
