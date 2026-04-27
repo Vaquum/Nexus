@@ -571,8 +571,6 @@ class ShutdownSequencer:
 
             if outcome.outcome_type.is_terminal:
                 remaining.discard(outcome.command_id)
-                if not outcome.outcome_type.is_fill:
-                    self._apply_terminal_outcome(outcome)
                 _log.info(
                     'command reached terminal state',
                     command_id=outcome.command_id,
