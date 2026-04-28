@@ -420,12 +420,21 @@ class StartupSequencer:
                     praxis_qty=str(qty),
                 )
 
-        for trade_id in self._state.positions:
-            if trade_id not in praxis_by_trade_id:
-                _log.warning(
-                    'position in Nexus but not in Praxis',
-                    trade_id=trade_id,
-                )
+        nexus_only_trade_ids = [
+            trade_id for trade_id in self._state.positions
+            if trade_id not in praxis_by_trade_id
+        ]
+        for trade_id in nexus_only_trade_ids:
+            evicted = self._state.positions.pop(trade_id)
+            _log.warning(
+                'evicting Nexus-only position not present in Praxis snapshot — '
+                'Praxis truth wins; the per_strategy_deployed rebuild downstream '
+                'will not include this stale entry',
+                trade_id=trade_id,
+                strategy_id=evicted.strategy_id,
+                size=str(evicted.size),
+                entry_price=str(evicted.entry_price),
+            )
 
         old_notional = self._state.capital.position_notional
 
