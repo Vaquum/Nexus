@@ -136,7 +136,22 @@ class OutcomeProcessor:
 
             capital_updated = True
 
-        position_updated, realized_pnl = self._update_position_on_fill(outcome, context)
+        position_updated, realized_pnl, cost_basis_released = (
+            self._update_position_on_fill(outcome, context)
+        )
+
+        if cost_basis_released is not None:
+            exit_result = self._capital.order_exit(
+                context.strategy_id,
+                cost_basis_released,
+            )
+            if not exit_result.success:
+                return ProcessResult(
+                    success=False,
+                    outcome_type=outcome.outcome_type,
+                    error_reason=f'order_exit failed: {exit_result.reason}',
+                )
+            capital_updated = True
 
         if realized_pnl is not None:
             self._update_strategy_risk_state(context.strategy_id, realized_pnl)
@@ -218,14 +233,26 @@ class OutcomeProcessor:
         self,
         outcome: TradeOutcome,
         context: OrderContext,
-    ) -> tuple[bool, Decimal | None]:
+    ) -> tuple[bool, Decimal | None, Decimal | None]:
+        '''Apply fill to position; return (updated, realized_pnl, cost_basis_released).
+
+        `cost_basis_released` is set to `position.avg_cost_basis * fill_size`
+        on EXIT fills so `_handle_fill` can call `CapitalController.order_exit`
+        to decrement `position_notional` and `per_strategy_deployed`. None
+        on ENTER fills (capital aggregates are incremented earlier via
+        `order_fill`).
+        '''
+
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
 
         if context.is_entry:
-            return self._grow_position(outcome, context), None
+            return self._grow_position(outcome, context), None, None
 
-        return self._reduce_position(outcome, context)
+        position_updated, realized_pnl, cost_basis_released = (
+            self._reduce_position(outcome, context)
+        )
+        return position_updated, realized_pnl, cost_basis_released
 
     def _grow_position(
         self,
@@ -234,6 +261,8 @@ class OutcomeProcessor:
     ) -> bool:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
+        assert outcome.fill_notional is not None
+        assert outcome.actual_fees is not None
 
         if context.trade_id is None:
             msg = f'entry fill without trade_id: command_id={outcome.command_id!r}'
@@ -248,14 +277,20 @@ class OutcomeProcessor:
         old_size = position.size
         fill_size = outcome.fill_size
         fill_price = outcome.fill_price
+        fill_notional = outcome.fill_notional
+        actual_fees = outcome.actual_fees
 
         new_size = old_size + fill_size
         new_entry_price = (
             old_size * position.entry_price + fill_size * fill_price
         ) / new_size
+        new_avg_cost_basis = (
+            old_size * position.avg_cost_basis + fill_notional + actual_fees
+        ) / new_size
 
         position.size = new_size
         position.entry_price = new_entry_price
+        position.avg_cost_basis = new_avg_cost_basis
 
         return True
 
@@ -263,7 +298,7 @@ class OutcomeProcessor:
         self,
         outcome: TradeOutcome,
         context: OrderContext,
-    ) -> tuple[bool, Decimal | None]:
+    ) -> tuple[bool, Decimal | None, Decimal | None]:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
 
@@ -290,6 +325,7 @@ class OutcomeProcessor:
         entry_price = position.entry_price
         side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
         realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
+        cost_basis_released = position.avg_cost_basis * fill_size
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
@@ -297,7 +333,7 @@ class OutcomeProcessor:
         if position.is_closed:
             del self._state.positions[context.trade_id]
 
-        return True, realized_pnl
+        return True, realized_pnl, cost_basis_released if cost_basis_released > _ZERO else None
 
     def _clear_pending_exit(self, context: OrderContext, size: Decimal) -> bool:
         if context.trade_id is None:

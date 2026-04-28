@@ -886,3 +886,444 @@ class TestRiskMetricsRecalculation:
         expected_pnl = Decimal('10')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
         assert strategy_risk.rolling_loss_24h == _ZERO
+
+
+class TestCapitalConservationOnExit:
+    '''BLOCKER-A: `position_notional` and `per_strategy_deployed` must
+    decrement on EXIT FILL by the cost basis of the closed portion.
+
+    Pre-fix: `_handle_fill` called `capital.order_fill` only when
+    `context.is_entry`. The EXIT path went straight to `_reduce_position`
+    which mutated only `position.size` / `position.pending_exit`; no
+    capital aggregate was touched. After ~1.5 round-trips a
+    `capital_pct=10` strategy hit per-strategy-deployed denial; after
+    ~7 round-trips total utilization hit the 80% cap and every new
+    ENTER was denied with no operator-recoverable code path.
+
+    Post-fix: `_grow_position` maintains `Position.avg_cost_basis` as
+    VWAP-with-fees on entry FILLs. `_reduce_position` returns
+    `cost_basis_released = avg_cost_basis * fill_size`. `_handle_fill`
+    calls `capital.order_exit(strategy_id, cost_basis_released)` which
+    decrements both aggregates by that amount. Round-trip conservation
+    holds: every entry FILL adds `fill_notional + actual_fees` to
+    `position_notional`; the matching exit FILLs collectively remove
+    the same amount.
+    '''
+
+    def test_full_round_trip_returns_aggregates_to_zero(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        # ENTER cycle: reserve → send_order → ack → fill
+        _setup_working_order(ctrl, order_id='cmd_enter')
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        entry_outcome = TradeOutcome(
+            outcome_id='out_enter',
+            command_id='cmd_enter',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+        entry_ctx = OrderContext(
+            command_id='cmd_enter',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            is_entry=True,
+        )
+        proc.process(entry_outcome, entry_ctx)
+
+        # After entry: position_notional should be 101 (notional + fees)
+        assert ctrl._state.position_notional == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_001'] == Decimal('101')
+
+        # avg_cost_basis on the position should reflect VWAP-with-fees
+        position = state.positions['trade_001']
+        assert position.size == Decimal('0.002')
+        assert position.avg_cost_basis == Decimal('50500')  # 101 / 0.002
+
+        # EXIT FILL: full close at 51000 (gross profit 2)
+        exit_outcome = TradeOutcome(
+            outcome_id='out_exit',
+            command_id='cmd_exit',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('102'),
+            actual_fees=Decimal('1'),
+        )
+        exit_ctx = OrderContext(
+            command_id='cmd_exit',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('102'),
+            estimated_fees=Decimal('1'),
+            is_entry=False,
+        )
+        result = proc.process(exit_outcome, exit_ctx)
+        assert result.success is True
+
+        # Round-trip conservation: aggregates back to zero
+        assert ctrl._state.position_notional == _ZERO
+        assert 'strat_001' not in ctrl._state.per_strategy_deployed
+        # Position fully closed → removed from state
+        assert 'trade_001' not in state.positions
+
+    def test_partial_exit_decrements_proportionally(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        _setup_working_order(ctrl, order_id='cmd_enter')
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        entry_outcome = TradeOutcome(
+            outcome_id='out_enter',
+            command_id='cmd_enter',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+        entry_ctx = OrderContext(
+            command_id='cmd_enter',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            is_entry=True,
+        )
+        proc.process(entry_outcome, entry_ctx)
+
+        # Half-close
+        half_exit = TradeOutcome(
+            outcome_id='out_partial',
+            command_id='cmd_exit',
+            outcome_type=TradeOutcomeType.PARTIAL,
+            timestamp=_now(),
+            fill_size=Decimal('0.001'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('51'),
+            actual_fees=Decimal('0.5'),
+        )
+        exit_ctx = OrderContext(
+            command_id='cmd_exit',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('102'),
+            estimated_fees=Decimal('1'),
+            is_entry=False,
+        )
+        proc.process(half_exit, exit_ctx)
+
+        # cost_basis_released = 50500 * 0.001 = 50.5
+        # position_notional was 101 → 101 - 50.5 = 50.5
+        assert ctrl._state.position_notional == Decimal('50.5')
+        assert ctrl._state.per_strategy_deployed['strat_001'] == Decimal('50.5')
+        assert state.positions['trade_001'].size == Decimal('0.001')
+
+    def test_avg_cost_basis_vwap_across_two_entry_fills(self) -> None:
+        '''Two PARTIAL entry fills at the same price-and-fee-rate; verify
+        avg_cost_basis accumulates correctly across fills (capital math
+        forces uniform fees across fills to avoid proportional-fee
+        deficits against fee_reserve).'''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        reservation = ctrl.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('200'),
+            estimated_fees=Decimal('2'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert reservation.reservation is not None
+        ctrl.send_order(reservation.reservation.reservation_id, 'cmd_enter')
+        ctrl.order_ack('cmd_enter')
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        entry_ctx = OrderContext(
+            command_id='cmd_enter',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.004'),
+            order_notional=Decimal('200'),
+            estimated_fees=Decimal('2'),
+            is_entry=True,
+        )
+
+        # First PARTIAL: 0.002 @ 50000 = 100 notional + 1 fee
+        result1 = proc.process(
+            TradeOutcome(
+                outcome_id='out_p1',
+                command_id='cmd_enter',
+                outcome_type=TradeOutcomeType.PARTIAL,
+                timestamp=_now(),
+                fill_size=Decimal('0.002'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('100'),
+                actual_fees=Decimal('1'),
+            ),
+            entry_ctx,
+        )
+        assert result1.success is True
+        # After first: avg_cost_basis = 101 / 0.002 = 50500
+        assert state.positions['trade_001'].size == Decimal('0.002')
+        assert state.positions['trade_001'].avg_cost_basis == Decimal('50500')
+
+        # Second FILLED: 0.002 @ 50000 = 100 notional + 1 fee
+        result2 = proc.process(
+            TradeOutcome(
+                outcome_id='out_p2',
+                command_id='cmd_enter',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.002'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('100'),
+                actual_fees=Decimal('1'),
+            ),
+            entry_ctx,
+        )
+        assert result2.success is True
+        # After second: total cost = 101 + 101 = 202, total size = 0.004
+        # avg_cost_basis = 202 / 0.004 = 50500 (same since uniform)
+        assert state.positions['trade_001'].size == Decimal('0.004')
+        assert state.positions['trade_001'].avg_cost_basis == Decimal('50500')
+
+    def test_avg_cost_basis_vwap_pure_unit_test(self) -> None:
+        '''Direct unit test on _grow_position math with two fills at
+        different prices — bypasses CapitalController's proportional-fee
+        machinery to focus on the VWAP-with-fees calculation.'''
+
+        proc, _, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        ctx = OrderContext(
+            command_id='cmd_enter',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.004'),
+            order_notional=Decimal('200'),
+            estimated_fees=Decimal('2'),
+            is_entry=True,
+        )
+
+        # First fill: 0.002 @ 50000 = 100 notional, 1 fee → cost basis 101
+        proc._grow_position(
+            TradeOutcome(
+                outcome_id='out_p1',
+                command_id='cmd_enter',
+                outcome_type=TradeOutcomeType.PARTIAL,
+                timestamp=_now(),
+                fill_size=Decimal('0.002'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('100'),
+                actual_fees=Decimal('1'),
+            ),
+            ctx,
+        )
+        assert state.positions['trade_001'].size == Decimal('0.002')
+        assert state.positions['trade_001'].avg_cost_basis == Decimal('50500')
+
+        # Second fill: 0.002 @ 51000 = 102 notional, 1 fee → cost basis 103
+        proc._grow_position(
+            TradeOutcome(
+                outcome_id='out_p2',
+                command_id='cmd_enter',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.002'),
+                fill_price=Decimal('51000'),
+                fill_notional=Decimal('102'),
+                actual_fees=Decimal('1'),
+            ),
+            ctx,
+        )
+        # Total cost: 101 + 103 = 204; total size: 0.004
+        # avg_cost_basis = 204 / 0.004 = 51000
+        assert state.positions['trade_001'].size == Decimal('0.004')
+        assert state.positions['trade_001'].avg_cost_basis == Decimal('51000')
+        # entry_price tracks fill-price VWAP (excludes fees)
+        # = (0.002*50000 + 0.002*51000) / 0.004 = 50500
+        assert state.positions['trade_001'].entry_price == Decimal('50500')
+
+    def test_eight_round_trips_no_aggregate_leak(self) -> None:
+        '''Pre-fix: eight ENTER/EXIT cycles at 10% each would trip the
+        per-strategy budget cap on the second ENTER. Post-fix: aggregates
+        return to zero after each round-trip and no denial fires.'''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        for i in range(8):
+            tid = f'trade_{i:03d}'
+            cid_enter = f'cmd_enter_{i:03d}'
+            cid_exit = f'cmd_exit_{i:03d}'
+
+            _setup_working_order(ctrl, order_id=cid_enter)
+            state.positions[tid] = Position(
+                trade_id=tid,
+                strategy_id='strat_001',
+                symbol='BTCUSD',
+                side=OrderSide.BUY,
+                size=Decimal('0'),
+                entry_price=Decimal('50000'),
+            )
+            proc.process(
+                TradeOutcome(
+                    outcome_id=f'out_e{i:03d}',
+                    command_id=cid_enter,
+                    outcome_type=TradeOutcomeType.FILLED,
+                    timestamp=_now(),
+                    fill_size=Decimal('0.002'),
+                    fill_price=Decimal('50000'),
+                    fill_notional=Decimal('100'),
+                    actual_fees=Decimal('1'),
+                ),
+                OrderContext(
+                    command_id=cid_enter,
+                    strategy_id='strat_001',
+                    trade_id=tid,
+                    side=OrderSide.BUY,
+                    order_size=Decimal('0.002'),
+                    order_notional=Decimal('100'),
+                    estimated_fees=Decimal('1'),
+                    is_entry=True,
+                ),
+            )
+            proc.process(
+                TradeOutcome(
+                    outcome_id=f'out_x{i:03d}',
+                    command_id=cid_exit,
+                    outcome_type=TradeOutcomeType.FILLED,
+                    timestamp=_now(),
+                    fill_size=Decimal('0.002'),
+                    fill_price=Decimal('50000'),
+                    fill_notional=Decimal('100'),
+                    actual_fees=Decimal('1'),
+                ),
+                OrderContext(
+                    command_id=cid_exit,
+                    strategy_id='strat_001',
+                    trade_id=tid,
+                    side=OrderSide.SELL,
+                    order_size=Decimal('0.002'),
+                    order_notional=Decimal('100'),
+                    estimated_fees=Decimal('1'),
+                    is_entry=False,
+                ),
+            )
+            assert ctrl._state.position_notional == _ZERO, (
+                f'cycle {i}: position_notional leaked to {ctrl._state.position_notional}'
+            )
+            assert 'strat_001' not in ctrl._state.per_strategy_deployed, (
+                f'cycle {i}: per_strategy_deployed leaked'
+            )
+
+    def test_order_exit_invariant_breach_when_release_exceeds_pool(self) -> None:
+        '''Defensive guard: order_exit refuses to drive position_notional negative.'''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        _setup_working_order(ctrl, order_id='cmd_enter')
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        # Tiny entry fill so position_notional is small
+        proc.process(
+            TradeOutcome(
+                outcome_id='out_e',
+                command_id='cmd_enter',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.001'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('50'),
+                actual_fees=Decimal('0.5'),
+            ),
+            OrderContext(
+                command_id='cmd_enter',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.BUY,
+                order_size=Decimal('0.001'),
+                order_notional=Decimal('50'),
+                estimated_fees=Decimal('0.5'),
+                is_entry=True,
+            ),
+        )
+        assert ctrl._state.position_notional == Decimal('50.5')
+
+        # Manually inflate avg_cost_basis to force a release > position_notional
+        state.positions['trade_001'].avg_cost_basis = Decimal('1000000')
+
+        result = proc.process(
+            TradeOutcome(
+                outcome_id='out_x',
+                command_id='cmd_exit',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.001'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('50'),
+                actual_fees=Decimal('0.5'),
+            ),
+            OrderContext(
+                command_id='cmd_exit',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.SELL,
+                order_size=Decimal('0.001'),
+                order_notional=Decimal('50'),
+                estimated_fees=Decimal('0.5'),
+                is_entry=False,
+            ),
+        )
+        assert result.success is False
+        assert result.error_reason is not None
+        assert 'order_exit failed' in result.error_reason

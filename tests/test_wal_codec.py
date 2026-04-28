@@ -81,6 +81,7 @@ def _make_full_state() -> InstanceState:
                 entry_price=Decimal('50000'),
                 unrealized_pnl=Decimal('1250.50'),
                 pending_exit=Decimal('0.25'),
+                avg_cost_basis=Decimal('50500'),
             ),
             't2': Position(
                 trade_id='t2',
@@ -204,6 +205,26 @@ class TestRoundTrip:
             assert rest_pos.entry_price == orig_pos.entry_price
             assert rest_pos.unrealized_pnl == orig_pos.unrealized_pnl
             assert rest_pos.pending_exit == orig_pos.pending_exit
+            assert rest_pos.avg_cost_basis == orig_pos.avg_cost_basis
+
+    def test_legacy_position_decode_defaults_avg_cost_basis_to_entry_price(self) -> None:
+        '''Pre-fix snapshots written without avg_cost_basis must decode to
+        entry_price (best-effort default — fees lost but recoverable).'''
+
+        from nexus.infrastructure.wal_codec import _decode_position
+
+        legacy_dict = {
+            'trade_id': 't_legacy',
+            'strategy_id': 'momentum',
+            'symbol': 'BTCUSDT',
+            'side': OrderSide.BUY.value,
+            'size': '0.5',
+            'entry_price': '50000',
+            'unrealized_pnl': '0',
+            'pending_exit': '0',
+        }
+        pos = _decode_position(legacy_dict)
+        assert pos.avg_cost_basis == Decimal('50000')
 
     def test_full_state_mode(self) -> None:
         '''Verify mode fields survive round-trip.'''

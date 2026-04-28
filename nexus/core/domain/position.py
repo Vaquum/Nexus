@@ -27,9 +27,21 @@ class Position:
         symbol: Trading pair symbol.
         side: Position direction.
         size: Current position size in base asset, must be non-negative.
-        entry_price: Volume-weighted average entry price in quote asset.
+        entry_price: Volume-weighted average entry price in quote asset
+            (excludes fees — used for gross realized P&L calculation).
         unrealized_pnl: Mark-to-market P&L in quote asset.
         pending_exit: Size of exit orders (opposite side) in-flight or resting for this trade.
+        avg_cost_basis: Volume-weighted average cost per unit INCLUDING entry
+            fees, in quote asset. Differs from `entry_price` because fees are
+            baked in. Used by `OutcomeProcessor._handle_fill` on the EXIT
+            branch to compute `cost_basis_released = avg_cost_basis * fill_size`,
+            which is then passed to `CapitalController.order_exit` so
+            `position_notional` and `per_strategy_deployed` decrement by the
+            same amount that was added on the matching entry FILL via
+            `order_fill` (which adds `fill_notional + actual_fees` per fill).
+            Defaults to `_ZERO` so size=0 placeholders (PT-FIX-20) and pre-
+            existing snapshots remain valid; `_grow_position` populates it on
+            the first real fill.
     '''
 
     trade_id: str
@@ -40,6 +52,7 @@ class Position:
     entry_price: Decimal
     unrealized_pnl: Decimal = _ZERO
     pending_exit: Decimal = _ZERO
+    avg_cost_basis: Decimal = _ZERO
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -68,6 +81,10 @@ class Position:
 
         if not self.unrealized_pnl.is_finite():
             msg = 'Position.unrealized_pnl must be finite'
+            raise ValueError(msg)
+
+        if not self.avg_cost_basis.is_finite() or self.avg_cost_basis < _ZERO:
+            msg = 'Position.avg_cost_basis must be a finite non-negative value'
             raise ValueError(msg)
 
     @property

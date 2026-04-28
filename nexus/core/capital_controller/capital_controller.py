@@ -560,6 +560,71 @@ class CapitalController:
 
             return LifecycleResult(success=True)
 
+    def order_exit(
+        self,
+        strategy_id: str,
+        cost_basis_released: Decimal,
+    ) -> LifecycleResult:
+        '''Decrement capital aggregates by the cost basis of an EXIT FILL.
+
+        Mirrors `order_fill` for the EXIT direction. Where `order_fill`
+        increments `position_notional` and `per_strategy_deployed` by
+        `fill_notional + actual_fees` (the cost basis added for an entry
+        fill), `order_exit` decrements both aggregates by the cost basis
+        released by an exit fill.
+
+        The caller (`OutcomeProcessor._handle_fill` exit branch) computes
+        `cost_basis_released = position.avg_cost_basis * fill_size`. The
+        `Position.avg_cost_basis` field is the volume-weighted average
+        cost per unit INCLUDING entry fees (maintained by `_grow_position`
+        on every entry FILL), so the round-trip conservation holds:
+        every entry FILL adds `fill_notional + actual_fees` to
+        `position_notional`; the matching exit FILLs collectively remove
+        the same amount.
+
+        Exit fees are NOT touched here — they appear in `realized_pnl`
+        via `_reduce_position`'s gross PnL calculation. The current
+        capital model does not track exit fees as a separate aggregate;
+        if a future risk extension needs them, add a `realized_fees`
+        ledger and decrement this method's behavior accordingly.
+
+        Args:
+            strategy_id: Strategy whose deployed total is decremented.
+            cost_basis_released: Cost basis of the closed portion in
+                quote asset, computed by the caller as
+                `position.avg_cost_basis * outcome.fill_size`. Must be
+                positive.
+
+        Returns:
+            LifecycleResult with reason on failure. INVARIANT_BREACH
+            when `cost_basis_released > position_notional` (would drive
+            the aggregate negative).
+        '''
+
+        if not isinstance(cost_basis_released, Decimal) or not cost_basis_released.is_finite():
+            msg = f'cost_basis_released must be a finite Decimal: {cost_basis_released}'
+            raise ValueError(msg)
+
+        if cost_basis_released <= _ZERO:
+            msg = f'cost_basis_released must be positive: {cost_basis_released}'
+            raise ValueError(msg)
+
+        with self._lock:
+            if cost_basis_released > self._state.position_notional:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'cost_basis_released {cost_basis_released} exceeds '
+                        f'position_notional {self._state.position_notional}'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
+            self._state.position_notional -= cost_basis_released
+            self._adjust_strategy_deployed(strategy_id, -cost_basis_released)
+
+            return LifecycleResult(success=True)
+
     def order_fill(
         self,
         order_id: str,

@@ -297,6 +297,7 @@ class StartupSequencer:
                 side=side,
                 size=qty,
                 entry_price=price,
+                avg_cost_basis=price,
             )
         except ValueError as e:
             _log.warning(
