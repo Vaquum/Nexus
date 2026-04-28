@@ -54,6 +54,25 @@ def _setup_working_order(ctrl: CapitalController, order_id: str = 'cmd_001') -> 
     ctrl.order_ack(order_id)
 
 
+def _prime_open_position_capital(
+    ctrl: CapitalController,
+    strategy_id: str,
+    size: Decimal,
+    avg_cost_basis: Decimal,
+) -> Decimal:
+    '''Prime `position_notional` and `per_strategy_deployed[strategy_id]`
+    so they reflect an open position of `size` at `avg_cost_basis`. Used
+    by EXIT FILL tests to assert capital decrement post-conditions
+    without running a full entry FILL pipeline. Returns the cost basis
+    total added so the test can compute expected decrements.'''
+
+    cost_basis_total = avg_cost_basis * size
+    ctrl._state.position_notional += cost_basis_total
+    current = ctrl._state.per_strategy_deployed.get(strategy_id, _ZERO)
+    ctrl._state.per_strategy_deployed[strategy_id] = current + cost_basis_total
+    return cost_basis_total
+
+
 def _entry_context(trade_id: str = 'trade_001') -> OrderContext:
     return OrderContext(
         command_id='cmd_001',
@@ -641,7 +660,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -662,6 +687,9 @@ class TestRiskMetricsRecalculation:
         assert strategy_risk.rolling_loss_24h == expected_loss
         assert strategy_risk.rolling_loss_7d == expected_loss
         assert strategy_risk.rolling_loss_30d == expected_loss
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
+        assert cost_basis == Decimal('500')
 
     def test_exit_fill_updates_strategy_realized_pnl(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
@@ -674,7 +702,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -693,6 +727,8 @@ class TestRiskMetricsRecalculation:
         strategy_risk = state.risk.per_strategy['strat_001']
         expected_pnl = Decimal('10')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
     def test_exit_fill_updates_instance_cumulative_realized_pnl(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
@@ -707,7 +743,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -725,6 +767,8 @@ class TestRiskMetricsRecalculation:
 
         expected_pnl = Decimal('10')
         assert state.risk.cumulative_realized_pnl == expected_pnl
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
     def test_exit_fill_triggers_drawdown_recompute(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
@@ -739,7 +783,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -758,6 +808,8 @@ class TestRiskMetricsRecalculation:
         expected_equity = _POOL + Decimal('10')
         assert state.risk.equity == expected_equity
         assert state.risk.equity_hwm == expected_equity
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
     def test_profitable_exit_does_not_add_to_rolling_losses(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
@@ -770,7 +822,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -790,6 +848,8 @@ class TestRiskMetricsRecalculation:
         assert strategy_risk.rolling_loss_24h == _ZERO
         assert strategy_risk.rolling_loss_7d == _ZERO
         assert strategy_risk.rolling_loss_30d == _ZERO
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
     def test_multiple_strategies_isolated(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
@@ -802,7 +862,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -823,6 +889,8 @@ class TestRiskMetricsRecalculation:
 
         strat1_risk = state.risk.per_strategy['strat_001']
         assert strat1_risk.rolling_loss_24h == Decimal('10')
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
     def test_strategy_event_appended_to_wal_on_exit_fill(self) -> None:
         proc, ctrl, state, store, _tmp = _make_processor()
@@ -835,7 +903,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.BUY,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -854,6 +928,8 @@ class TestRiskMetricsRecalculation:
         entries = store._wal.read_all()
         event_entries = [e for e in entries if e.entry_type.name == 'STRATEGY_EVENT']
         assert len(event_entries) == 1
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
     def test_short_position_pnl_sign_correct(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()
@@ -866,7 +942,13 @@ class TestRiskMetricsRecalculation:
             side=OrderSide.SELL,
             size=Decimal('0.01'),
             entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
         )
+        cost_basis = _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('0.01'), Decimal('50000'),
+        )
+        pre_position_notional = ctrl._state.position_notional
+        pre_deployed = ctrl._state.per_strategy_deployed['strat_001']
 
         outcome = TradeOutcome(
             outcome_id='out_001',
@@ -886,28 +968,22 @@ class TestRiskMetricsRecalculation:
         expected_pnl = Decimal('10')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
         assert strategy_risk.rolling_loss_24h == _ZERO
+        assert ctrl._state.position_notional == pre_position_notional - cost_basis
+        assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
 
 class TestCapitalConservationOnExit:
-    '''BLOCKER-A: `position_notional` and `per_strategy_deployed` must
-    decrement on EXIT FILL by the cost basis of the closed portion.
+    '''Round-trip conservation: every entry FILL adds
+    `fill_notional + actual_fees` to `position_notional` (via
+    `CapitalController.order_fill`); each matching exit FILL removes
+    `position.avg_cost_basis * fill_size` (via
+    `CapitalController.order_exit`). The aggregates return to zero
+    once a position is fully closed.
 
-    Pre-fix: `_handle_fill` called `capital.order_fill` only when
-    `context.is_entry`. The EXIT path went straight to `_reduce_position`
-    which mutated only `position.size` / `position.pending_exit`; no
-    capital aggregate was touched. After ~1.5 round-trips a
-    `capital_pct=10` strategy hit per-strategy-deployed denial; after
-    ~7 round-trips total utilization hit the 80% cap and every new
-    ENTER was denied with no operator-recoverable code path.
-
-    Post-fix: `_grow_position` maintains `Position.avg_cost_basis` as
-    VWAP-with-fees on entry FILLs. `_reduce_position` returns
-    `cost_basis_released = avg_cost_basis * fill_size`. `_handle_fill`
-    calls `capital.order_exit(strategy_id, cost_basis_released)` which
-    decrements both aggregates by that amount. Round-trip conservation
-    holds: every entry FILL adds `fill_notional + actual_fees` to
-    `position_notional`; the matching exit FILLs collectively remove
-    the same amount.
+    `Position.avg_cost_basis` is maintained by
+    `OutcomeProcessor._grow_position` as a VWAP-with-fees so the
+    cost-basis-released on partial exits is proportional to the size
+    closed.
     '''
 
     def test_full_round_trip_returns_aggregates_to_zero(self) -> None:
@@ -978,10 +1054,8 @@ class TestCapitalConservationOnExit:
         result = proc.process(exit_outcome, exit_ctx)
         assert result.success is True
 
-        # Round-trip conservation: aggregates back to zero
         assert ctrl._state.position_notional == _ZERO
         assert 'strat_001' not in ctrl._state.per_strategy_deployed
-        # Position fully closed → removed from state
         assert 'trade_001' not in state.positions
 
     def test_partial_exit_decrements_proportionally(self) -> None:
@@ -1327,3 +1401,136 @@ class TestCapitalConservationOnExit:
         assert result.success is False
         assert result.error_reason is not None
         assert 'order_exit failed' in result.error_reason
+
+    def test_per_strategy_attribution_isolated_across_strategies(self) -> None:
+        '''A strategy with multiple open positions exits one; only that
+        strategy's deployed total decrements, and only by the exited
+        position's cost basis. A second strategy's deployed total is
+        untouched.'''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        # strat_a: open two positions (trade_a1, trade_a2)
+        for tid, oid in (('trade_a1', 'cmd_a1'), ('trade_a2', 'cmd_a2')):
+            res = ctrl.check_and_reserve(
+                strategy_id='strat_a',
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                strategy_budget=Decimal('5000'),
+            )
+            assert res.reservation is not None
+            ctrl.send_order(res.reservation.reservation_id, oid)
+            ctrl.order_ack(oid)
+            state.positions[tid] = Position(
+                trade_id=tid,
+                strategy_id='strat_a',
+                symbol='BTCUSD',
+                side=OrderSide.BUY,
+                size=Decimal('0'),
+                entry_price=Decimal('50000'),
+            )
+            proc.process(
+                TradeOutcome(
+                    outcome_id=f'out_e_{oid}',
+                    command_id=oid,
+                    outcome_type=TradeOutcomeType.FILLED,
+                    timestamp=_now(),
+                    fill_size=Decimal('0.002'),
+                    fill_price=Decimal('50000'),
+                    fill_notional=Decimal('100'),
+                    actual_fees=Decimal('1'),
+                ),
+                OrderContext(
+                    command_id=oid,
+                    strategy_id='strat_a',
+                    trade_id=tid,
+                    side=OrderSide.BUY,
+                    order_size=Decimal('0.002'),
+                    order_notional=Decimal('100'),
+                    estimated_fees=Decimal('1'),
+                    is_entry=True,
+                ),
+            )
+
+        # strat_b: open one position (trade_b1)
+        res = ctrl.check_and_reserve(
+            strategy_id='strat_b',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert res.reservation is not None
+        ctrl.send_order(res.reservation.reservation_id, 'cmd_b1')
+        ctrl.order_ack('cmd_b1')
+        state.positions['trade_b1'] = Position(
+            trade_id='trade_b1',
+            strategy_id='strat_b',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        proc.process(
+            TradeOutcome(
+                outcome_id='out_e_b1',
+                command_id='cmd_b1',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.002'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('100'),
+                actual_fees=Decimal('1'),
+            ),
+            OrderContext(
+                command_id='cmd_b1',
+                strategy_id='strat_b',
+                trade_id='trade_b1',
+                side=OrderSide.BUY,
+                order_size=Decimal('0.002'),
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                is_entry=True,
+            ),
+        )
+
+        # After all entries: strat_a deployed = 202, strat_b deployed = 101
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('202')
+        assert ctrl._state.per_strategy_deployed['strat_b'] == Decimal('101')
+        assert ctrl._state.position_notional == Decimal('303')
+
+        # Exit ONE of strat_a's positions (trade_a1)
+        proc.process(
+            TradeOutcome(
+                outcome_id='out_x_a1',
+                command_id='cmd_x_a1',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.002'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('100'),
+                actual_fees=Decimal('1'),
+            ),
+            OrderContext(
+                command_id='cmd_x_a1',
+                strategy_id='strat_a',
+                trade_id='trade_a1',
+                side=OrderSide.SELL,
+                order_size=Decimal('0.002'),
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                is_entry=False,
+            ),
+        )
+
+        # Only strat_a's deployed should decrement, by exactly trade_a1's cost basis (101)
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101'), (
+            'strat_a deployed should drop by trade_a1 cost basis only'
+        )
+        assert ctrl._state.per_strategy_deployed['strat_b'] == Decimal('101'), (
+            'strat_b deployed must be untouched by strat_a exit'
+        )
+        assert ctrl._state.position_notional == Decimal('202')
+        # trade_a1 closed; trade_a2 and trade_b1 remain
+        assert 'trade_a1' not in state.positions
+        assert 'trade_a2' in state.positions
+        assert 'trade_b1' in state.positions
