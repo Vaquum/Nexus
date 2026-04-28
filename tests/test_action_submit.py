@@ -15,6 +15,7 @@ from nexus.core.capital_controller.reservation import Reservation
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.position import Position
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 from nexus.core.stp_mode import STPMode
 from nexus.core.validator.pipeline_models import (
@@ -417,6 +418,220 @@ class TestSubmitActions:
 
         assert [r[1].command_id for r in results] == ['cmd_a', 'cmd_b', 'cmd_c']
         assert [r[0] for r in results] == actions
+
+
+def _exit_action(trade_id: str = 't1', size: Decimal = Decimal('0.5')) -> Action:
+    return Action(
+        action_type=ActionType.EXIT,
+        trade_id=trade_id,
+        size=size,
+        execution_mode=ExecutionMode.SINGLE_SHOT,
+        order_type=OrderType.MARKET,
+        deadline=300,
+    )
+
+
+def _state_with_position(
+    trade_id: str = 't1',
+    size: Decimal = Decimal('1.0'),
+    pending_exit: Decimal = Decimal('0'),
+) -> InstanceState:
+    state = InstanceState.fresh(Decimal('10000'))
+    state.positions[trade_id] = Position(
+        trade_id=trade_id,
+        strategy_id='strat_001',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=size,
+        entry_price=Decimal('50000'),
+        pending_exit=pending_exit,
+    )
+    return state
+
+
+def _exit_context(
+    state: InstanceState,
+    trade_id: str = 't1',
+    order_size: Decimal = Decimal('0.5'),
+) -> ValidationRequestContext:
+    return ValidationRequestContext(
+        strategy_id='strat_001',
+        order_notional=Decimal('25000'),
+        estimated_fees=Decimal('25'),
+        strategy_budget=Decimal('5000'),
+        state=state,
+        config=_config(),
+        action=ValidationAction.EXIT,
+        symbol='BTCUSDT',
+        order_side=OrderSide.SELL,
+        order_size=order_size,
+        trade_id=trade_id,
+    )
+
+
+class TestPendingExitIncrement:
+    '''`Position.pending_exit` increments when an EXIT action is
+    SUBMITTED so the validator's `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`
+    defense fires on the next overlapping EXIT. Increment lives in
+    `submit_actions` after `send_command` succeeds; the existing
+    decrement in `OutcomeProcessor._reduce_position` /
+    `_clear_pending_exit` completes the round-trip.
+    '''
+
+    def test_exit_submission_increments_pending_exit(self) -> None:
+        state = _state_with_position()
+        ctx = _exit_context(state)
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_x1'
+
+        submit_actions(
+            [_exit_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert state.positions['t1'].pending_exit == Decimal('0.5')
+
+    def test_exit_rejected_by_validator_does_not_increment(self) -> None:
+        state = _state_with_position()
+        ctx = _exit_context(state)
+        validator = MagicMock()
+        validator.validate.return_value = _deny_decision()
+        outbound = MagicMock()
+
+        submit_actions(
+            [_exit_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert state.positions['t1'].pending_exit == Decimal('0')
+        outbound.send_command.assert_not_called()
+
+    def test_exit_send_command_failure_does_not_increment(self) -> None:
+        state = _state_with_position()
+        ctx = _exit_context(state)
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_command.side_effect = RuntimeError('venue unreachable')
+
+        submit_actions(
+            [_exit_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert state.positions['t1'].pending_exit == Decimal('0')
+
+    def test_enter_action_does_not_touch_pending_exit(self) -> None:
+        state = _state_with_position(pending_exit=Decimal('0.3'))
+        ctx = _enter_context()
+        validator = MagicMock()
+        validator.validate.return_value = _allow_decision()
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_e1'
+
+        submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert state.positions['t1'].pending_exit == Decimal('0.3')
+
+    def test_exit_for_unknown_trade_id_does_not_raise(self) -> None:
+        '''Defense in depth: if context.state.positions lacks the trade_id
+        (race with a concurrent close on a different thread), the
+        increment is a no-op rather than a KeyError.'''
+
+        state = _state_with_position()
+        del state.positions['t1']
+        ctx = _exit_context(state)
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_x1'
+
+        results = submit_actions(
+            [_exit_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMITTED
+
+    def test_overlapping_exit_denied_by_intake_after_first_increments(self) -> None:
+        '''Cross-tick defense: tick 1 submits an EXIT for the full
+        position size; tick 2 submits a second EXIT for the same
+        trade_id — the validator's intake stage sees `pending_exit > 0`
+        and denies with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.'''
+
+        from nexus.core.validator import (
+            make_reference_integrity_hook,
+            validate_intake_stage,
+        )
+
+        state = _state_with_position(size=Decimal('1.0'))
+
+        ctx1 = _exit_context(state, order_size=Decimal('1.0'))
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_x1'
+
+        submit_actions(
+            [_exit_action(size=Decimal('1.0'))],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx1,
+            now=_now,
+        )
+        assert state.positions['t1'].pending_exit == Decimal('1.0')
+
+        ctx2 = ValidationRequestContext(
+            strategy_id='strat_001',
+            order_notional=Decimal('25000'),
+            estimated_fees=Decimal('25'),
+            strategy_budget=Decimal('5000'),
+            state=state,
+            config=_config(),
+            action=ValidationAction.EXIT,
+            symbol='BTCUSDT',
+            order_side=OrderSide.SELL,
+            order_size=Decimal('1.0'),
+            trade_id='t1',
+            command_id='cmd_x2',
+        )
+        ref_hook = make_reference_integrity_hook(active_command_ids=set())
+        decision = validate_intake_stage(ctx2, hooks=(ref_hook,))
+
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_EXIT_SIZE_EXCEEDS_REMAINING'
 
 
 class TestBridgeToCapital:
