@@ -645,6 +645,19 @@ class CapitalController:
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
+            strategy_deployed = self._state.per_strategy_deployed.get(
+                strategy_id, _ZERO,
+            )
+            if cost_basis_released > strategy_deployed:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'cost_basis_released {cost_basis_released} exceeds '
+                        f'per_strategy_deployed[{strategy_id}] {strategy_deployed}'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
             self._state.position_notional -= cost_basis_released
             self._adjust_strategy_deployed(strategy_id, -cost_basis_released)
 

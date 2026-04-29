@@ -15,6 +15,7 @@ from nexus.core.capital_controller.capital_controller import (
     MAX_ALLOCATION_PER_TRADE_PCT,
     MAX_CAPITAL_UTILIZATION_PCT,
 )
+from nexus.core.capital_controller.lifecycle_result import FailureCategory
 from nexus.core.capital_controller.reservation import Reservation, ReservationResult
 from nexus.core.capital_controller.tracked_order import OrderLifecycleState
 from nexus.core.domain.capital_state import CapitalState
@@ -755,6 +756,57 @@ class TestOrderCancel:
         assert ctrl._state.working_order_notional == _ZERO
         assert 'ORD-001' not in ctrl._orders
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+
+class TestOrderExitInvariants:
+    '''`order_exit` must reject when `cost_basis_released` exceeds either
+    `position_notional` OR `per_strategy_deployed[strategy_id]`. Pre-fix
+    only the global aggregate was checked; a stale / missing per-strategy
+    bucket entry could be driven negative or dropped, leaving
+    `position_notional` decremented while attribution was corrupted.
+    The next `check_and_reserve` would then fire the
+    `'Per-strategy deployed attribution mismatch for non-flat state'`
+    denial with no recovery path until a reboot.
+    '''
+
+    def test_order_exit_blocks_when_per_strategy_bucket_missing(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={},
+        )
+
+        result = ctrl.order_exit('strat_orphan', Decimal('100'))
+
+        assert result.success is False
+        assert result.category == FailureCategory.INVARIANT_BREACH
+        assert result.reason is not None
+        assert 'per_strategy_deployed[strat_orphan]' in result.reason
+        assert ctrl._state.position_notional == Decimal('500')
+
+    def test_order_exit_blocks_when_per_strategy_bucket_too_small(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={'strat_a': Decimal('40')},
+        )
+
+        result = ctrl.order_exit('strat_a', Decimal('100'))
+
+        assert result.success is False
+        assert result.category == FailureCategory.INVARIANT_BREACH
+        assert ctrl._state.position_notional == Decimal('500')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('40')
+
+    def test_order_exit_succeeds_when_both_aggregates_have_room(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={'strat_a': Decimal('500')},
+        )
+
+        result = ctrl.order_exit('strat_a', Decimal('100'))
+
+        assert result.success is True
+        assert ctrl._state.position_notional == Decimal('400')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('400')
 
 
 class TestLifecycleHappyPath:

@@ -464,7 +464,7 @@ Self-corrects as positions cycle: every fresh ENTER FILL via `_grow_position` po
 **Severity**: Low (race direction is safe today)
 **Module**: `nexus/strategy/action_submit.py` (post-`send_command` increment)
 
-The increment `position.pending_exit += action.size` runs on the predict-loop thread without acquiring any lock. The decrement sites in `OutcomeProcessor._reduce_position` and `_clear_pending_exit` run on the OutcomeLoop thread, also without a lock. CPython's GIL makes single Decimal field assignment atomic but the read-then-validate-then-write pattern in `intake_stage` (`remaining = position.size - position.pending_exit`) is not atomic against a concurrent OutcomeLoop decrement.
+The increment `position.pending_exit += ctx.order_size` runs on the predict-loop thread without acquiring any lock. The decrement sites in `OutcomeProcessor._reduce_position` and `_clear_pending_exit` run on the OutcomeLoop thread, also without a lock. CPython's GIL makes single Decimal field assignment atomic but the read-then-validate-then-write pattern in `intake_stage` (`remaining = position.size - position.pending_exit`) is not atomic against a concurrent OutcomeLoop decrement.
 
 Race direction analysis: the only way this race produces incorrect behavior is if the validator sees a STALE-HIGH `pending_exit` (because OutcomeLoop's decrement hasn't landed yet) and over-denies an EXIT that would otherwise fit. Stale-low cannot fire because pending_exit is monotonically built up by submit_actions before the validator reads it. The over-deny mode is operationally safe — strategies retry on next tick.
 
