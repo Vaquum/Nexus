@@ -1632,6 +1632,61 @@ class TestExitFillCapitalGuardOrdering:
         assert 'trade_001' in state.positions
         assert state.positions['trade_001'].size == Decimal('0.01')
 
+    def test_strategy_id_mismatch_skips_capital_decrement(self) -> None:
+        '''If `context.strategy_id` diverges from `position.strategy_id`
+        (bad context wiring or an EXIT referencing another strategy's
+        trade), the EXIT must NOT decrement the wrong
+        `per_strategy_deployed` bucket. `_compute_exit_cost_basis`
+        returns `None` and logs WARNING; the position is still
+        reduced (the position layer is single-source-of-truth on
+        `position.strategy_id`) but capital aggregates are left to a
+        later boot reconcile rather than corrupted now.
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_owner',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+        ctrl._state.position_notional = Decimal('500')
+        ctrl._state.per_strategy_deployed['strat_owner'] = Decimal('500')
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('510'),
+            actual_fees=Decimal('1'),
+        )
+        wrong_strategy_ctx = OrderContext(
+            command_id='cmd_001',
+            strategy_id='strat_intruder',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('510'),
+            estimated_fees=Decimal('1'),
+            is_entry=False,
+        )
+
+        result = proc.process(outcome, wrong_strategy_ctx)
+
+        assert result.success is True
+        assert result.capital_updated is False
+        assert ctrl._state.position_notional == Decimal('500')
+        assert ctrl._state.per_strategy_deployed['strat_owner'] == Decimal('500')
+        assert 'strat_intruder' not in ctrl._state.per_strategy_deployed
+
 
 class TestExitRejectClearsPendingExit:
     '''EXIT REJECT/CANCEL must clear `pending_exit` even when

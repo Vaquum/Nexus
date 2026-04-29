@@ -378,6 +378,99 @@ class TestExternalIntegrationStubs:
 
         assert sequencer._state.capital.position_notional == Decimal('101.000')
 
+    def test_reconcile_capital_size_mismatch_adopts_praxis_qty(self) -> None:
+        '''When `nexus_pos.size != qty`, `_reconcile_capital` must update
+        `nexus_pos.size = qty` so downstream `reconcile_at_boot` rebuilds
+        `per_strategy_deployed` from the same qty that
+        `praxis_total_notional` uses. Pre-fix the warning-only branch
+        left `position_notional` (Praxis qty) and `per_strategy_deployed`
+        (stale Nexus qty) divergent → permanent attribution-mismatch
+        denial of every subsequent ENTER. Reachable on every reboot
+        following a crash mid-fill where the persisted Nexus snapshot
+        lags Praxis's WS-applied state.
+        '''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('5')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('10'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert sequencer._state.positions['shared_trade'].size == Decimal('5')
+        assert sequencer._state.capital.position_notional == Decimal('250000')
+
+    def test_reconcile_capital_zero_avg_cost_basis_falls_back(self) -> None:
+        '''When `nexus_pos.avg_cost_basis == _ZERO` (legacy snapshot
+        placeholder, or position imported via a path that did not
+        populate the field), `_reconcile_capital` must fall back to
+        the Praxis avg_entry_price (or `nexus_pos.entry_price` if the
+        Praxis price is also zero). Pre-fix `praxis_total_notional`
+        accumulated `qty * 0 == 0`, undercounting `position_notional`
+        and triggering INVARIANT_BREACH on the next EXIT fill.
+        '''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('2')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('2'),
+            entry_price=Decimal('49000'),
+            avg_cost_basis=Decimal('0'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert sequencer._state.capital.position_notional == Decimal('100000')
+
     def test_reconcile_capital_evicts_nexus_only_position(self) -> None:
         '''A Nexus position that Praxis no longer carries (e.g. closed
         via Praxis WS path between our last checkpoint and this boot)

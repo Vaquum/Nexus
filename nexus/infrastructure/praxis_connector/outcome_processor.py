@@ -232,7 +232,7 @@ class OutcomeProcessor:
             capital_updated=result.success,
         )
 
-    def _compute_exit_cost_basis(
+    def _compute_exit_cost_basis(  # noqa: PLR0911
         self,
         outcome: TradeOutcome,
         context: OrderContext,
@@ -252,14 +252,24 @@ class OutcomeProcessor:
         reduced/deleted at the time of the breach, leaving capital
         aggregates and position state divergent and unrecoverable.
 
-        Returns None when the EXIT fill should not trigger a capital
-        decrement: missing trade_id, position absent,
+        Returns None only when the EXIT fill should not trigger a
+        capital decrement. That includes non-EXIT fills,
         `avg_cost_basis == 0` (placeholder reused as real, legacy
         snapshot pre-`avg_cost_basis`, or invariant break in
         `_grow_position` — `_reduce_position` logs a WARNING in this
-        case), or `fill_size > position.size` (overfill — letting
+        case), `fill_size > position.size` (overfill — letting
         `order_exit` decrement capital before `_reduce_position` raises
-        would leave `CapitalState` inconsistent with `positions`).
+        would leave `CapitalState` inconsistent with `positions`), and
+        `position.strategy_id != context.strategy_id` (cross-strategy
+        attribution mismatch — decrementing the wrong
+        `per_strategy_deployed` bucket would create attribution drift /
+        underflow on the owning strategy).
+
+        A missing `trade_id` or absent position also yields None from
+        this helper, but those are EXIT-flow invariant violations:
+        this method suppresses the capital decrement only, and the
+        subsequent `_update_position_on_fill` will still raise
+        `RuntimeError` in `_reduce_position` for them.
         '''
 
         assert outcome.fill_size is not None
@@ -274,6 +284,18 @@ class OutcomeProcessor:
         if position.avg_cost_basis == _ZERO:
             return None
         if outcome.fill_size > position.size:
+            return None
+        if position.strategy_id != context.strategy_id:
+            _log.warning(
+                'EXIT fill strategy_id mismatch; capital decrement '
+                'skipped to avoid wrong-bucket attribution',
+                extra={
+                    'command_id': outcome.command_id,
+                    'trade_id': context.trade_id,
+                    'context_strategy_id': context.strategy_id,
+                    'position_strategy_id': position.strategy_id,
+                },
+            )
             return None
         return position.avg_cost_basis * outcome.fill_size
 
@@ -369,13 +391,19 @@ class OutcomeProcessor:
                 'through a path that did not populate avg_cost_basis '
                 '(legacy snapshot, placeholder reused as real, or '
                 'invariant break in _grow_position) — capital aggregates '
-                'will leak by the cost basis of this fill until the '
-                'next reconcile_at_boot',
+                'will leak by the cost basis of this fill until '
+                'avg_cost_basis is repopulated by a later entry fill or '
+                'the position is rehydrated with a non-zero cost basis '
+                'during boot/import recovery (reconcile_at_boot can no '
+                'longer recover this case; it now rebuilds from '
+                'pos.avg_cost_basis directly)',
                 extra={
                     'command_id': outcome.command_id,
                     'trade_id': context.trade_id,
                     'fill_size': str(fill_size),
+                    'position_size': str(position.size),
                     'position_entry_price': str(entry_price),
+                    'position_avg_cost_basis': str(position.avg_cost_basis),
                 },
             )
 
