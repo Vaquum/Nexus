@@ -6,6 +6,7 @@ methods and updates positions on fill outcomes.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
@@ -20,6 +21,8 @@ from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 
 __all__ = ['OutcomeProcessor']
+
+_log = logging.getLogger(__name__)
 
 _ZERO = Decimal(0)
 
@@ -325,7 +328,25 @@ class OutcomeProcessor:
         entry_price = position.entry_price
         side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
         realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
-        cost_basis_released = position.avg_cost_basis * fill_size
+
+        if position.avg_cost_basis == _ZERO:
+            _log.warning(
+                'exit fill on position with avg_cost_basis=0; skipping '
+                'capital decrement. Position grew through a path that '
+                'did not populate avg_cost_basis (legacy snapshot, '
+                'placeholder reused as real, or invariant break in '
+                '_grow_position) — capital aggregates will leak by the '
+                'cost basis of this fill until the next reconcile_at_boot',
+                extra={
+                    'command_id': outcome.command_id,
+                    'trade_id': context.trade_id,
+                    'fill_size': str(fill_size),
+                    'position_entry_price': str(entry_price),
+                },
+            )
+            cost_basis_released: Decimal | None = None
+        else:
+            cost_basis_released = position.avg_cost_basis * fill_size
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
@@ -333,7 +354,7 @@ class OutcomeProcessor:
         if position.is_closed:
             del self._state.positions[context.trade_id]
 
-        return True, realized_pnl, cost_basis_released if cost_basis_released > _ZERO else None
+        return True, realized_pnl, cost_basis_released
 
     def _clear_pending_exit(self, context: OrderContext, size: Decimal) -> bool:
         if context.trade_id is None:
