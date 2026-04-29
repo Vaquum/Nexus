@@ -1103,6 +1103,7 @@ def _position(
     *,
     size: Decimal = Decimal('1'),
     entry_price: Decimal = Decimal('100'),
+    avg_cost_basis: Decimal | None = None,
 ) -> Position:
     return Position(
         trade_id=trade_id,
@@ -1111,6 +1112,7 @@ def _position(
         side=OrderSide.BUY,
         size=size,
         entry_price=entry_price,
+        avg_cost_basis=entry_price if avg_cost_basis is None else avg_cost_basis,
     )
 
 

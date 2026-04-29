@@ -334,6 +334,50 @@ class TestExternalIntegrationStubs:
         assert imported.entry_price == Decimal('50000')
         assert sequencer._state.capital.position_notional == Decimal('25000')
 
+    def test_reconcile_capital_uses_avg_cost_basis_for_both_present(self) -> None:
+        '''When a trade_id is present in both Nexus and Praxis,
+        `praxis_total_notional` must accumulate `qty * nexus_pos.avg_cost_basis`
+        (fee-inclusive) rather than `qty * praxis_avg_entry_price`
+        (Praxis has no fee data). Without this, `position_notional`
+        post-reconcile is below the `cost_basis_released` that the
+        next EXIT FILL computes from `Position.avg_cost_basis`,
+        triggering INVARIANT_BREACH on every post-crash EXIT.'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('0.002')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.002'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50500'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert sequencer._state.capital.position_notional == Decimal('101.000')
+
     def test_reconcile_capital_evicts_nexus_only_position(self) -> None:
         '''A Nexus position that Praxis no longer carries (e.g. closed
         via Praxis WS path between our last checkpoint and this boot)

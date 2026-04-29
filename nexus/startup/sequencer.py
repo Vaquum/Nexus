@@ -401,8 +401,6 @@ class StartupSequencer:
             except (AttributeError, ArithmeticError) as e:
                 _log.warning('skipping position with invalid fields', trade_id=trade_id, error=str(e))
                 continue
-            notional = qty * price
-            praxis_total_notional += notional
 
             nexus_pos = self._state.positions.get(trade_id)
 
@@ -410,6 +408,7 @@ class StartupSequencer:
                 imported = self._import_praxis_position(trade_id, praxis_pos, qty, price)
                 if imported is not None:
                     self._state.positions[trade_id] = imported
+                praxis_total_notional += qty * price
                 continue
 
             if nexus_pos.size != qty:
@@ -419,6 +418,8 @@ class StartupSequencer:
                     nexus_size=str(nexus_pos.size),
                     praxis_qty=str(qty),
                 )
+
+            praxis_total_notional += qty * nexus_pos.avg_cost_basis
 
         nexus_only_trade_ids = [
             trade_id for trade_id in self._state.positions

@@ -1534,3 +1534,171 @@ class TestCapitalConservationOnExit:
         assert 'trade_a1' not in state.positions
         assert 'trade_a2' in state.positions
         assert 'trade_b1' in state.positions
+
+
+class TestExitFillCapitalGuardOrdering:
+    '''Capital `order_exit` is called BEFORE `_reduce_position` mutates
+    the position so an `INVARIANT_BREACH` (cost basis would drive
+    `position_notional` negative) returns `success=False` without
+    leaving the position deleted while capital aggregates still carry
+    the closed position's cost basis.
+
+    Reachable on every post-crash EXIT when `_reconcile_capital`
+    rebuilt `position_notional` from `qty * avg_cost_basis` (fee-
+    inclusive) but the value stored falls below `cost_basis_released`
+    due to other adjustments. Pre-fix the position was already
+    reduced/deleted at the time of the breach, leaving capital and
+    position state divergent.
+    '''
+
+    def test_invariant_breach_does_not_mutate_position(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('1000000'),
+        )
+        ctrl._state.position_notional = Decimal('50')
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('500'),
+            actual_fees=Decimal('1'),
+        )
+
+        result = proc.process(outcome, _exit_context())
+
+        assert result.success is False
+        assert result.error_reason is not None
+        assert 'order_exit failed' in result.error_reason
+        assert 'trade_001' in state.positions
+        assert state.positions['trade_001'].size == Decimal('0.01')
+        assert ctrl._state.position_notional == Decimal('50')
+
+
+class TestExitRejectClearsPendingExit:
+    '''EXIT REJECT/CANCEL must clear `pending_exit` even when
+    `CapitalController.order_reject` / `order_cancel` reports the
+    EXPECTED_MISS that EXIT orders are not tracked in `_orders`
+    (they bypass `bridge_to_capital`). Pre-fix the failure
+    short-circuited the handler and left `pending_exit` stuck,
+    so a subsequent retry was denied with
+    `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
+    '''
+
+    def test_reject_clears_pending_exit_when_capital_op_fails(self) -> None:
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_unknown',
+            outcome_type=TradeOutcomeType.REJECTED,
+            timestamp=_now(),
+            reject_reason='venue_reject',
+        )
+
+        result = proc.process(
+            outcome,
+            OrderContext(
+                command_id='cmd_unknown',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.SELL,
+                order_size=Decimal('0.01'),
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                is_entry=False,
+            ),
+        )
+
+        assert result.success is True
+        assert result.position_updated is True
+        assert result.capital_updated is False
+        assert state.positions['trade_001'].pending_exit == _ZERO
+
+    def test_cancel_clears_pending_exit_when_capital_op_fails(self) -> None:
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.005'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_unknown',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=_now(),
+            remaining_size=Decimal('0.005'),
+        )
+
+        result = proc.process(
+            outcome,
+            OrderContext(
+                command_id='cmd_unknown',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.SELL,
+                order_size=Decimal('0.005'),
+                order_notional=Decimal('50'),
+                estimated_fees=Decimal('0.5'),
+                is_entry=False,
+            ),
+        )
+
+        assert result.success is True
+        assert result.position_updated is True
+        assert result.capital_updated is False
+        assert state.positions['trade_001'].pending_exit == _ZERO
+
+    def test_entry_reject_still_fails_when_capital_op_fails(self) -> None:
+        '''Regression — ENTER REJECT with no tracked order must still
+        propagate failure (no pending_exit to clear; the failure is real).'''
+
+        proc, _, state, _, _tmp = _make_processor()
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.REJECTED,
+            timestamp=_now(),
+            reject_reason='venue_reject',
+        )
+
+        result = proc.process(outcome, _entry_context())
+        assert result.success is False
+        assert result.error_reason is not None
+        assert 'order_reject failed' in result.error_reason
