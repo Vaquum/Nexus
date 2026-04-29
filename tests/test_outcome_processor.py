@@ -1585,6 +1585,53 @@ class TestExitFillCapitalGuardOrdering:
         assert state.positions['trade_001'].size == Decimal('0.01')
         assert ctrl._state.position_notional == Decimal('50')
 
+    def test_overfill_does_not_decrement_capital_before_reduce_raises(
+        self,
+    ) -> None:
+        '''Overfill EXIT (`fill_size > position.size`) must leave
+        `CapitalState` untouched. `_reduce_position` raises
+        `RuntimeError` on overfill; if `_compute_exit_cost_basis` did
+        not gate this case, `order_exit` would already have decremented
+        `position_notional` and `per_strategy_deployed` by the time the
+        raise happened, leaving capital aggregates and positions
+        divergent (capital missing the closed position's cost basis
+        while the position still holds its full size).
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+        ctrl._state.position_notional = Decimal('500')
+        ctrl._state.per_strategy_deployed['strat_001'] = Decimal('500')
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.02'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('1020'),
+            actual_fees=Decimal('1'),
+        )
+
+        with pytest.raises(RuntimeError, match='exceeds position size'):
+            proc.process(outcome, _exit_context())
+
+        assert ctrl._state.position_notional == Decimal('500')
+        assert ctrl._state.per_strategy_deployed['strat_001'] == Decimal('500')
+        assert 'trade_001' in state.positions
+        assert state.positions['trade_001'].size == Decimal('0.01')
+
 
 class TestExitRejectClearsPendingExit:
     '''EXIT REJECT/CANCEL must clear `pending_exit` even when

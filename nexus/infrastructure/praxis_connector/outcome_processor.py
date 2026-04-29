@@ -253,11 +253,13 @@ class OutcomeProcessor:
         aggregates and position state divergent and unrecoverable.
 
         Returns None when the EXIT fill should not trigger a capital
-        decrement: missing trade_id, position absent, or
+        decrement: missing trade_id, position absent,
         `avg_cost_basis == 0` (placeholder reused as real, legacy
         snapshot pre-`avg_cost_basis`, or invariant break in
         `_grow_position` — `_reduce_position` logs a WARNING in this
-        case).
+        case), or `fill_size > position.size` (overfill — letting
+        `order_exit` decrement capital before `_reduce_position` raises
+        would leave `CapitalState` inconsistent with `positions`).
         '''
 
         assert outcome.fill_size is not None
@@ -270,6 +272,8 @@ class OutcomeProcessor:
         if position is None:
             return None
         if position.avg_cost_basis == _ZERO:
+            return None
+        if outcome.fill_size > position.size:
             return None
         return position.avg_cost_basis * outcome.fill_size
 
