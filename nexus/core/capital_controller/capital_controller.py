@@ -635,6 +635,12 @@ class CapitalController:
             msg = f'cost_basis_released must be positive: {cost_basis_released}'
             raise ValueError(msg)
 
+        if not strategy_id or not strategy_id.strip():
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        strategy_id = strategy_id.strip()
+
         with self._lock:
             if cost_basis_released > self._state.position_notional:
                 return LifecycleResult(

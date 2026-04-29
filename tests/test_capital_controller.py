@@ -808,6 +808,24 @@ class TestOrderExitInvariants:
         assert ctrl._state.position_notional == Decimal('400')
         assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('400')
 
+    def test_order_exit_rejects_empty_strategy_id(self) -> None:
+        ctrl = _make_controller()
+
+        for invalid in ('', '   ', '\t\n'):
+            with pytest.raises(ValueError, match='strategy_id must be a non-empty string'):
+                ctrl.order_exit(invalid, Decimal('1'))
+
+    def test_order_exit_strips_whitespace_from_strategy_id(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={'strat_a': Decimal('500')},
+        )
+
+        result = ctrl.order_exit('  strat_a  ', Decimal('100'))
+
+        assert result.success is True
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('400')
+
 
 class TestLifecycleHappyPath:
     def test_reservation_to_position(self) -> None:
