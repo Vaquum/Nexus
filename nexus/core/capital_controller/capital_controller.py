@@ -622,8 +622,9 @@ class CapitalController:
 
         Returns:
             LifecycleResult with reason on failure. INVARIANT_BREACH
-            when `cost_basis_released > position_notional` (would drive
-            the aggregate negative).
+            when `cost_basis_released > position_notional` OR when
+            `cost_basis_released > per_strategy_deployed[strategy_id]`
+            (either would drive the corresponding aggregate negative).
         '''
 
         if not isinstance(cost_basis_released, Decimal) or not cost_basis_released.is_finite():
