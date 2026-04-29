@@ -236,8 +236,8 @@ def submit_actions(
 
         if action.action_type == ActionType.EXIT and action.trade_id is not None:
             position = ctx.state.positions.get(action.trade_id)
-            if position is not None and action.size is not None:
-                position.pending_exit += action.size
+            if position is not None and ctx.order_size is not None:
+                position.pending_exit += ctx.order_size
 
         _log.info(
             'action submitted',

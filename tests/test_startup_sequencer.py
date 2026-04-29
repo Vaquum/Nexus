@@ -470,6 +470,7 @@ class TestExternalIntegrationStubs:
         sequencer._reconcile_capital()
 
         assert sequencer._state.capital.position_notional == Decimal('100000')
+        assert sequencer._state.positions['shared_trade'].avg_cost_basis == Decimal('50000')
 
     def test_reconcile_capital_evicts_nexus_only_position(self) -> None:
         '''A Nexus position that Praxis no longer carries (e.g. closed

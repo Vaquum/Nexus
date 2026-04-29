@@ -1143,6 +1143,56 @@ class TestReconcileAtBootRebuildsPerStrategyDeployed:
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('100')}
 
+    def test_zero_avg_cost_basis_falls_back_to_entry_price(self) -> None:
+        '''Non-flat position with `avg_cost_basis == 0` (legacy /
+        partial-recovery path or placeholder accidentally reused as
+        real) must NOT under-attribute `per_strategy_deployed`. Pre-fix
+        the rebuild used `pos.size * 0 = 0` and the very next
+        `check_and_reserve` fired the attribution-mismatch denial.
+        Post-fix `entry_price` is the fallback and a WARNING surfaces
+        the placeholder so it can be investigated.
+        '''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        positions = [_position(
+            't-1', 'strat_a',
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('0'),
+        )]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('100')}
+
+    def test_zero_avg_cost_basis_and_zero_entry_price_under_attributes(self) -> None:
+        '''When both `avg_cost_basis` and `entry_price` are zero the
+        rebuild has no good fallback; deployed capital is understated
+        and a WARNING is logged. This case is not normally reachable
+        (Position invariants reject zero `entry_price` on construct)
+        but the defense still lands when the field is mutated post-
+        construction.
+        '''
+
+        ctrl = _make_controller(
+            position_notional=_ZERO,
+            per_strategy_deployed={'strat_a': _ZERO},
+        )
+        pos = _position(
+            't-1', 'strat_a',
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('0'),
+        )
+        pos.entry_price = Decimal('0')
+
+        ctrl.reconcile_at_boot(positions=[pos])
+
+        assert ctrl._state.per_strategy_deployed == {'strat_a': _ZERO}
+
     def test_first_check_and_reserve_after_reconcile_passes_attribution(self) -> None:
         '''The actual fix-validation: after a crash-recovery boot with
         stranded aggregates and stale per_strategy_deployed, calling

@@ -143,7 +143,30 @@ class CapitalController:
             if positions is not None:
                 rebuilt: dict[str, Decimal] = {}
                 for pos in positions:
-                    contribution = pos.size * pos.avg_cost_basis
+                    cost_basis = pos.avg_cost_basis
+                    if pos.size > _ZERO and cost_basis == _ZERO:
+                        fallback_basis = pos.entry_price
+                        if fallback_basis != _ZERO:
+                            _logger.warning(
+                                'reconcile_at_boot using entry_price '
+                                'fallback for position with zero '
+                                'avg_cost_basis: strategy_id=%s size=%s '
+                                'entry_price=%s',
+                                pos.strategy_id,
+                                pos.size,
+                                fallback_basis,
+                            )
+                            cost_basis = fallback_basis
+                        else:
+                            _logger.warning(
+                                'reconcile_at_boot found non-flat position '
+                                'with zero avg_cost_basis and zero '
+                                'entry_price; deployed capital will be '
+                                'understated: strategy_id=%s size=%s',
+                                pos.strategy_id,
+                                pos.size,
+                            )
+                    contribution = pos.size * cost_basis
                     rebuilt[pos.strategy_id] = (
                         rebuilt.get(pos.strategy_id, _ZERO) + contribution
                     )

@@ -498,6 +498,35 @@ class TestPendingExitIncrement:
 
         assert state.positions['t1'].pending_exit == Decimal('0.5')
 
+    def test_pending_exit_tracks_ctx_order_size_not_action_size(self) -> None:
+        '''`pending_exit` must track `ctx.order_size` (what was actually
+        submitted via `translate_to_trade_command(... size=context.order_size ...)`)
+        rather than `action.size`. If `build_context` rounds / clamps
+        `order_size` away from `action.size`, the validator's
+        `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING` defense becomes unreliable
+        when it consults `position.pending_exit` against the next
+        EXIT's submitted size — they must match.
+        '''
+
+        state = _state_with_position()
+        ctx = _exit_context(state, order_size=Decimal('0.4'))
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_x1'
+
+        submit_actions(
+            [_exit_action(size=Decimal('0.5'))],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert state.positions['t1'].pending_exit == Decimal('0.4')
+
     def test_exit_rejected_by_validator_does_not_increment(self) -> None:
         state = _state_with_position()
         ctx = _exit_context(state)

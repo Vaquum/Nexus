@@ -425,9 +425,10 @@ class StartupSequencer:
                 fallback_price = price if price != _ZERO else nexus_pos.entry_price
                 _log.warning(
                     'nexus avg_cost_basis is zero during reconciliation; '
-                    'using fallback price so position_notional stays in '
-                    'the right ballpark and order_exit INVARIANT_BREACH '
-                    'does not fire on the next EXIT fill',
+                    'using fallback price and persisting it onto the '
+                    'position so reconcile_at_boot, _compute_exit_cost_basis, '
+                    'and the next EXIT fill all see a consistent non-zero '
+                    'cost basis',
                     trade_id=trade_id,
                     nexus_avg_cost_basis=str(nexus_pos.avg_cost_basis),
                     praxis_avg_entry_price=str(price),
@@ -435,6 +436,7 @@ class StartupSequencer:
                     fallback_price=str(fallback_price),
                 )
                 basis_price = fallback_price
+                nexus_pos.avg_cost_basis = fallback_price
 
             praxis_total_notional += qty * basis_price
 
