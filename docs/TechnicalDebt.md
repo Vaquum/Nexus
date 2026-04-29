@@ -439,3 +439,35 @@ The PT-FIX-38 implementation has two `_apply_terminal_outcome` call sites: one f
 **When to fix**: Before any deployment that runs multiple Manager instances against a shared state directory (current single-instance paper-trade design forbids this, but the constraint is documentation-only).
 
 **Migration**: Either (a) hold a fcntl/flock around both reads in `__init__` + `recover()`, OR (b) read the WAL once into memory at `__init__` and have `recover()` consume the cached entries instead of re-reading, OR (c) document that a `state_dir` MUST be exclusive to a single Manager instance and add a startup lock-file check that errors out loudly if a sibling holds the lock.
+
+---
+
+## TD-040: WAL codec legacy snapshot decodes `avg_cost_basis` from `entry_price` (entry fees lost)
+
+**Origin**: BLOCKER-A pre-PR review (this branch)
+**Severity**: Low (one-cycle bounded; eliminated as positions cycle)
+**Module**: `nexus/infrastructure/wal_codec.py:_decode_position`
+
+Pre-fix `Position` had no `avg_cost_basis` field. Snapshots written before this PR's BLOCKER-A change carry only `entry_price` (fill-price VWAP, fees excluded). On boot the decoder defaults `avg_cost_basis = entry_price` for missing-key cases. Subsequent EXIT FILLs on these legacy positions decrement `position_notional` by `entry_price * fill_size` instead of the full cost basis (which would include entry fees), so the entry-fee portion is never released back to available capital.
+
+Self-corrects as positions cycle: every fresh ENTER FILL via `_grow_position` populates `avg_cost_basis` correctly (`(old_size * old_avg_cost_basis + fill_notional + actual_fees) / new_size`), so any new position has the correct cost basis from the first fill.
+
+**When to fix**: When a deployment carries a long-lived position across the v0.32.0 → v0.33.0 boundary AND the per-position entry-fee leak is large enough to matter. For paper-trade testnet at MMVP scope, the fee leak per position is ~0.1% of notional and bounded by position lifetime.
+
+**Migration**: Write a one-time migration script that scans the snapshot for positions with avg_cost_basis equal to entry_price (best-effort heuristic; entry-fee data is unrecoverable from the snapshot alone) and either flags them for operator review or estimates the true avg_cost_basis from the WAL strategy events.
+
+---
+
+## TD-041: `Position.pending_exit` increment in `submit_actions` lacks lock protection
+
+**Origin**: BLOCKER-C pre-PR review (this branch)
+**Severity**: Low (race direction is safe today)
+**Module**: `nexus/strategy/action_submit.py` (post-`send_command` increment)
+
+The increment `position.pending_exit += action.size` runs on the predict-loop thread without acquiring any lock. The decrement sites in `OutcomeProcessor._reduce_position` and `_clear_pending_exit` run on the OutcomeLoop thread, also without a lock. CPython's GIL makes single Decimal field assignment atomic but the read-then-validate-then-write pattern in `intake_stage` (`remaining = position.size - position.pending_exit`) is not atomic against a concurrent OutcomeLoop decrement.
+
+Race direction analysis: the only way this race produces incorrect behavior is if the validator sees a STALE-HIGH `pending_exit` (because OutcomeLoop's decrement hasn't landed yet) and over-denies an EXIT that would otherwise fit. Stale-low cannot fire because pending_exit is monotonically built up by submit_actions before the validator reads it. The over-deny mode is operationally safe — strategies retry on next tick.
+
+**When to fix**: When a future code path adds a write-write race on `pending_exit` (e.g. a second submit_actions caller on a different thread), OR when the validator's read-modify-write window is widened by additional logic that needs to see a consistent snapshot.
+
+**Migration**: Either (a) add a per-position lock to Position and acquire it around all read/write sites; OR (b) document the predict-loop-thread-only-writer invariant and add a `threading.get_ident()` assertion in `submit_actions` to catch future violations; OR (c) move the increment-decrement pair into a single owner module (e.g. extend `OutcomeProcessor` with a `register_pending_exit` method called from the launcher's submitter closure).
