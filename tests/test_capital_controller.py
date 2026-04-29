@@ -15,6 +15,7 @@ from nexus.core.capital_controller.capital_controller import (
     MAX_ALLOCATION_PER_TRADE_PCT,
     MAX_CAPITAL_UTILIZATION_PCT,
 )
+from nexus.core.capital_controller.lifecycle_result import FailureCategory
 from nexus.core.capital_controller.reservation import Reservation, ReservationResult
 from nexus.core.capital_controller.tracked_order import OrderLifecycleState
 from nexus.core.domain.capital_state import CapitalState
@@ -757,6 +758,75 @@ class TestOrderCancel:
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
+class TestOrderExitInvariants:
+    '''`order_exit` must reject when `cost_basis_released` exceeds either
+    `position_notional` OR `per_strategy_deployed[strategy_id]`. Pre-fix
+    only the global aggregate was checked; a stale / missing per-strategy
+    bucket entry could be driven negative or dropped, leaving
+    `position_notional` decremented while attribution was corrupted.
+    The next `check_and_reserve` would then fire the
+    `'Per-strategy deployed attribution mismatch for non-flat state'`
+    denial with no recovery path until a reboot.
+    '''
+
+    def test_order_exit_blocks_when_per_strategy_bucket_missing(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={},
+        )
+
+        result = ctrl.order_exit('strat_orphan', Decimal('100'))
+
+        assert result.success is False
+        assert result.category == FailureCategory.INVARIANT_BREACH
+        assert result.reason is not None
+        assert 'per_strategy_deployed[strat_orphan]' in result.reason
+        assert ctrl._state.position_notional == Decimal('500')
+
+    def test_order_exit_blocks_when_per_strategy_bucket_too_small(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={'strat_a': Decimal('40')},
+        )
+
+        result = ctrl.order_exit('strat_a', Decimal('100'))
+
+        assert result.success is False
+        assert result.category == FailureCategory.INVARIANT_BREACH
+        assert ctrl._state.position_notional == Decimal('500')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('40')
+
+    def test_order_exit_succeeds_when_both_aggregates_have_room(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={'strat_a': Decimal('500')},
+        )
+
+        result = ctrl.order_exit('strat_a', Decimal('100'))
+
+        assert result.success is True
+        assert ctrl._state.position_notional == Decimal('400')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('400')
+
+    def test_order_exit_rejects_empty_strategy_id(self) -> None:
+        ctrl = _make_controller()
+
+        for invalid in ('', '   ', '\t\n'):
+            with pytest.raises(ValueError, match='strategy_id must be a non-empty string'):
+                ctrl.order_exit(invalid, Decimal('1'))
+
+    def test_order_exit_strips_whitespace_from_strategy_id(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('500'),
+            per_strategy_deployed={'strat_a': Decimal('500')},
+        )
+
+        result = ctrl.order_exit('  strat_a  ', Decimal('100'))
+
+        assert result.success is True
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('400')
+
+
 class TestLifecycleHappyPath:
     def test_reservation_to_position(self) -> None:
         ctrl = _make_controller()
@@ -1103,6 +1173,7 @@ def _position(
     *,
     size: Decimal = Decimal('1'),
     entry_price: Decimal = Decimal('100'),
+    avg_cost_basis: Decimal | None = None,
 ) -> Position:
     return Position(
         trade_id=trade_id,
@@ -1111,6 +1182,7 @@ def _position(
         side=OrderSide.BUY,
         size=size,
         entry_price=entry_price,
+        avg_cost_basis=entry_price if avg_cost_basis is None else avg_cost_basis,
     )
 
 
@@ -1140,6 +1212,56 @@ class TestReconcileAtBootRebuildsPerStrategyDeployed:
 
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('100')}
+
+    def test_zero_avg_cost_basis_falls_back_to_entry_price(self) -> None:
+        '''Non-flat position with `avg_cost_basis == 0` (legacy /
+        partial-recovery path or placeholder accidentally reused as
+        real) must NOT under-attribute `per_strategy_deployed`. Pre-fix
+        the rebuild used `pos.size * 0 = 0` and the very next
+        `check_and_reserve` fired the attribution-mismatch denial.
+        Post-fix `entry_price` is the fallback and a WARNING surfaces
+        the placeholder so it can be investigated.
+        '''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        positions = [_position(
+            't-1', 'strat_a',
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('0'),
+        )]
+
+        ctrl.reconcile_at_boot(positions=positions)
+
+        assert ctrl._state.per_strategy_deployed == {'strat_a': Decimal('100')}
+
+    def test_zero_avg_cost_basis_and_zero_entry_price_under_attributes(self) -> None:
+        '''When both `avg_cost_basis` and `entry_price` are zero the
+        rebuild has no good fallback; deployed capital is understated
+        and a WARNING is logged. This case is not normally reachable
+        (Position invariants reject zero `entry_price` on construct)
+        but the defense still lands when the field is mutated post-
+        construction.
+        '''
+
+        ctrl = _make_controller(
+            position_notional=_ZERO,
+            per_strategy_deployed={'strat_a': _ZERO},
+        )
+        pos = _position(
+            't-1', 'strat_a',
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('0'),
+        )
+        pos.entry_price = Decimal('0')
+
+        ctrl.reconcile_at_boot(positions=[pos])
+
+        assert ctrl._state.per_strategy_deployed == {'strat_a': _ZERO}
 
     def test_first_check_and_reserve_after_reconcile_passes_attribution(self) -> None:
         '''The actual fix-validation: after a crash-recovery boot with

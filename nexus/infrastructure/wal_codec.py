@@ -279,6 +279,7 @@ def _encode_position(pos: Position) -> dict[str, str]:
         'entry_price': str(pos.entry_price),
         'unrealized_pnl': str(pos.unrealized_pnl),
         'pending_exit': str(pos.pending_exit),
+        'avg_cost_basis': str(pos.avg_cost_basis),
     }
 
 
@@ -301,6 +302,7 @@ def _decode_position(d: dict[str, str]) -> Position:
         entry_price=Decimal(d['entry_price']),
         unrealized_pnl=Decimal(d['unrealized_pnl']),
         pending_exit=Decimal(d['pending_exit']),
+        avg_cost_basis=Decimal(d['avg_cost_basis']) if 'avg_cost_basis' in d else Decimal(d['entry_price']),
     )
 
 

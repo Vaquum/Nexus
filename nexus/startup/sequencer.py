@@ -297,6 +297,7 @@ class StartupSequencer:
                 side=side,
                 size=qty,
                 entry_price=price,
+                avg_cost_basis=price,
             )
         except ValueError as e:
             _log.warning(
@@ -400,8 +401,6 @@ class StartupSequencer:
             except (AttributeError, ArithmeticError) as e:
                 _log.warning('skipping position with invalid fields', trade_id=trade_id, error=str(e))
                 continue
-            notional = qty * price
-            praxis_total_notional += notional
 
             nexus_pos = self._state.positions.get(trade_id)
 
@@ -409,22 +408,53 @@ class StartupSequencer:
                 imported = self._import_praxis_position(trade_id, praxis_pos, qty, price)
                 if imported is not None:
                     self._state.positions[trade_id] = imported
+                praxis_total_notional += qty * price
                 continue
 
             if nexus_pos.size != qty:
                 _log.warning(
-                    'position size mismatch',
+                    'position size mismatch — adopting Praxis qty as truth',
                     trade_id=trade_id,
                     nexus_size=str(nexus_pos.size),
                     praxis_qty=str(qty),
                 )
+                nexus_pos.size = qty
 
-        for trade_id in self._state.positions:
-            if trade_id not in praxis_by_trade_id:
+            basis_price = nexus_pos.avg_cost_basis
+            if basis_price == _ZERO:
+                fallback_price = price if price != _ZERO else nexus_pos.entry_price
                 _log.warning(
-                    'position in Nexus but not in Praxis',
+                    'nexus avg_cost_basis is zero during reconciliation; '
+                    'using fallback price and persisting it onto the '
+                    'position so reconcile_at_boot, _compute_exit_cost_basis, '
+                    'and the next EXIT fill all see a consistent non-zero '
+                    'cost basis',
                     trade_id=trade_id,
+                    nexus_avg_cost_basis=str(nexus_pos.avg_cost_basis),
+                    praxis_avg_entry_price=str(price),
+                    nexus_entry_price=str(nexus_pos.entry_price),
+                    fallback_price=str(fallback_price),
                 )
+                basis_price = fallback_price
+                nexus_pos.avg_cost_basis = fallback_price
+
+            praxis_total_notional += qty * basis_price
+
+        nexus_only_trade_ids = [
+            trade_id for trade_id in self._state.positions
+            if trade_id not in praxis_by_trade_id
+        ]
+        for trade_id in nexus_only_trade_ids:
+            evicted = self._state.positions.pop(trade_id)
+            _log.warning(
+                'evicting Nexus-only position not present in Praxis snapshot — '
+                'Praxis truth wins; the per_strategy_deployed rebuild downstream '
+                'will not include this stale entry',
+                trade_id=trade_id,
+                strategy_id=evicted.strategy_id,
+                size=str(evicted.size),
+                entry_price=str(evicted.entry_price),
+            )
 
         old_notional = self._state.capital.position_notional
 

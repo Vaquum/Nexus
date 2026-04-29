@@ -143,7 +143,30 @@ class CapitalController:
             if positions is not None:
                 rebuilt: dict[str, Decimal] = {}
                 for pos in positions:
-                    contribution = pos.size * pos.entry_price
+                    cost_basis = pos.avg_cost_basis
+                    if pos.size > _ZERO and cost_basis == _ZERO:
+                        fallback_basis = pos.entry_price
+                        if fallback_basis != _ZERO:
+                            _logger.warning(
+                                'reconcile_at_boot using entry_price '
+                                'fallback for position with zero '
+                                'avg_cost_basis: strategy_id=%s size=%s '
+                                'entry_price=%s',
+                                pos.strategy_id,
+                                pos.size,
+                                fallback_basis,
+                            )
+                            cost_basis = fallback_basis
+                        else:
+                            _logger.warning(
+                                'reconcile_at_boot found non-flat position '
+                                'with zero avg_cost_basis and zero '
+                                'entry_price; deployed capital will be '
+                                'understated: strategy_id=%s size=%s',
+                                pos.strategy_id,
+                                pos.size,
+                            )
+                    contribution = pos.size * cost_basis
                     rebuilt[pos.strategy_id] = (
                         rebuilt.get(pos.strategy_id, _ZERO) + contribution
                     )
@@ -557,6 +580,93 @@ class CapitalController:
 
             self._orders.pop(order_id)
             self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
+
+            return LifecycleResult(success=True)
+
+    def order_exit(
+        self,
+        strategy_id: str,
+        cost_basis_released: Decimal,
+    ) -> LifecycleResult:
+        '''Decrement capital aggregates by the cost basis of an EXIT FILL.
+
+        Mirrors `order_fill` for the EXIT direction. Where `order_fill`
+        increments `position_notional` and `per_strategy_deployed` by
+        `fill_notional + actual_fees` (the cost basis added for an entry
+        fill), `order_exit` decrements both aggregates by the cost basis
+        released by an exit fill.
+
+        The caller (`OutcomeProcessor._handle_fill` exit branch) computes
+        `cost_basis_released = position.avg_cost_basis * fill_size`. The
+        `Position.avg_cost_basis` field is the volume-weighted average
+        cost per unit INCLUDING entry fees (maintained by `_grow_position`
+        on every entry FILL), so the round-trip conservation holds:
+        every entry FILL adds `fill_notional + actual_fees` to
+        `position_notional`; the matching exit FILLs collectively remove
+        the same amount.
+
+        Exit fees are NOT touched here. Under the current model they
+        are not represented in capital aggregates and are also NOT
+        deducted from `realized_pnl` by `_reduce_position`, which uses
+        a gross PnL calculation `(fill_price - entry_price) * fill_size`
+        without subtracting `outcome.actual_fees`. If a future risk
+        extension needs exit-fee tracking, add a separate ledger such
+        as `realized_fees` and wire that accounting in explicitly.
+
+        Args:
+            strategy_id: Strategy whose deployed total is decremented.
+            cost_basis_released: Cost basis of the closed portion in
+                quote asset, computed by the caller as
+                `position.avg_cost_basis * outcome.fill_size`. Must be
+                positive.
+
+        Returns:
+            LifecycleResult with reason on failure. INVARIANT_BREACH
+            when `cost_basis_released > position_notional` OR when
+            `cost_basis_released > per_strategy_deployed[strategy_id]`
+            (either would drive the corresponding aggregate negative).
+        '''
+
+        if not isinstance(cost_basis_released, Decimal) or not cost_basis_released.is_finite():
+            msg = f'cost_basis_released must be a finite Decimal: {cost_basis_released}'
+            raise ValueError(msg)
+
+        if cost_basis_released <= _ZERO:
+            msg = f'cost_basis_released must be positive: {cost_basis_released}'
+            raise ValueError(msg)
+
+        if not strategy_id or not strategy_id.strip():
+            msg = 'strategy_id must be a non-empty string'
+            raise ValueError(msg)
+
+        strategy_id = strategy_id.strip()
+
+        with self._lock:
+            if cost_basis_released > self._state.position_notional:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'cost_basis_released {cost_basis_released} exceeds '
+                        f'position_notional {self._state.position_notional}'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
+            strategy_deployed = self._state.per_strategy_deployed.get(
+                strategy_id, _ZERO,
+            )
+            if cost_basis_released > strategy_deployed:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'cost_basis_released {cost_basis_released} exceeds '
+                        f'per_strategy_deployed[{strategy_id}] {strategy_deployed}'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
+            self._state.position_notional -= cost_basis_released
+            self._adjust_strategy_deployed(strategy_id, -cost_basis_released)
 
             return LifecycleResult(success=True)
 

@@ -6,6 +6,7 @@ methods and updates positions on fill outcomes.
 
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
@@ -20,6 +21,8 @@ from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 
 __all__ = ['OutcomeProcessor']
+
+_log = logging.getLogger(__name__)
 
 _ZERO = Decimal(0)
 
@@ -136,7 +139,24 @@ class OutcomeProcessor:
 
             capital_updated = True
 
-        position_updated, realized_pnl = self._update_position_on_fill(outcome, context)
+        else:
+            cost_basis_released = self._compute_exit_cost_basis(outcome, context)
+            if cost_basis_released is not None:
+                exit_result = self._capital.order_exit(
+                    context.strategy_id,
+                    cost_basis_released,
+                )
+                if not exit_result.success:
+                    return ProcessResult(
+                        success=False,
+                        outcome_type=outcome.outcome_type,
+                        error_reason=f'order_exit failed: {exit_result.reason}',
+                    )
+                capital_updated = True
+
+        position_updated, realized_pnl = (
+            self._update_position_on_fill(outcome, context)
+        )
 
         if realized_pnl is not None:
             self._update_strategy_risk_state(context.strategy_id, realized_pnl)
@@ -163,23 +183,22 @@ class OutcomeProcessor:
     ) -> ProcessResult:
         result = self._capital.order_reject(outcome.command_id)
 
-        if not result.success:
+        position_updated = False
+        if context.is_exit:
+            position_updated = self._clear_pending_exit(context, context.order_size)
+
+        if not result.success and not context.is_exit:
             return ProcessResult(
                 success=False,
                 outcome_type=outcome.outcome_type,
                 error_reason=f'order_reject failed: {result.reason}',
             )
 
-        position_updated = False
-
-        if context.is_exit:
-            position_updated = self._clear_pending_exit(context, context.order_size)
-
         return ProcessResult(
             success=True,
             outcome_type=outcome.outcome_type,
             position_updated=position_updated,
-            capital_updated=True,
+            capital_updated=result.success,
         )
 
     def _handle_cancel(
@@ -189,15 +208,7 @@ class OutcomeProcessor:
     ) -> ProcessResult:
         result = self._capital.order_cancel(outcome.command_id)
 
-        if not result.success:
-            return ProcessResult(
-                success=False,
-                outcome_type=outcome.outcome_type,
-                error_reason=f'order_cancel failed: {result.reason}',
-            )
-
         position_updated = False
-
         if context.is_exit:
             clear_size = min(
                 outcome.remaining_size
@@ -207,12 +218,101 @@ class OutcomeProcessor:
             )
             position_updated = self._clear_pending_exit(context, clear_size)
 
+        if not result.success and not context.is_exit:
+            return ProcessResult(
+                success=False,
+                outcome_type=outcome.outcome_type,
+                error_reason=f'order_cancel failed: {result.reason}',
+            )
+
         return ProcessResult(
             success=True,
             outcome_type=outcome.outcome_type,
             position_updated=position_updated,
-            capital_updated=True,
+            capital_updated=result.success,
         )
+
+    def _compute_exit_cost_basis(  # noqa: PLR0911
+        self,
+        outcome: TradeOutcome,
+        context: OrderContext,
+    ) -> Decimal | None:
+        '''Compute cost-basis-released for an EXIT fill before any mutation.
+
+        Reads `position.avg_cost_basis` while the position is still in
+        `state.positions` so `_handle_fill` can call
+        `CapitalController.order_exit` BEFORE `_reduce_position` mutates
+        or removes the position. The pre-mutation order matters: if
+        `order_exit` returns `INVARIANT_BREACH` (cost basis would drive
+        `position_notional` or `per_strategy_deployed[strategy_id]`
+        negative), the function returns `success=False` BEFORE the
+        position is touched. Pre-fix the position was already
+        reduced/deleted at the time of the breach, leaving capital
+        aggregates and position state divergent and unrecoverable.
+
+        Current `StartupSequencer._reconcile_capital` rebuilds
+        `position_notional` from `qty * nexus_pos.avg_cost_basis` for
+        positions present in both Nexus and Praxis (with a Praxis-price
+        fallback that also persists onto `nexus_pos.avg_cost_basis`),
+        and `_import_praxis_position` initializes Praxis-only imports
+        with `avg_cost_basis = price` so the imported notional matches
+        what later EXITs decrement. INVARIANT_BREACH on the
+        `position_notional` aggregate is therefore unlikely on the
+        post-fix reconcile path. The guard still fires on the
+        per-strategy bucket — `per_strategy_deployed[strategy_id]`
+        can drift from `position_notional` when an unpersisted
+        non-fill terminal releases capital that the next snapshot does
+        not see (current `append_mutation` is gated on
+        `position_updated` only, so ACK / non-fill REJECT / non-fill
+        CANCEL aggregate releases are not durable until the next
+        position-updating fill).
+
+        Returns None only when the EXIT fill should not trigger a
+        capital decrement. That includes non-EXIT fills,
+        `avg_cost_basis == 0` (placeholder reused as real, legacy
+        snapshot pre-`avg_cost_basis`, or invariant break in
+        `_grow_position` — `_reduce_position` logs a WARNING in this
+        case), `fill_size > position.size` (overfill — letting
+        `order_exit` decrement capital before `_reduce_position` raises
+        would leave `CapitalState` inconsistent with `positions`), and
+        `position.strategy_id != context.strategy_id` (cross-strategy
+        attribution mismatch — decrementing the wrong
+        `per_strategy_deployed` bucket would create attribution drift /
+        underflow on the owning strategy).
+
+        A missing `trade_id` or absent position also yields None from
+        this helper, but those are EXIT-flow invariant violations:
+        this method suppresses the capital decrement only, and the
+        subsequent `_update_position_on_fill` will still raise
+        `RuntimeError` in `_reduce_position` for them.
+        '''
+
+        assert outcome.fill_size is not None
+
+        if context.is_entry:
+            return None
+        if context.trade_id is None:
+            return None
+        position = self._state.positions.get(context.trade_id)
+        if position is None:
+            return None
+        if position.avg_cost_basis == _ZERO:
+            return None
+        if outcome.fill_size > position.size:
+            return None
+        if position.strategy_id != context.strategy_id:
+            _log.warning(
+                'EXIT fill strategy_id mismatch; capital decrement '
+                'skipped to avoid wrong-bucket attribution',
+                extra={
+                    'command_id': outcome.command_id,
+                    'trade_id': context.trade_id,
+                    'context_strategy_id': context.strategy_id,
+                    'position_strategy_id': position.strategy_id,
+                },
+            )
+            return None
+        return position.avg_cost_basis * outcome.fill_size
 
     def _update_position_on_fill(
         self,
@@ -234,6 +334,8 @@ class OutcomeProcessor:
     ) -> bool:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
+        assert outcome.fill_notional is not None
+        assert outcome.actual_fees is not None
 
         if context.trade_id is None:
             msg = f'entry fill without trade_id: command_id={outcome.command_id!r}'
@@ -248,14 +350,20 @@ class OutcomeProcessor:
         old_size = position.size
         fill_size = outcome.fill_size
         fill_price = outcome.fill_price
+        fill_notional = outcome.fill_notional
+        actual_fees = outcome.actual_fees
 
         new_size = old_size + fill_size
         new_entry_price = (
             old_size * position.entry_price + fill_size * fill_price
         ) / new_size
+        new_avg_cost_basis = (
+            old_size * position.avg_cost_basis + fill_notional + actual_fees
+        ) / new_size
 
         position.size = new_size
         position.entry_price = new_entry_price
+        position.avg_cost_basis = new_avg_cost_basis
 
         return True
 
@@ -290,6 +398,29 @@ class OutcomeProcessor:
         entry_price = position.entry_price
         side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
         realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
+
+        if position.avg_cost_basis == _ZERO:
+            _log.warning(
+                'exit fill on position with avg_cost_basis=0; capital '
+                'decrement was skipped by `_handle_fill`. Position grew '
+                'through a path that did not populate avg_cost_basis '
+                '(legacy snapshot, placeholder reused as real, or '
+                'invariant break in _grow_position) — capital aggregates '
+                'will leak by the cost basis of this fill until '
+                'avg_cost_basis is repopulated by a later entry fill or '
+                'the position is rehydrated with a non-zero cost basis '
+                'during boot/import recovery (reconcile_at_boot can no '
+                'longer recover this case; it now rebuilds from '
+                'pos.avg_cost_basis directly)',
+                extra={
+                    'command_id': outcome.command_id,
+                    'trade_id': context.trade_id,
+                    'fill_size': str(fill_size),
+                    'position_size': str(position.size),
+                    'position_entry_price': str(entry_price),
+                    'position_avg_cost_basis': str(position.avg_cost_basis),
+                },
+            )
 
         position.size = position.size - fill_size
         position.pending_exit = max(_ZERO, position.pending_exit - fill_size)

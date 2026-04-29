@@ -12,6 +12,7 @@ import pytest
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.position import Position
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.startup import StartupError, StartupSequencer
@@ -332,6 +333,261 @@ class TestExternalIntegrationStubs:
         assert imported.size == Decimal('0.5')
         assert imported.entry_price == Decimal('50000')
         assert sequencer._state.capital.position_notional == Decimal('25000')
+
+    def test_reconcile_capital_uses_avg_cost_basis_for_both_present(self) -> None:
+        '''When a trade_id is present in both Nexus and Praxis,
+        `praxis_total_notional` must accumulate `qty * nexus_pos.avg_cost_basis`
+        (fee-inclusive) rather than `qty * praxis_avg_entry_price`
+        (Praxis has no fee data). Without this, `position_notional`
+        post-reconcile is below the `cost_basis_released` that the
+        next EXIT FILL computes from `Position.avg_cost_basis`,
+        triggering INVARIANT_BREACH on every post-crash EXIT.'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('0.002')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.002'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50500'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert sequencer._state.capital.position_notional == Decimal('101.000')
+
+    def test_reconcile_capital_size_mismatch_adopts_praxis_qty(self) -> None:
+        '''When `nexus_pos.size != qty`, `_reconcile_capital` must update
+        `nexus_pos.size = qty` so downstream `reconcile_at_boot` rebuilds
+        `per_strategy_deployed` from the same qty that
+        `praxis_total_notional` uses. Pre-fix the warning-only branch
+        left `position_notional` (Praxis qty) and `per_strategy_deployed`
+        (stale Nexus qty) divergent → permanent attribution-mismatch
+        denial of every subsequent ENTER. Reachable on every reboot
+        following a crash mid-fill where the persisted Nexus snapshot
+        lags Praxis's WS-applied state.
+        '''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('5')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('10'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50000'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert sequencer._state.positions['shared_trade'].size == Decimal('5')
+        assert sequencer._state.capital.position_notional == Decimal('250000')
+
+    def test_reconcile_capital_zero_avg_cost_basis_falls_back(self) -> None:
+        '''When `nexus_pos.avg_cost_basis == _ZERO` (legacy snapshot
+        placeholder, or position imported via a path that did not
+        populate the field), `_reconcile_capital` must fall back to
+        the Praxis avg_entry_price (or `nexus_pos.entry_price` if the
+        Praxis price is also zero). Pre-fix `praxis_total_notional`
+        accumulated `qty * 0 == 0`, undercounting `position_notional`
+        and triggering INVARIANT_BREACH on the next EXIT fill.
+        '''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('2')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('2'),
+            entry_price=Decimal('49000'),
+            avg_cost_basis=Decimal('0'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert sequencer._state.capital.position_notional == Decimal('100000')
+        assert sequencer._state.positions['shared_trade'].avg_cost_basis == Decimal('50000')
+
+    def test_reconcile_capital_evicts_nexus_only_position(self) -> None:
+        '''A Nexus position that Praxis no longer carries (e.g. closed
+        via Praxis WS path between our last checkpoint and this boot)
+        is evicted, and `position_notional` is recomputed from the
+        Praxis snapshot only. Prevents the
+        attribution-mismatch denial that the per-strategy deployed
+        rebuild downstream would otherwise trigger.'''
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {}
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(
+                capital_pool=Decimal('10000'),
+                position_notional=Decimal('25000'),
+            ),
+        )
+        state.positions['stale_trade'] = Position(
+            trade_id='stale_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert 'stale_trade' not in sequencer._state.positions
+        assert sequencer._state.capital.position_notional == Decimal('0')
+
+    def test_reconcile_capital_keeps_position_present_in_both(self) -> None:
+        '''A position present in both Nexus and Praxis stays put
+        (regression — eviction must only target Nexus-only entries).'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('0.5')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'shared_trade'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert 'shared_trade' in sequencer._state.positions
+
+    def test_reconcile_capital_evicts_nexus_only_keeps_praxis_only(self) -> None:
+        '''Mixed scenario — Nexus has trade_a only, Praxis has trade_b
+        only. After reconcile, trade_a is evicted, trade_b is imported,
+        position_notional reflects trade_b only.'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'trade_b'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('1')
+        praxis_pos.avg_entry_price = Decimal('40000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'trade_b'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(
+                capital_pool=Decimal('100000'),
+                position_notional=Decimal('25000'),
+            ),
+        )
+        state.positions['trade_a'] = Position(
+            trade_id='trade_a',
+            strategy_id='momentum',
+            symbol='ETHUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert 'trade_a' not in sequencer._state.positions
+        assert 'trade_b' in sequencer._state.positions
+        assert sequencer._state.capital.position_notional == Decimal('40000')
 
     def test_reconcile_capital_skips_praxis_position_without_strategy_id(self) -> None:
         '''Praxis positions lacking strategy_id are not imported.'''

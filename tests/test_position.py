@@ -186,3 +186,70 @@ def test_nan_unrealized_pnl_rejected() -> None:
             entry_price=Decimal('50000'),
             unrealized_pnl=Decimal('NaN'),
         )
+
+
+def test_avg_cost_basis_defaults_to_zero() -> None:
+    '''Verify avg_cost_basis defaults to ZERO for backward compatibility
+    with size=0 placeholders (PT-FIX-20) and pre-fix snapshots.'''
+
+    pos = Position(
+        trade_id='t1',
+        strategy_id='momentum',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=Decimal('0'),
+        entry_price=Decimal('50000'),
+    )
+    assert pos.avg_cost_basis == Decimal('0')
+
+
+def test_avg_cost_basis_explicit_value_preserved() -> None:
+    pos = Position(
+        trade_id='t1',
+        strategy_id='momentum',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=Decimal('0.5'),
+        entry_price=Decimal('50000'),
+        avg_cost_basis=Decimal('50500'),
+    )
+    assert pos.avg_cost_basis == Decimal('50500')
+
+
+def test_negative_avg_cost_basis_rejected() -> None:
+    with pytest.raises(ValueError, match='avg_cost_basis'):
+        Position(
+            trade_id='t1',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('-1'),
+        )
+
+
+def test_nan_avg_cost_basis_rejected() -> None:
+    with pytest.raises(ValueError, match='avg_cost_basis'):
+        Position(
+            trade_id='t1',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('NaN'),
+        )
+
+
+def test_infinity_avg_cost_basis_rejected() -> None:
+    with pytest.raises(ValueError, match='avg_cost_basis'):
+        Position(
+            trade_id='t1',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('Infinity'),
+        )
