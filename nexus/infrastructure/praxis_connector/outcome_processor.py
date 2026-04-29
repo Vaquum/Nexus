@@ -244,13 +244,24 @@ class OutcomeProcessor:
         `CapitalController.order_exit` BEFORE `_reduce_position` mutates
         or removes the position. The pre-mutation order matters: if
         `order_exit` returns `INVARIANT_BREACH` (cost basis would drive
-        `position_notional` negative — reachable on every post-crash
-        EXIT when reconcile rebuilt position_notional from Praxis-only
-        `qty * price` while Position retained fee-inclusive
-        `avg_cost_basis`), the function returns `success=False` BEFORE
-        the position is touched. Pre-fix the position was already
+        `position_notional` or `per_strategy_deployed[strategy_id]`
+        negative), the function returns `success=False` BEFORE the
+        position is touched. Pre-fix the position was already
         reduced/deleted at the time of the breach, leaving capital
         aggregates and position state divergent and unrecoverable.
+
+        Current `StartupSequencer._reconcile_capital` rebuilds
+        `position_notional` from `qty * nexus_pos.avg_cost_basis` for
+        positions present in both Nexus and Praxis (with a Praxis-price
+        fallback that also persists onto `nexus_pos.avg_cost_basis`),
+        so the post-crash divergence the original guard targeted is
+        narrower than at first commit. INVARIANT_BREACH is still
+        reachable when (a) a Praxis-only position is imported with the
+        Praxis `qty * price` accounting and Nexus's later
+        `avg_cost_basis * fill_size` exceeds it, or (b) the per-strategy
+        bucket diverges from `position_notional` due to an unpersisted
+        non-fill terminal — both narrower legacy paths than pre-fix but
+        the guard remains load-bearing.
 
         Returns None only when the EXIT fill should not trigger a
         capital decrement. That includes non-EXIT fills,

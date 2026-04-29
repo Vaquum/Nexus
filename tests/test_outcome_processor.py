@@ -1690,12 +1690,13 @@ class TestExitFillCapitalGuardOrdering:
 
 class TestExitRejectClearsPendingExit:
     '''EXIT REJECT/CANCEL must clear `pending_exit` even when
-    `CapitalController.order_reject` / `order_cancel` reports the
-    EXPECTED_MISS that EXIT orders are not tracked in `_orders`
-    (they bypass `bridge_to_capital`). Pre-fix the failure
-    short-circuited the handler and left `pending_exit` stuck,
-    so a subsequent retry was denied with
-    `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
+    `CapitalController.order_reject` / `order_cancel` fails because
+    EXIT orders are not tracked in `_orders` (they bypass
+    `bridge_to_capital`; the actual failure category is
+    INVARIANT_BREACH for `order_reject` and EXPECTED_MISS for
+    `order_cancel`). Pre-fix the failure short-circuited the handler
+    and left `pending_exit` stuck, so a subsequent retry was denied
+    with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
     '''
 
     def test_reject_clears_pending_exit_when_capital_op_fails(self) -> None:
