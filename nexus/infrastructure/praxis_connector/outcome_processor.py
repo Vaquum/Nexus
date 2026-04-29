@@ -254,14 +254,18 @@ class OutcomeProcessor:
         `position_notional` from `qty * nexus_pos.avg_cost_basis` for
         positions present in both Nexus and Praxis (with a Praxis-price
         fallback that also persists onto `nexus_pos.avg_cost_basis`),
-        so the post-crash divergence the original guard targeted is
-        narrower than at first commit. INVARIANT_BREACH is still
-        reachable when (a) a Praxis-only position is imported with the
-        Praxis `qty * price` accounting and Nexus's later
-        `avg_cost_basis * fill_size` exceeds it, or (b) the per-strategy
-        bucket diverges from `position_notional` due to an unpersisted
-        non-fill terminal — both narrower legacy paths than pre-fix but
-        the guard remains load-bearing.
+        and `_import_praxis_position` initializes Praxis-only imports
+        with `avg_cost_basis = price` so the imported notional matches
+        what later EXITs decrement. INVARIANT_BREACH on the
+        `position_notional` aggregate is therefore unlikely on the
+        post-fix reconcile path. The guard still fires on the
+        per-strategy bucket — `per_strategy_deployed[strategy_id]`
+        can drift from `position_notional` when an unpersisted
+        non-fill terminal releases capital that the next snapshot does
+        not see (current `append_mutation` is gated on
+        `position_updated` only, so ACK / non-fill REJECT / non-fill
+        CANCEL aggregate releases are not durable until the next
+        position-updating fill).
 
         Returns None only when the EXIT fill should not trigger a
         capital decrement. That includes non-EXIT fills,
