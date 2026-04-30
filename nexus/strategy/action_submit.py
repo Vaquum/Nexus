@@ -87,6 +87,7 @@ def submit_actions(
     validator: ValidationPipeline,
     build_context: ContextBuilder,
     now: Callable[[], datetime],
+    capital_controller: CapitalController | None = None,
 ) -> list[tuple[Action, SubmissionOutcome]]:
     '''Run a list of strategy actions through validation and submission.
 
@@ -103,11 +104,14 @@ def submit_actions(
             `None` when the context is unavailable (e.g. unknown
             `trade_id` on EXIT). Not invoked for ABORT.
         now: UTC-now provider injected for deterministic tests.
-
-    Returns:
-        One `(action, SubmissionOutcome)` tuple per input action, in
-        the original order. Submission failures of one action do not
-        abort the iteration.
+        capital_controller: When provided, on translate / send_command
+            failure after `validator.validate` granted a Reservation,
+            the granted Reservation is released via
+            `controller.release_reservation(reservation_id)` so capital
+            does not stay parked until the 30s TTL eviction on
+            deterministic-failure retry storms (config bug, malformed
+            symbol). MAJOR-G fix. None preserves legacy test behavior
+            (no rollback).
     '''
 
     results: list[tuple[Action, SubmissionOutcome]] = []
@@ -204,6 +208,7 @@ def submit_actions(
                     'action_type': action.action_type.value,
                 },
             )
+            _release_granted_reservation(capital_controller, decision)
             results.append((
                 action,
                 SubmissionOutcome(
@@ -224,6 +229,7 @@ def submit_actions(
                     'action_type': action.action_type.value,
                 },
             )
+            _release_granted_reservation(capital_controller, decision)
             results.append((
                 action,
                 SubmissionOutcome(
@@ -257,6 +263,38 @@ def submit_actions(
         ))
 
     return results
+
+
+def _release_granted_reservation(
+    capital_controller: CapitalController | None,
+    decision: ValidationDecision,
+) -> None:
+    '''Roll back a granted reservation when downstream submission fails.
+
+    MAJOR-G fix: pre-fix translate / send_command exceptions left the
+    Reservation parked in `_reservations` until 30s TTL eviction.
+    Deterministic failures (config bug, malformed symbol) re-granted on
+    the next tick and parked again, eventually starving capital.
+    Post-fix the reservation is released immediately so available
+    capital returns within the same tick.
+    '''
+
+    if capital_controller is None:
+        return
+
+    if decision.reservation is None:
+        return
+
+    result = capital_controller.release_reservation(decision.reservation.reservation_id)
+
+    if not result.success:
+        _log.warning(
+            'release_reservation failed during submit_actions rollback',
+            extra={
+                'reservation_id': decision.reservation.reservation_id,
+                'reason': result.reason,
+            },
+        )
 
 
 def bridge_to_capital(
