@@ -10,6 +10,7 @@ import logging
 import threading
 from contextlib import AbstractContextManager, nullcontext
 from decimal import Decimal
+from typing import Any
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.enums import OrderSide
@@ -38,14 +39,16 @@ class OutcomeProcessor:
         state_store: Persistence facade for WAL and snapshots.
         positions_lock: Optional `threading.Lock` shared with the launcher's
             `_build_strategy_context` reader and `_ensure_entry_position`
-            writer. When provided, `_grow_position` and `_reduce_position`
-            wrap their `state.positions` mutations + field assignments
-            under it so a concurrent PredictLoop / TimerLoop iteration of
+            writer. When provided, every `state.positions` dict-size
+            mutation AND every Position field assignment performed by
+            this class (`_grow_position`, `_reduce_position`,
+            `_clear_pending_exit`) wraps its writes under it so a
+            concurrent PredictLoop / TimerLoop iteration of
             `state.positions.values()` cannot fire `RuntimeError:
             dictionary changed size during iteration` (silently swallowed
             by PredictLoop's top-level except → silently dropped strategy
-            ticks). When None (legacy single-threaded test paths) no
-            locking is performed.
+            ticks) and cannot read torn field values. When None (legacy
+            single-threaded test paths) no locking is performed.
     '''
 
     def __init__(
@@ -59,7 +62,7 @@ class OutcomeProcessor:
         self._state = instance_state
         self._store = state_store
         self._positions_lock = positions_lock
-        self._positions_cm: AbstractContextManager[object] = (
+        self._positions_cm: AbstractContextManager[Any] = (
             positions_lock if positions_lock is not None else nullcontext()
         )
 
@@ -454,12 +457,13 @@ class OutcomeProcessor:
             msg = f'clear pending exit without trade_id: command_id={context.command_id!r}'
             raise RuntimeError(msg)
 
-        position = self._state.positions.get(context.trade_id)
+        with self._positions_cm:
+            position = self._state.positions.get(context.trade_id)
 
-        if position is None:
-            return False
+            if position is None:
+                return False
 
-        position.pending_exit = max(_ZERO, position.pending_exit - size)
+            position.pending_exit = max(_ZERO, position.pending_exit - size)
 
         return True
 
