@@ -571,7 +571,7 @@ class ShutdownSequencer:
                 self._dispatch_non_pending_outcome(outcome)
                 continue
 
-            if outcome.outcome_type.is_fill:
+            if outcome.outcome_type.is_fill or outcome.outcome_type.is_terminal:
                 self._apply_terminal_outcome(outcome)
 
             if outcome.outcome_type.is_terminal:
@@ -623,7 +623,7 @@ class ShutdownSequencer:
             )
 
     def _apply_terminal_outcome(self, outcome: TradeOutcome) -> None:
-        '''Apply a shutdown-EXIT fill outcome to instance state.
+        '''Apply a shutdown-EXIT terminal outcome to instance state.
 
         PT-FIX-31: pre-fix the shutdown sequencer drained terminal
         outcomes from `praxis_inbound` purely as a "did the venue
@@ -644,14 +644,14 @@ class ShutdownSequencer:
         shutdown EXIT was discarded — the position kept the
         partial-fill amount that the venue had actually decremented.
 
-        Other terminal outcomes (REJECTED / CANCELED / EXPIRED with
-        no preceding PARTIAL) are deliberately skipped: they mean the
-        venue did NOT close the position, so leaving
-        `state.positions` untouched is the correct semantic. The
-        non-entry FILL path inside `OutcomeProcessor` skips the
-        capital-controller `order_fill` lookup (the shutdown EXIT was
-        never registered via `bridge_to_capital`) and updates only
-        `state.positions` via `_reduce_position`.
+        MAJOR-I: now also routes REJECTED / CANCELED / EXPIRED
+        non-fill terminals through `OutcomeProcessor.process`. Pre-fix
+        the early-return on `not is_fill` left `position.pending_exit`
+        non-zero (incremented in `submit_actions`) — the persisted
+        Position then denied the next boot's first EXIT with
+        `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`. Post-fix
+        `_handle_reject` / `_handle_cancel` (with `context.is_exit=True`)
+        invoke `_clear_pending_exit` to release the stuck value.
         '''
 
         command_id = outcome.command_id
@@ -661,13 +661,11 @@ class ShutdownSequencer:
         if context is None:
             return
 
-        if not outcome_type.is_fill:
-            return
-
         if self._outcome_processor is None:
             _log.warning(
-                'no outcome_processor wired; shutdown EXIT fill state '
-                'update skipped — next boot may see stale Position',
+                'no outcome_processor wired; shutdown EXIT terminal state '
+                'update skipped — next boot may see stale Position or '
+                'stuck pending_exit',
                 command_id=command_id,
                 trade_id=context.trade_id,
                 outcome_type=outcome_type.value,

@@ -1026,9 +1026,13 @@ class TestShutdownExitAppliesToState:
         self, tmp_path: Path,
     ) -> None:
         '''A REJECTED outcome means the venue did NOT close the position.
-        Leaving `state.positions` untouched is the correct semantic — pre-
-        and post-fix behavior is identical here, since the post-fix
-        `_apply_terminal_outcome` deliberately skips non-FILL terminals.'''
+        Leaving `state.positions[..].size` untouched is the correct
+        semantic. MAJOR-I: post-fix the REJECTED terminal routes through
+        `OutcomeProcessor._handle_reject` which calls
+        `_clear_pending_exit` to release any stranded `pending_exit`.
+        Pre-fix `pending_exit` stayed inflated and the next-boot intake
+        denied the next EXIT with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
+        '''
 
         config = InstanceConfig(
             account_id='acc_001',
@@ -1081,6 +1085,128 @@ class TestShutdownExitAppliesToState:
 
         assert 't-1' in state.positions
         assert state.positions['t-1'].size == Decimal('0.5')
+        assert state.positions['t-1'].pending_exit == Decimal('0')
+
+    def test_shutdown_exit_canceled_clears_pending_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        '''MAJOR-I: a CANCELED outcome with no preceding PARTIAL fill
+        must clear stranded `pending_exit` via
+        `OutcomeProcessor._handle_cancel`. Position size unchanged.
+        '''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position()
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+        outcome_processor = OutcomeProcessor(capital_controller, state, state_store)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        canceled = TradeOutcome(
+            outcome_id='out-1',
+            command_id='praxis_cmd_42',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+            remaining_size=Decimal('0.5'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(canceled)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=2.0,
+            config=config,
+            outcome_processor=outcome_processor,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+        sequencer._wait_terminal()
+
+        assert 't-1' in state.positions
+        assert state.positions['t-1'].size == Decimal('0.5')
+        assert state.positions['t-1'].pending_exit == Decimal('0')
+
+    def test_shutdown_exit_expired_clears_pending_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        '''MAJOR-I: EXPIRED outcomes route through `_handle_cancel` and
+        follow the same `_clear_pending_exit` path as CANCELED.
+        '''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position()
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+        outcome_processor = OutcomeProcessor(capital_controller, state, state_store)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        expired = TradeOutcome(
+            outcome_id='out-1',
+            command_id='praxis_cmd_42',
+            outcome_type=TradeOutcomeType.EXPIRED,
+            timestamp=datetime.now(tz=timezone.utc),
+            remaining_size=Decimal('0.5'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(expired)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=2.0,
+            config=config,
+            outcome_processor=outcome_processor,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+        sequencer._wait_terminal()
+
+        assert 't-1' in state.positions
+        assert state.positions['t-1'].size == Decimal('0.5')
+        assert state.positions['t-1'].pending_exit == Decimal('0')
 
     def test_shutdown_exit_without_outcome_processor_logs_warning(
         self, tmp_path: Path,
