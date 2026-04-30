@@ -458,6 +458,73 @@ class TestRfcStageOneHooks:
         assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_EXIT_SIZE_EXCEEDS_REMAINING'
 
+    def test_reference_integrity_exit_strategy_mismatch_denied(self) -> None:
+        '''MAJOR-Q: an EXIT whose `context.strategy_id` differs from
+        the position's `strategy_id` must be denied at intake. Pre-fix
+        the validation accepted the EXIT, `_compute_exit_cost_basis`
+        skipped the capital decrement (correctly), but `_reduce_position`
+        ran (decrementing position state) and `_update_strategy_risk_state`
+        attributed realized P&L to the WRONG strategy, corrupting
+        `rolling_loss_*` and `high_water_mark` on the wrong bucket.
+        '''
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.positions['t1'] = Position(
+            trade_id='t1',
+            strategy_id='strat_owner',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('1.0'),
+            entry_price=Decimal('50000'),
+        )
+        ref_hook = make_reference_integrity_hook(active_command_ids=set())
+
+        decision = validate_intake_stage(
+            _make_context(
+                strategy_id='strat_intruder',
+                action=ValidationAction.EXIT,
+                order_side=OrderSide.SELL,
+                trade_id='t1',
+                order_size=Decimal('0.5'),
+                state=state,
+            ),
+            hooks=(ref_hook,),
+        )
+
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_EXIT_STRATEGY_MISMATCH'
+
+    def test_reference_integrity_exit_strategy_match_allowed(self) -> None:
+        '''Sanity: when `context.strategy_id` matches `position.strategy_id`,
+        the new mismatch check does not fire — EXIT proceeds to the
+        size-bound check.
+        '''
+
+        state = InstanceState.fresh(Decimal('10000'))
+        state.positions['t1'] = Position(
+            trade_id='t1',
+            strategy_id='strat_a',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('1.0'),
+            entry_price=Decimal('50000'),
+        )
+        ref_hook = make_reference_integrity_hook(active_command_ids=set())
+
+        decision = validate_intake_stage(
+            _make_context(
+                strategy_id='strat_a',
+                action=ValidationAction.EXIT,
+                order_side=OrderSide.SELL,
+                trade_id='t1',
+                order_size=Decimal('0.5'),
+                state=state,
+            ),
+            hooks=(ref_hook,),
+        )
+
+        assert decision.allowed is True
+
     def test_reference_integrity_modify_requires_modifiable_set(self) -> None:
         ref_hook = make_reference_integrity_hook(active_command_ids={'cmd_ok'})
 
