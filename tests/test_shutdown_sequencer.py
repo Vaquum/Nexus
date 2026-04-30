@@ -1208,6 +1208,51 @@ class TestShutdownExitAppliesToState:
         assert state.positions['t-1'].size == Decimal('0.5')
         assert state.positions['t-1'].pending_exit == Decimal('0')
 
+    def test_shutdown_submit_exit_increments_pending_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        '''MAJOR-L: shutdown `_submit_exit` must increment
+        `position.pending_exit` after `send_command` returns. Pre-fix
+        the increment was only done by the runtime `submit_actions`
+        path; shutdown EXITs bypassed it. Post-fix the bookkeeping is
+        symmetric so subsequent `_handle_reject` / `_handle_cancel`
+        clears can match an actual incremented value.
+        '''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position()
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=MagicMock(),
+            shutdown_timeout=2.0,
+            config=config,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert state.positions['t-1'].pending_exit == Decimal('0.5')
+
     def test_shutdown_exit_without_outcome_processor_logs_warning(
         self, tmp_path: Path,
     ) -> None:
