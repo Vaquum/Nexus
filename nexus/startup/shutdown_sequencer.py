@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -94,6 +96,7 @@ class ShutdownSequencer:
         config: InstanceConfig | None = None,
         outcome_processor: OutcomeProcessor | None = None,
         non_pending_outcome_handler: Callable[[TradeOutcome], None] | None = None,
+        positions_lock: threading.Lock | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -149,6 +152,7 @@ class ShutdownSequencer:
         self._outcome_processor = outcome_processor
         self._exit_contexts: dict[str, OrderContext] = {}
         self._non_pending_outcome_handler = non_pending_outcome_handler
+        self._positions_lock = positions_lock
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
@@ -242,13 +246,37 @@ class ShutdownSequencer:
         Calls dispatch_shutdown on each strategy with context built from
         current state. Collects returned actions keyed by strategy_id.
         Strategy exceptions are logged and skipped — shutdown continues.
+
+        MAJOR-S: snapshots `state.positions.values()` under
+        `positions_lock`. `_stop_outcome_loop` runs before this method
+        and is supposed to halt the OutcomeLoop, but the join can time
+        out (5s default) leaving the worker still applying outcomes.
+        Without the lock the iteration could fire `RuntimeError:
+        dictionary changed size during iteration` mid-snapshot, escape
+        the per-strategy try/except below, and terminate shutdown
+        before `_persist_strategy_state` / `_final_checkpoint` ran —
+        data loss. The snapshot is collected once per strategy under
+        the lock; filtering by `strategy_id` happens after release.
         '''
+
+        if self._outcome_loop is not None and self._outcome_loop.running:
+            _log.warning(
+                'OutcomeLoop still running at _dispatch_shutdown; '
+                '_stop_outcome_loop join_timeout fired without worker '
+                'exit — positions_lock around snapshot iteration is '
+                'load-bearing for safe iteration'
+            )
+
+        lock_cm = self._positions_lock if self._positions_lock is not None else nullcontext()
+
+        with lock_cm:
+            positions_snapshot = tuple(self._state.positions.values())
 
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id.strip()
 
             positions = tuple(
-                pos for pos in self._state.positions.values()
+                pos for pos in positions_snapshot
                 if pos.strategy_id == strategy_id
             )
 

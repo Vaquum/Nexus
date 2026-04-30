@@ -177,6 +177,79 @@ class TestDispatchShutdown:
 
         assert sequencer._shutdown_actions == {}
 
+    def test_dispatch_shutdown_iteration_safe_under_concurrent_mutation(self) -> None:
+        '''MAJOR-S: `_dispatch_shutdown` snapshots
+        `state.positions.values()` under `positions_lock` so a
+        concurrent OutcomeLoop mutation (which can still be running
+        if `_stop_outcome_loop` join timed out) cannot fire
+        `RuntimeError: dictionary changed size during iteration` and
+        terminate shutdown before `_persist_strategy_state` /
+        `_final_checkpoint`.
+
+        Drives a worker thread that mutates `state.positions` in a
+        tight loop while `_dispatch_shutdown` runs; asserts no
+        exception escapes.
+        '''
+
+        import threading as _t
+
+        lock = _t.Lock()
+        runner = _make_mock_runner()
+        runner.dispatch_shutdown.return_value = []
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        for i in range(20):
+            state.positions[f't-{i}'] = Position(
+                trade_id=f't-{i}',
+                strategy_id='test_strategy',
+                symbol='BTCUSDT',
+                side=OrderSide.BUY,
+                size=Decimal('1'),
+                entry_price=Decimal('50000'),
+            )
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+            positions_lock=lock,
+        )
+
+        stop_event = _t.Event()
+        mutator_failures: list[Exception] = []
+
+        def mutator() -> None:
+            try:
+                i = 100
+                while not stop_event.is_set():
+                    with lock:
+                        state.positions[f't-{i}'] = Position(
+                            trade_id=f't-{i}',
+                            strategy_id='test_strategy',
+                            symbol='BTCUSDT',
+                            side=OrderSide.BUY,
+                            size=Decimal('1'),
+                            entry_price=Decimal('50000'),
+                        )
+                    with lock:
+                        state.positions.pop(f't-{i}', None)
+                    i += 1
+            except Exception as exc:
+                mutator_failures.append(exc)
+
+        thread = _t.Thread(target=mutator, daemon=True)
+        thread.start()
+        try:
+            for _ in range(20):
+                sequencer._dispatch_shutdown()
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
+
+        assert not mutator_failures, (
+            f'mutator observed exceptions: {mutator_failures[:3]}'
+        )
+
 
 class TestSubmitActions:
 
