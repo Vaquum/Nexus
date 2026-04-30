@@ -671,7 +671,14 @@ class ShutdownSequencer:
             )
 
     def _apply_terminal_outcome(self, outcome: TradeOutcome) -> None:
-        '''Apply a shutdown-EXIT terminal outcome to instance state.
+        '''Apply a shutdown-EXIT outcome to instance state.
+
+        Handles both fill outcomes (FILLED and PARTIAL — PARTIAL is
+        non-terminal but still mutates state) and non-fill terminals
+        (REJECTED, CANCELED, EXPIRED). The helper name retains
+        "terminal" for git-history continuity with PT-FIX-31, but the
+        actual gate is `is_fill OR is_non_fill_terminal`, applied by
+        the caller `_poll_until_terminal`.
 
         PT-FIX-31: pre-fix the shutdown sequencer drained terminal
         outcomes from `praxis_inbound` purely as a "did the venue
