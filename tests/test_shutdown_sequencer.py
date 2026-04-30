@@ -31,6 +31,7 @@ from nexus.infrastructure.state_store import StateStore
 from nexus.instance_config import InstanceConfig
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType
+from nexus.strategy.context import StrategyContext
 from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
@@ -176,6 +177,70 @@ class TestDispatchShutdown:
         sequencer._dispatch_shutdown()
 
         assert sequencer._shutdown_actions == {}
+
+    def test_dispatch_shutdown_capital_available_subtracts_deployed(self) -> None:
+        '''MAJOR-T: `_dispatch_shutdown`'s `StrategyContext.capital_available`
+        must mirror runtime's `max(strategy_budget - deployed, _ZERO)`
+        rather than the gross `manifest.capital_pool * capital_pct`.
+        Pre-fix strategies that branched on `capital_available` in
+        `on_shutdown` saw an overstated value (gross budget) and could
+        emit actions sized against capital that was already deployed.
+        '''
+
+        runner = _make_mock_runner()
+        captured: list[StrategyContext] = []
+
+        def _capture(_strategy_id: str, _params: object, ctx: StrategyContext) -> list[Action]:
+            captured.append(ctx)
+            return []
+
+        runner.dispatch_shutdown.side_effect = _capture
+
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        state.capital.per_strategy_deployed['test_strategy'] = Decimal('3000')
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+        )
+
+        sequencer._dispatch_shutdown()
+
+        assert len(captured) == 1
+        assert captured[0].capital_available == Decimal('2000')
+
+    def test_dispatch_shutdown_capital_available_clamps_to_zero(self) -> None:
+        '''When deployed exceeds the gross budget (e.g. operator
+        overrides during runtime, fee accounting drift), the surfaced
+        `capital_available` clamps to zero rather than going negative.
+        '''
+
+        runner = _make_mock_runner()
+        captured: list[StrategyContext] = []
+
+        def _capture(_strategy_id: str, _params: object, ctx: StrategyContext) -> list[Action]:
+            captured.append(ctx)
+            return []
+
+        runner.dispatch_shutdown.side_effect = _capture
+
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        state.capital.per_strategy_deployed['test_strategy'] = Decimal('99999')
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+        )
+
+        sequencer._dispatch_shutdown()
+
+        assert captured[0].capital_available == Decimal('0')
 
     def test_dispatch_shutdown_iteration_safe_under_concurrent_mutation(self) -> None:
         '''MAJOR-S: `_dispatch_shutdown` snapshots

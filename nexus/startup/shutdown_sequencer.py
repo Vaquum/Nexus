@@ -280,7 +280,9 @@ class ShutdownSequencer:
                 if pos.strategy_id == strategy_id
             )
 
-            capital_available = self._manifest.capital_pool * spec.capital_pct / _HUNDRED
+            gross_budget = self._manifest.capital_pool * spec.capital_pct / _HUNDRED
+            deployed = self._state.capital.per_strategy_deployed.get(strategy_id, _ZERO)
+            capital_available = max(gross_budget - deployed, _ZERO)
             mode = self._state.mode.mode
 
             params = StrategyParams(raw={})
