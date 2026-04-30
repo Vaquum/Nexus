@@ -77,6 +77,15 @@ class ShutdownSequencer:
         config: Instance configuration carrying account_id, venue, stp_mode
             for shutdown command translation. When provided alongside
             account_id, the two account_ids must match.
+        positions_lock: Optional `threading.Lock` shared with PredictLoop /
+            TimerLoop / OutcomeProcessor that guards `state.positions`.
+            When provided, `_dispatch_shutdown` snapshots
+            `state.positions.values()` under the lock (MAJOR-S) so a
+            timed-out OutcomeLoop join cannot trigger
+            `RuntimeError: dictionary changed size during iteration`
+            mid-snapshot and abort the shutdown before
+            `_persist_strategy_state` / `_final_checkpoint` run. None
+            disables the guard (legacy single-threaded shutdown paths).
     '''
 
     def __init__(

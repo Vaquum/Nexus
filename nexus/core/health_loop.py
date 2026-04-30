@@ -35,6 +35,12 @@ class HealthLoop:
         evaluator: HealthEvaluator that maps snapshot to OperationalMode.
         state: InstanceState whose mode is mutated on transition.
         interval_seconds: Seconds between ticks. Must be positive.
+        rolling_loss_refresher: Optional callback invoked once per tick from
+            the same daemon timer thread, BEFORE `snapshot_provider`. Used
+            to recompute rolling-loss aggregates from the WAL (MAJOR-H).
+            Best-effort: any exception is logged at WARN and the rest of
+            the tick proceeds — a single bad refresh never aborts the
+            health-evaluation loop. None disables the refresh side-effect.
     '''
 
     def __init__(
