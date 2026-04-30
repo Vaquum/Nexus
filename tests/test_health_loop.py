@@ -258,3 +258,55 @@ def test_tick_once_still_writes_mode_when_loop_not_started() -> None:
     loop.tick_once()
 
     assert state.mode.mode != OperationalMode.ACTIVE
+
+
+def test_tick_invokes_rolling_loss_refresher_when_wired() -> None:
+    '''MAJOR-H: HealthLoop calls the optional rolling_loss_refresher
+    on each tick to decay rolling_loss_24h/7d/30d as old loss events
+    age out of their windows. Without periodic refresh the field
+    over-counts (losses outside the window are never dropped) and the
+    risk-stage rolling-loss limits become over-conservative.
+    '''
+
+    state = _make_state()
+    snapshot = HealthSnapshot()
+    refresh_calls: list[InstanceState] = []
+
+    def _refresher(s: InstanceState) -> None:
+        refresh_calls.append(s)
+
+    loop = HealthLoop(
+        snapshot_provider=lambda: snapshot,
+        evaluator=_make_evaluator(),
+        state=state,
+        rolling_loss_refresher=_refresher,
+    )
+
+    loop.tick_once()
+
+    assert len(refresh_calls) == 1
+    assert refresh_calls[0] is state
+
+
+def test_tick_swallows_rolling_loss_refresher_exception() -> None:
+    '''Refresher exception must not abort the tick — health evaluation
+    is the primary job; rolling-loss decay is best-effort.
+    '''
+
+    state = _make_state()
+    snapshot = HealthSnapshot()
+
+    def _refresher(_s: InstanceState) -> None:
+        msg = 'WAL read failed'
+        raise RuntimeError(msg)
+
+    loop = HealthLoop(
+        snapshot_provider=lambda: snapshot,
+        evaluator=_make_evaluator(),
+        state=state,
+        rolling_loss_refresher=_refresher,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode == OperationalMode.ACTIVE

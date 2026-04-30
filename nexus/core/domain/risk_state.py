@@ -59,12 +59,15 @@ class StrategyRiskState:
 
 @dataclass(frozen=True)
 class RiskCheckMetrics:
-    '''Drawdown metrics exposed to risk-limit checks.'''
+    '''Drawdown + rolling-loss metrics exposed to risk-limit checks.'''
 
     total_drawdown: Decimal
     total_drawdown_pct: Decimal
     max_drawdown: Decimal
     max_drawdown_pct: Decimal
+    rolling_loss_24h: Decimal = _ZERO
+    rolling_loss_7d: Decimal = _ZERO
+    rolling_loss_30d: Decimal = _ZERO
 
 
 @dataclass(frozen=True)
@@ -236,13 +239,16 @@ class RiskState:
         self.recompute_drawdown_metrics()
 
     def to_risk_check_metrics(self) -> RiskCheckMetrics:
-        '''Return drawdown values needed for validator-style checks.'''
+        '''Return drawdown + rolling-loss values needed for validator-style checks.'''
 
         return RiskCheckMetrics(
             total_drawdown=self.total_drawdown,
             total_drawdown_pct=self.total_drawdown_pct,
             max_drawdown=self.max_drawdown,
             max_drawdown_pct=self.max_drawdown_pct,
+            rolling_loss_24h=self.rolling_loss_24h,
+            rolling_loss_7d=self.rolling_loss_7d,
+            rolling_loss_30d=self.rolling_loss_30d,
         )
 
     def to_drawdown_diagnostics(self) -> DrawdownDiagnostics:

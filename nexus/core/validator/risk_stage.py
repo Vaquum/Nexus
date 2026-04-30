@@ -26,6 +26,9 @@ class RiskStageLimits:
     max_total_drawdown_pct: Decimal | None = None
     max_drawdown_limit: Decimal | None = None
     max_drawdown_pct_limit: Decimal | None = None
+    max_rolling_loss_24h: Decimal | None = None
+    max_rolling_loss_7d: Decimal | None = None
+    max_rolling_loss_30d: Decimal | None = None
 
     def __post_init__(self) -> None:
         '''Validate configured risk thresholds.'''
@@ -35,6 +38,9 @@ class RiskStageLimits:
             'max_total_drawdown_pct',
             'max_drawdown_limit',
             'max_drawdown_pct_limit',
+            'max_rolling_loss_24h',
+            'max_rolling_loss_7d',
+            'max_rolling_loss_30d',
         ):
             value = getattr(self, field_name)
             if value is None:
@@ -81,6 +87,24 @@ def evaluate_risk_breach(
             'RISK_MAX_DRAWDOWN_PCT_LIMIT',
             metrics.max_drawdown_pct,
             limits.max_drawdown_pct_limit,
+        ),
+        (
+            'rolling_loss_24h',
+            'RISK_ROLLING_LOSS_24H_LIMIT',
+            metrics.rolling_loss_24h,
+            limits.max_rolling_loss_24h,
+        ),
+        (
+            'rolling_loss_7d',
+            'RISK_ROLLING_LOSS_7D_LIMIT',
+            metrics.rolling_loss_7d,
+            limits.max_rolling_loss_7d,
+        ),
+        (
+            'rolling_loss_30d',
+            'RISK_ROLLING_LOSS_30D_LIMIT',
+            metrics.rolling_loss_30d,
+            limits.max_rolling_loss_30d,
         ),
     )
 

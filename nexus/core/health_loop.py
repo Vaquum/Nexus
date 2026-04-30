@@ -43,6 +43,7 @@ class HealthLoop:
         evaluator: HealthEvaluator,
         state: InstanceState,
         interval_seconds: float = 5.0,
+        rolling_loss_refresher: Callable[[InstanceState], None] | None = None,
     ) -> None:
         if (
             isinstance(interval_seconds, bool)
@@ -59,6 +60,7 @@ class HealthLoop:
         self._timer: threading.Timer | None = None
         self._running = False
         self._lock = threading.Lock()
+        self._rolling_loss_refresher = rolling_loss_refresher
 
     @property
     def running(self) -> bool:
@@ -142,6 +144,12 @@ class HealthLoop:
         except Exception:  # noqa: BLE001 - intentional catch-all for evaluator
             _log.exception('health evaluation failed')
             return
+
+        if self._rolling_loss_refresher is not None:
+            try:
+                self._rolling_loss_refresher(self._state)
+            except Exception:  # noqa: BLE001 - decay refresh failure must not abort tick
+                _log.exception('rolling-loss refresh failed')
 
         with self._lock:
             if respect_running and not self._running:
