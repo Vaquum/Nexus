@@ -504,6 +504,98 @@ class TestSendOrder:
             ctrl.send_order(res2.reservation.reservation_id, 'ORD-DUP')
 
 
+class TestSendOrderBoundaryRace:
+    '''MAJOR-K + TD-S: the reservation TTL and `send_command` timeout
+    were both 30s. A `send_command` blocking the full timeout could
+    return only at `t == expires_at`, then the launcher's subsequent
+    `send_order` would call `_purge_expired(now)` BEFORE
+    `_reservations.pop(...)` — at boundary equality the heap pop fired
+    first, the reservation was gone, EXPECTED_MISS returned, OrderContext
+    never registered, capital permanently stuck in `in_flight_order_notional`
+    until next boot.
+
+    Post-fix: `_reservations.pop` runs first (so boundary equality is
+    captured), an explicit `now > expires_at` check rejects truly-expired
+    reservations and releases capital, then `_purge_expired` runs as
+    housekeeping for OTHER reservations. `DEFAULT_TTL_SECONDS` also bumped
+    to 60s so TTL > timeout invariant holds.
+    '''
+
+    def test_default_ttl_seconds_exceeds_send_command_timeout(self) -> None:
+        '''Structural: TTL > send_command timeout (30s) so a slow
+        send_command cannot consume the entire reservation window.
+        '''
+
+        from nexus.core.capital_controller.capital_controller import DEFAULT_TTL_SECONDS
+        from nexus.infrastructure.praxis_connector.praxis_outbound import _DEFAULT_TIMEOUT
+
+        assert DEFAULT_TTL_SECONDS > _DEFAULT_TIMEOUT
+
+    def test_send_order_at_boundary_equality_succeeds(self) -> None:
+        '''A reservation with `expires_at == now` at `send_order` call
+        time is captured via the `_reservations.pop` reorder. Pre-fix
+        `_purge_expired` (which uses `<= now`) ran first and removed
+        the reservation; the subsequent pop returned None → EXPECTED_MISS.
+        Post-fix the pop returns the reservation; `now > expires_at` is
+        False; the reservation is consumed.
+        '''
+
+        ctrl = _make_controller()
+        anchor = datetime.now(tz=timezone.utc)
+        boundary = Reservation(
+            reservation_id='boundary_001',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=anchor - timedelta(seconds=60),
+            expires_at=anchor + timedelta(seconds=60),
+        )
+        ctrl._reservations['boundary_001'] = boundary
+        heapq.heappush(ctrl._expiry_heap, (boundary.expires_at, 'boundary_001'))
+        ctrl._state.reservation_notional = Decimal('101')
+        ctrl._state.per_strategy_deployed['strat_a'] = Decimal('101')
+
+        sent = ctrl.send_order('boundary_001', 'ORD-001')
+
+        assert sent.success is True
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert 'ORD-001' in ctrl._orders
+
+    def test_send_order_just_past_expiry_releases_capital(self) -> None:
+        '''A reservation popped after its expires_at must release the
+        capital aggregates (reservation_notional, per_strategy_deployed)
+        so the strategy budget returns to available. Pre-fix
+        `_purge_expired` did this on its own (because pop returned None);
+        post-fix the pop succeeds and the explicit `now > expires_at`
+        check does the same release before returning EXPECTED_MISS.
+        '''
+
+        ctrl = _make_controller()
+        past = datetime.now(tz=timezone.utc) - timedelta(seconds=10)
+        expired = Reservation(
+            reservation_id='past_001',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=past - timedelta(seconds=60),
+            expires_at=past,
+        )
+        ctrl._reservations['past_001'] = expired
+        heapq.heappush(ctrl._expiry_heap, (expired.expires_at, 'past_001'))
+        ctrl._state.reservation_notional = Decimal('101')
+        ctrl._state.per_strategy_deployed['strat_a'] = Decimal('101')
+
+        sent = ctrl.send_order('past_001', 'ORD-001')
+
+        assert sent.success is False
+        assert sent.category == FailureCategory.EXPECTED_MISS
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+
 class TestOrderAck:
     def test_order_ack_success(self) -> None:
         ctrl = _make_controller()
