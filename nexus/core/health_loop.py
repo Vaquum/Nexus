@@ -139,6 +139,12 @@ class HealthLoop:
                 the loop manually without `start()`.
         '''
 
+        if self._rolling_loss_refresher is not None:
+            try:
+                self._rolling_loss_refresher(self._state)
+            except Exception:  # noqa: BLE001 - decay refresh failure must not abort tick
+                _log.exception('rolling-loss refresh failed')
+
         try:
             snapshot = self._snapshot_provider()
         except Exception:  # noqa: BLE001 - intentional catch-all for provider
@@ -150,12 +156,6 @@ class HealthLoop:
         except Exception:  # noqa: BLE001 - intentional catch-all for evaluator
             _log.exception('health evaluation failed')
             return
-
-        if self._rolling_loss_refresher is not None:
-            try:
-                self._rolling_loss_refresher(self._state)
-            except Exception:  # noqa: BLE001 - decay refresh failure must not abort tick
-                _log.exception('rolling-loss refresh failed')
 
         with self._lock:
             if respect_running and not self._running:
