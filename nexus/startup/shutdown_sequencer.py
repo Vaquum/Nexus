@@ -255,8 +255,8 @@ class ShutdownSequencer:
         dictionary changed size during iteration` mid-snapshot, escape
         the per-strategy try/except below, and terminate shutdown
         before `_persist_strategy_state` / `_final_checkpoint` ran —
-        data loss. The snapshot is collected once per strategy under
-        the lock; filtering by `strategy_id` happens after release.
+        data loss. The snapshot is collected once under the lock;
+        per-strategy filtering by `strategy_id` happens after release.
         '''
 
         if self._outcome_loop is not None and self._outcome_loop.running:

@@ -531,13 +531,21 @@ class TestSendOrderBoundaryRace:
 
         assert DEFAULT_TTL_SECONDS > _DEFAULT_TIMEOUT
 
-    def test_send_order_at_boundary_equality_succeeds(self) -> None:
+    def test_send_order_at_boundary_equality_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         '''A reservation with `expires_at == now` at `send_order` call
         time is captured via the `_reservations.pop` reorder. Pre-fix
         `_purge_expired` (which uses `<= now`) ran first and removed
         the reservation; the subsequent pop returned None → EXPECTED_MISS.
         Post-fix the pop returns the reservation; `now > expires_at` is
         False; the reservation is consumed.
+
+        `datetime.now` is patched in the `capital_controller` module so
+        `send_order`'s internal `now` equals `expires_at` exactly —
+        without the patch, `expires_at = anchor + 60s` would leave `now`
+        well before expiry and the test would pass even if the
+        pop-before-purge reorder were reverted.
         '''
 
         ctrl = _make_controller()
@@ -548,12 +556,23 @@ class TestSendOrderBoundaryRace:
             notional=Decimal('100'),
             estimated_fees=Decimal('1'),
             created_at=anchor - timedelta(seconds=60),
-            expires_at=anchor + timedelta(seconds=60),
+            expires_at=anchor,
         )
         ctrl._reservations['boundary_001'] = boundary
         heapq.heappush(ctrl._expiry_heap, (boundary.expires_at, 'boundary_001'))
         ctrl._state.reservation_notional = Decimal('101')
         ctrl._state.per_strategy_deployed['strat_a'] = Decimal('101')
+
+        class _FrozenDatetime(datetime):
+
+            @classmethod
+            def now(cls, tz: Any = None) -> datetime:  # noqa: ARG003
+                return anchor
+
+        monkeypatch.setattr(
+            'nexus.core.capital_controller.capital_controller.datetime',
+            _FrozenDatetime,
+        )
 
         sent = ctrl.send_order('boundary_001', 'ORD-001')
 

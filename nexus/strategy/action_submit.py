@@ -108,7 +108,7 @@ def submit_actions(
             failure after `validator.validate` granted a Reservation,
             the granted Reservation is released via
             `controller.release_reservation(reservation_id)` so capital
-            does not stay parked until the 30s TTL eviction on
+            does not stay parked until TTL eviction on
             deterministic-failure retry storms (config bug, malformed
             symbol). MAJOR-G fix. None preserves legacy test behavior
             (no rollback).
@@ -272,7 +272,7 @@ def _release_granted_reservation(
     '''Roll back a granted reservation when downstream submission fails.
 
     MAJOR-G fix: pre-fix translate / send_command exceptions left the
-    Reservation parked in `_reservations` until 30s TTL eviction.
+    Reservation parked in `_reservations` until TTL eviction.
     Deterministic failures (config bug, malformed symbol) re-granted on
     the next tick and parked again, eventually starving capital.
     Post-fix the reservation is released immediately so available

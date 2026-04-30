@@ -1962,18 +1962,19 @@ class TestPositionsLockHonoredByWriter:
                     for i in range(200):
                         trade_id = f'trade_{i}'
                         order_id = f'cmd_{i}'
-                        instance_state.positions[trade_id] = Position(
-                            trade_id=trade_id,
-                            strategy_id='strat_001',
-                            symbol='BTCUSD',
-                            side=OrderSide.BUY,
-                            size=Decimal('0.001'),
-                            entry_price=Decimal('50000'),
-                            avg_cost_basis=Decimal('50000'),
-                            pending_exit=Decimal('0.001'),
-                        )
-                        controller._state.position_notional = Decimal('50')
-                        controller._state.per_strategy_deployed['strat_001'] = Decimal('50')
+                        with real_lock:
+                            instance_state.positions[trade_id] = Position(
+                                trade_id=trade_id,
+                                strategy_id='strat_001',
+                                symbol='BTCUSD',
+                                side=OrderSide.BUY,
+                                size=Decimal('0.001'),
+                                entry_price=Decimal('50000'),
+                                avg_cost_basis=Decimal('50000'),
+                                pending_exit=Decimal('0.001'),
+                            )
+                            controller._state.position_notional = Decimal('50')
+                            controller._state.per_strategy_deployed['strat_001'] = Decimal('50')
 
                         outcome = TradeOutcome(
                             outcome_id=f'out_{i}',
