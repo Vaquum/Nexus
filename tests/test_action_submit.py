@@ -775,3 +775,148 @@ class TestBridgeToCapital:
 
         assert bridge_to_capital(controller, outcome) is None
         assert controller._orders == {}
+
+
+class TestReleaseReservationOnSubmitFailure:
+    '''MAJOR-G: granted Reservation must be released when downstream
+    translate / send_command raises. Pre-fix the reservation parked in
+    `_reservations` until 30s TTL eviction; deterministic failures
+    (config bug, malformed symbol) re-granted on the next tick and
+    parked again, eventually starving capital.
+    '''
+
+    def test_send_command_failure_releases_reservation(self) -> None:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        res = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert res.reservation is not None
+        ctx = _enter_context()
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(
+            allowed=True, reservation=res.reservation,
+        )
+        outbound = MagicMock()
+        outbound.send_command.side_effect = RuntimeError('venue unreachable')
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        assert controller._state.reservation_notional == Decimal('0')
+        assert res.reservation.reservation_id not in controller._reservations
+
+    def test_translate_failure_releases_reservation(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        res = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert res.reservation is not None
+        ctx = _enter_context()
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(
+            allowed=True, reservation=res.reservation,
+        )
+        outbound = MagicMock()
+
+        def _raise(*_args: object, **_kwargs: object) -> None:
+            msg = 'translate exploded'
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            'nexus.strategy.action_submit.translate_to_trade_command', _raise,
+        )
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        assert controller._state.reservation_notional == Decimal('0')
+        assert res.reservation.reservation_id not in controller._reservations
+        outbound.send_command.assert_not_called()
+
+    def test_chronic_failure_storm_does_not_grow_reservations(self) -> None:
+        '''100 ticks each granting + failing must leave _reservations
+        empty (each rollback releases) rather than accumulating until
+        check_and_reserve hits the per-trade allocation limit.
+        '''
+
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        ctx = _enter_context()
+        validator = MagicMock()
+        outbound = MagicMock()
+        outbound.send_command.side_effect = RuntimeError('venue down')
+
+        for _ in range(100):
+            res = controller.check_and_reserve(
+                strategy_id='strat_001',
+                order_notional=Decimal('100'),
+                estimated_fees=Decimal('1'),
+                strategy_budget=Decimal('5000'),
+            )
+            assert res.reservation is not None
+            validator.validate.return_value = ValidationDecision(
+                allowed=True, reservation=res.reservation,
+            )
+            submit_actions(
+                [_enter_action()],
+                strategy_id='strat_001',
+                config=_config(),
+                praxis_outbound=outbound,
+                validator=validator,
+                build_context=lambda _a, _s: ctx,
+                now=_now,
+                capital_controller=controller,
+            )
+
+        assert len(controller._reservations) == 0
+        assert controller._state.reservation_notional == Decimal('0')
+
+    def test_no_capital_controller_legacy_path_unchanged(self) -> None:
+        '''When capital_controller is omitted (test path), the rollback
+        is skipped and the reservation is left for TTL eviction —
+        preserves backward compatibility for tests that pass a Mock
+        validator without a real controller.
+        '''
+
+        ctx = _enter_context()
+        validator = MagicMock()
+        validator.validate.return_value = _allow_decision()
+        outbound = MagicMock()
+        outbound.send_command.side_effect = RuntimeError('venue down')
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED

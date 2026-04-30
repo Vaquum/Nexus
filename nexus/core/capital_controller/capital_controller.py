@@ -35,7 +35,7 @@ _logger = logging.getLogger(__name__)
 
 MAX_ALLOCATION_PER_TRADE_PCT = Decimal('0.15')
 MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
-DEFAULT_TTL_SECONDS = 30
+DEFAULT_TTL_SECONDS = 60
 
 _ZERO = Decimal(0)
 _ONE_HUNDRED = Decimal('100')
@@ -143,6 +143,24 @@ class CapitalController:
             if positions is not None:
                 rebuilt: dict[str, Decimal] = {}
                 for pos in positions:
+                    if pos.pending_exit > _ZERO:
+                        _logger.warning(
+                            'reconcile_at_boot resetting stranded '
+                            'pending_exit: trade_id=%s strategy_id=%s '
+                            'size=%s pending_exit=%s — in-memory _orders '
+                            'is empty post-boot so no in-flight EXIT '
+                            'matches; the prior stuck value would deny '
+                            'future EXITs via INTAKE_EXIT_SIZE_EXCEEDS_'
+                            'REMAINING. Closes the shutdown REJECT/CANCEL/'
+                            'EXPIRED leak (MAJOR-I) and the boot-orphan '
+                            'REJECTED leak (MAJOR-R).',
+                            pos.trade_id,
+                            pos.strategy_id,
+                            pos.size,
+                            pos.pending_exit,
+                        )
+                        pos.pending_exit = _ZERO
+
                     cost_basis = pos.avg_cost_basis
                     if pos.size > _ZERO and cost_basis == _ZERO:
                         fallback_basis = pos.entry_price
@@ -456,7 +474,6 @@ class CapitalController:
 
         with self._lock:
             now = datetime.now(tz=timezone.utc)
-            self._purge_expired(now)
 
             if order_id in self._orders:
                 msg = f'order_id already tracked: {order_id}'
@@ -465,11 +482,29 @@ class CapitalController:
             reservation = self._reservations.pop(reservation_id, None)
 
             if reservation is None:
+                self._purge_expired(now)
                 return LifecycleResult(
                     success=False,
                     reason=f'reservation {reservation_id!r} not found (expired or already consumed)',
                     category=FailureCategory.EXPECTED_MISS,
                 )
+
+            if now > reservation.expires_at:
+                self._state.reservation_notional -= reservation.total
+                self._adjust_strategy_deployed(
+                    reservation.strategy_id, -reservation.total,
+                )
+                self._purge_expired(now)
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'reservation {reservation_id!r} expired at '
+                        f'{reservation.expires_at.isoformat()} (now={now.isoformat()})'
+                    ),
+                    category=FailureCategory.EXPECTED_MISS,
+                )
+
+            self._purge_expired(now)
 
             order = TrackedOrder(
                 order_id=order_id,

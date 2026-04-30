@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -75,6 +77,15 @@ class ShutdownSequencer:
         config: Instance configuration carrying account_id, venue, stp_mode
             for shutdown command translation. When provided alongside
             account_id, the two account_ids must match.
+        positions_lock: Optional `threading.Lock` shared with PredictLoop /
+            TimerLoop / OutcomeProcessor that guards `state.positions`.
+            When provided, `_dispatch_shutdown` snapshots
+            `state.positions.values()` under the lock (MAJOR-S) so a
+            timed-out OutcomeLoop join cannot trigger
+            `RuntimeError: dictionary changed size during iteration`
+            mid-snapshot and abort the shutdown before
+            `_persist_strategy_state` / `_final_checkpoint` run. None
+            disables the guard (legacy single-threaded shutdown paths).
     '''
 
     def __init__(
@@ -94,6 +105,7 @@ class ShutdownSequencer:
         config: InstanceConfig | None = None,
         outcome_processor: OutcomeProcessor | None = None,
         non_pending_outcome_handler: Callable[[TradeOutcome], None] | None = None,
+        positions_lock: threading.Lock | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -149,6 +161,7 @@ class ShutdownSequencer:
         self._outcome_processor = outcome_processor
         self._exit_contexts: dict[str, OrderContext] = {}
         self._non_pending_outcome_handler = non_pending_outcome_handler
+        self._positions_lock = positions_lock
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
@@ -242,17 +255,43 @@ class ShutdownSequencer:
         Calls dispatch_shutdown on each strategy with context built from
         current state. Collects returned actions keyed by strategy_id.
         Strategy exceptions are logged and skipped — shutdown continues.
+
+        MAJOR-S: snapshots `state.positions.values()` under
+        `positions_lock`. `_stop_outcome_loop` runs before this method
+        and is supposed to halt the OutcomeLoop, but the join can time
+        out (5s default) leaving the worker still applying outcomes.
+        Without the lock the iteration could fire `RuntimeError:
+        dictionary changed size during iteration` mid-snapshot, escape
+        the per-strategy try/except below, and terminate shutdown
+        before `_persist_strategy_state` / `_final_checkpoint` ran —
+        data loss. The snapshot is collected once under the lock;
+        per-strategy filtering by `strategy_id` happens after release.
         '''
+
+        if self._outcome_loop is not None and self._outcome_loop.running:
+            _log.warning(
+                'OutcomeLoop still running at _dispatch_shutdown; '
+                '_stop_outcome_loop join_timeout fired without worker '
+                'exit — positions_lock around snapshot iteration is '
+                'load-bearing for safe iteration'
+            )
+
+        lock_cm = self._positions_lock if self._positions_lock is not None else nullcontext()
+
+        with lock_cm:
+            positions_snapshot = tuple(self._state.positions.values())
 
         for spec in self._manifest.strategies:
             strategy_id = spec.strategy_id.strip()
 
             positions = tuple(
-                pos for pos in self._state.positions.values()
+                pos for pos in positions_snapshot
                 if pos.strategy_id == strategy_id
             )
 
-            capital_available = self._manifest.capital_pool * spec.capital_pct / _HUNDRED
+            gross_budget = self._manifest.capital_pool * spec.capital_pct / _HUNDRED
+            deployed = self._state.capital.per_strategy_deployed.get(strategy_id, _ZERO)
+            capital_available = max(gross_budget - deployed, _ZERO)
             mode = self._state.mode.mode
 
             params = StrategyParams(raw={})
@@ -352,6 +391,15 @@ class ShutdownSequencer:
                 trade_id=action.trade_id,
             )
             return
+
+        if (
+            action.trade_id is not None
+            and self._state is not None
+            and context.order_size is not None
+        ):
+            position = self._state.positions.get(action.trade_id)
+            if position is not None:
+                position.pending_exit += context.order_size
 
         try:
             self._exit_contexts[returned_id] = self._build_exit_order_context(
@@ -571,7 +619,7 @@ class ShutdownSequencer:
                 self._dispatch_non_pending_outcome(outcome)
                 continue
 
-            if outcome.outcome_type.is_fill:
+            if outcome.outcome_type.is_fill or outcome.outcome_type.is_terminal:
                 self._apply_terminal_outcome(outcome)
 
             if outcome.outcome_type.is_terminal:
@@ -623,7 +671,14 @@ class ShutdownSequencer:
             )
 
     def _apply_terminal_outcome(self, outcome: TradeOutcome) -> None:
-        '''Apply a shutdown-EXIT fill outcome to instance state.
+        '''Apply a shutdown-EXIT outcome to instance state.
+
+        Handles both fill outcomes (FILLED and PARTIAL — PARTIAL is
+        non-terminal but still mutates state) and non-fill terminals
+        (REJECTED, CANCELED, EXPIRED). The helper name retains
+        "terminal" for git-history continuity with PT-FIX-31, but the
+        actual gate is `is_fill OR is_non_fill_terminal`, applied by
+        the caller `_poll_until_terminal`.
 
         PT-FIX-31: pre-fix the shutdown sequencer drained terminal
         outcomes from `praxis_inbound` purely as a "did the venue
@@ -644,14 +699,14 @@ class ShutdownSequencer:
         shutdown EXIT was discarded — the position kept the
         partial-fill amount that the venue had actually decremented.
 
-        Other terminal outcomes (REJECTED / CANCELED / EXPIRED with
-        no preceding PARTIAL) are deliberately skipped: they mean the
-        venue did NOT close the position, so leaving
-        `state.positions` untouched is the correct semantic. The
-        non-entry FILL path inside `OutcomeProcessor` skips the
-        capital-controller `order_fill` lookup (the shutdown EXIT was
-        never registered via `bridge_to_capital`) and updates only
-        `state.positions` via `_reduce_position`.
+        MAJOR-I: now also routes REJECTED / CANCELED / EXPIRED
+        non-fill terminals through `OutcomeProcessor.process`. Pre-fix
+        the early-return on `not is_fill` left `position.pending_exit`
+        non-zero (incremented in `submit_actions`) — the persisted
+        Position then denied the next boot's first EXIT with
+        `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`. Post-fix
+        `_handle_reject` / `_handle_cancel` (with `context.is_exit=True`)
+        invoke `_clear_pending_exit` to release the stuck value.
         '''
 
         command_id = outcome.command_id
@@ -661,13 +716,11 @@ class ShutdownSequencer:
         if context is None:
             return
 
-        if not outcome_type.is_fill:
-            return
-
         if self._outcome_processor is None:
             _log.warning(
-                'no outcome_processor wired; shutdown EXIT fill state '
-                'update skipped — next boot may see stale Position',
+                'no outcome_processor wired; shutdown EXIT terminal state '
+                'update skipped — next boot may see stale Position or '
+                'stuck pending_exit',
                 command_id=command_id,
                 trade_id=context.trade_id,
                 outcome_type=outcome_type.value,

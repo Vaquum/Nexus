@@ -51,6 +51,13 @@ class TradeCommand:
             Action.maker_preference, None for AMEND/CANCEL.
         reference_price: Strategy reference price; populated for NEW_ORDER from
             Action.reference_price, None for AMEND/CANCEL.
+        strategy_id: Owning Nexus strategy identifier. Threaded through
+            `praxis_outbound.send_command` so Praxis's `Position.strategy_id`
+            and `trade_strategy_ids` registry are populated correctly. None
+            for AMEND/CANCEL (no strategy attribution required) and only
+            allowed-but-discouraged-None for NEW_ORDER (would re-introduce
+            the boot-recovery deadlock that drops every Praxis-only position
+            at `_reconcile_capital`).
     '''
 
     command_id: str
@@ -71,6 +78,7 @@ class TradeCommand:
     deadline: int | None = None
     maker_preference: MakerPreference | None = None
     reference_price: Decimal | None = None
+    strategy_id: str | None = None
 
     def __post_init__(self) -> None:
         '''Validate command invariants at construction time.'''
@@ -181,6 +189,12 @@ class TradeCommand:
             msg = 'TradeCommand.reference_price must be a finite positive Decimal or None'
             raise ValueError(msg)
 
+        if self.strategy_id is not None and (
+            not isinstance(self.strategy_id, str) or not self.strategy_id.strip()
+        ):
+            msg = 'TradeCommand.strategy_id must be a non-empty string or None'
+            raise ValueError(msg)
+
         self._validate_command_type_invariants()
 
     def _validate_command_type_invariants(self) -> None:
@@ -225,6 +239,9 @@ class TradeCommand:
             if self.reference_price is not None:
                 msg = 'TradeCommand: AMEND_ORDER must not have reference_price'
                 raise ValueError(msg)
+            if self.strategy_id is not None:
+                msg = 'TradeCommand: AMEND_ORDER must not have strategy_id'
+                raise ValueError(msg)
 
         elif self.command_type == TradeCommandType.CANCEL_ORDER:
             if self.side is not None:
@@ -253,4 +270,7 @@ class TradeCommand:
                 raise ValueError(msg)
             if self.reference_price is not None:
                 msg = 'TradeCommand: CANCEL_ORDER must not have reference_price'
+                raise ValueError(msg)
+            if self.strategy_id is not None:
+                msg = 'TradeCommand: CANCEL_ORDER must not have strategy_id'
                 raise ValueError(msg)

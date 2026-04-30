@@ -35,6 +35,12 @@ class HealthLoop:
         evaluator: HealthEvaluator that maps snapshot to OperationalMode.
         state: InstanceState whose mode is mutated on transition.
         interval_seconds: Seconds between ticks. Must be positive.
+        rolling_loss_refresher: Optional callback invoked once per tick from
+            the same daemon timer thread, BEFORE `snapshot_provider`. Used
+            to recompute rolling-loss aggregates from the WAL (MAJOR-H).
+            Best-effort: any exception is logged at WARN and the rest of
+            the tick proceeds — a single bad refresh never aborts the
+            health-evaluation loop. None disables the refresh side-effect.
     '''
 
     def __init__(
@@ -43,6 +49,7 @@ class HealthLoop:
         evaluator: HealthEvaluator,
         state: InstanceState,
         interval_seconds: float = 5.0,
+        rolling_loss_refresher: Callable[[InstanceState], None] | None = None,
     ) -> None:
         if (
             isinstance(interval_seconds, bool)
@@ -59,6 +66,7 @@ class HealthLoop:
         self._timer: threading.Timer | None = None
         self._running = False
         self._lock = threading.Lock()
+        self._rolling_loss_refresher = rolling_loss_refresher
 
     @property
     def running(self) -> bool:
@@ -130,6 +138,12 @@ class HealthLoop:
                 skipped — used by `tick_once()` for callers driving
                 the loop manually without `start()`.
         '''
+
+        if self._rolling_loss_refresher is not None:
+            try:
+                self._rolling_loss_refresher(self._state)
+            except Exception:  # noqa: BLE001 - decay refresh failure must not abort tick
+                _log.exception('rolling-loss refresh failed')
 
         try:
             snapshot = self._snapshot_provider()

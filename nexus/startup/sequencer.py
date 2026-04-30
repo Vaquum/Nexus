@@ -406,8 +406,20 @@ class StartupSequencer:
 
             if nexus_pos is None:
                 imported = self._import_praxis_position(trade_id, praxis_pos, qty, price)
-                if imported is not None:
-                    self._state.positions[trade_id] = imported
+                if imported is None:
+                    _log.warning(
+                        'Praxis-only position rejected by import — skipping '
+                        'qty * price contribution to position_notional so '
+                        'reconcile_at_boot per_strategy_deployed rebuild '
+                        '(which sources only from state.positions) does not '
+                        'leave position_notional > sum(per_strategy_deployed) '
+                        'and trip the attribution-mismatch denial',
+                        trade_id=trade_id,
+                        qty=str(qty),
+                        praxis_avg_entry_price=str(price),
+                    )
+                    continue
+                self._state.positions[trade_id] = imported
                 praxis_total_notional += qty * price
                 continue
 

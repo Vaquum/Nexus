@@ -115,4 +115,5 @@ def translate_to_trade_command(
         deadline=deadline,
         maker_preference=action.maker_preference if is_new_order else None,
         reference_price=action.reference_price if is_new_order else None,
+        strategy_id=context.strategy_id if is_new_order else None,
     )

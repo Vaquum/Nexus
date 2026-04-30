@@ -31,6 +31,7 @@ from nexus.infrastructure.state_store import StateStore
 from nexus.instance_config import InstanceConfig
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType
+from nexus.strategy.context import StrategyContext
 from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
@@ -176,6 +177,143 @@ class TestDispatchShutdown:
         sequencer._dispatch_shutdown()
 
         assert sequencer._shutdown_actions == {}
+
+    def test_dispatch_shutdown_capital_available_subtracts_deployed(self) -> None:
+        '''MAJOR-T: `_dispatch_shutdown`'s `StrategyContext.capital_available`
+        must mirror runtime's `max(strategy_budget - deployed, _ZERO)`
+        rather than the gross `manifest.capital_pool * capital_pct`.
+        Pre-fix strategies that branched on `capital_available` in
+        `on_shutdown` saw an overstated value (gross budget) and could
+        emit actions sized against capital that was already deployed.
+        '''
+
+        runner = _make_mock_runner()
+        captured: list[StrategyContext] = []
+
+        def _capture(_strategy_id: str, _params: object, ctx: StrategyContext) -> list[Action]:
+            captured.append(ctx)
+            return []
+
+        runner.dispatch_shutdown.side_effect = _capture
+
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        state.capital.per_strategy_deployed['test_strategy'] = Decimal('3000')
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+        )
+
+        sequencer._dispatch_shutdown()
+
+        assert len(captured) == 1
+        assert captured[0].capital_available == Decimal('2000')
+
+    def test_dispatch_shutdown_capital_available_clamps_to_zero(self) -> None:
+        '''When deployed exceeds the gross budget (e.g. operator
+        overrides during runtime, fee accounting drift), the surfaced
+        `capital_available` clamps to zero rather than going negative.
+        '''
+
+        runner = _make_mock_runner()
+        captured: list[StrategyContext] = []
+
+        def _capture(_strategy_id: str, _params: object, ctx: StrategyContext) -> list[Action]:
+            captured.append(ctx)
+            return []
+
+        runner.dispatch_shutdown.side_effect = _capture
+
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        state.capital.per_strategy_deployed['test_strategy'] = Decimal('99999')
+
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+        )
+
+        sequencer._dispatch_shutdown()
+
+        assert captured[0].capital_available == Decimal('0')
+
+    def test_dispatch_shutdown_iteration_safe_under_concurrent_mutation(self) -> None:
+        '''MAJOR-S: `_dispatch_shutdown` snapshots
+        `state.positions.values()` under `positions_lock` so a
+        concurrent OutcomeLoop mutation (which can still be running
+        if `_stop_outcome_loop` join timed out) cannot fire
+        `RuntimeError: dictionary changed size during iteration` and
+        terminate shutdown before `_persist_strategy_state` /
+        `_final_checkpoint`.
+
+        Drives a worker thread that mutates `state.positions` in a
+        tight loop while `_dispatch_shutdown` runs; asserts no
+        exception escapes.
+        '''
+
+        import threading as _t
+
+        lock = _t.Lock()
+        runner = _make_mock_runner()
+        runner.dispatch_shutdown.return_value = []
+        state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
+        for i in range(20):
+            state.positions[f't-{i}'] = Position(
+                trade_id=f't-{i}',
+                strategy_id='test_strategy',
+                symbol='BTCUSDT',
+                side=OrderSide.BUY,
+                size=Decimal('1'),
+                entry_price=Decimal('50000'),
+            )
+        sequencer = ShutdownSequencer(
+            runner=runner,
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+            positions_lock=lock,
+        )
+
+        stop_event = _t.Event()
+        mutator_failures: list[Exception] = []
+
+        def mutator() -> None:
+            try:
+                i = 100
+                while not stop_event.is_set():
+                    with lock:
+                        state.positions[f't-{i}'] = Position(
+                            trade_id=f't-{i}',
+                            strategy_id='test_strategy',
+                            symbol='BTCUSDT',
+                            side=OrderSide.BUY,
+                            size=Decimal('1'),
+                            entry_price=Decimal('50000'),
+                        )
+                    with lock:
+                        state.positions.pop(f't-{i}', None)
+                    i += 1
+            except Exception as exc:
+                mutator_failures.append(exc)
+
+        thread = _t.Thread(target=mutator, daemon=True)
+        thread.start()
+        try:
+            for _ in range(20):
+                sequencer._dispatch_shutdown()
+        finally:
+            stop_event.set()
+            thread.join(timeout=5)
+
+        assert not mutator_failures, (
+            f'mutator observed exceptions: {mutator_failures[:3]}'
+        )
 
 
 class TestSubmitActions:
@@ -1026,9 +1164,13 @@ class TestShutdownExitAppliesToState:
         self, tmp_path: Path,
     ) -> None:
         '''A REJECTED outcome means the venue did NOT close the position.
-        Leaving `state.positions` untouched is the correct semantic — pre-
-        and post-fix behavior is identical here, since the post-fix
-        `_apply_terminal_outcome` deliberately skips non-FILL terminals.'''
+        Leaving `state.positions[..].size` untouched is the correct
+        semantic. MAJOR-I: post-fix the REJECTED terminal routes through
+        `OutcomeProcessor._handle_reject` which calls
+        `_clear_pending_exit` to release any stranded `pending_exit`.
+        Pre-fix `pending_exit` stayed inflated and the next-boot intake
+        denied the next EXIT with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
+        '''
 
         config = InstanceConfig(
             account_id='acc_001',
@@ -1081,6 +1223,173 @@ class TestShutdownExitAppliesToState:
 
         assert 't-1' in state.positions
         assert state.positions['t-1'].size == Decimal('0.5')
+        assert state.positions['t-1'].pending_exit == Decimal('0')
+
+    def test_shutdown_exit_canceled_clears_pending_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        '''MAJOR-I: a CANCELED outcome with no preceding PARTIAL fill
+        must clear stranded `pending_exit` via
+        `OutcomeProcessor._handle_cancel`. Position size unchanged.
+        '''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position()
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+        outcome_processor = OutcomeProcessor(capital_controller, state, state_store)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        canceled = TradeOutcome(
+            outcome_id='out-1',
+            command_id='praxis_cmd_42',
+            outcome_type=TradeOutcomeType.CANCELED,
+            timestamp=datetime.now(tz=timezone.utc),
+            remaining_size=Decimal('0.5'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(canceled)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=2.0,
+            config=config,
+            outcome_processor=outcome_processor,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+        sequencer._wait_terminal()
+
+        assert 't-1' in state.positions
+        assert state.positions['t-1'].size == Decimal('0.5')
+        assert state.positions['t-1'].pending_exit == Decimal('0')
+
+    def test_shutdown_exit_expired_clears_pending_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        '''MAJOR-I: EXPIRED outcomes route through `_handle_cancel` and
+        follow the same `_clear_pending_exit` path as CANCELED.
+        '''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position()
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+        outcome_processor = OutcomeProcessor(capital_controller, state, state_store)
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        expired = TradeOutcome(
+            outcome_id='out-1',
+            command_id='praxis_cmd_42',
+            outcome_type=TradeOutcomeType.EXPIRED,
+            timestamp=datetime.now(tz=timezone.utc),
+            remaining_size=Decimal('0.5'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        q.put(expired)
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=inbound,
+            shutdown_timeout=2.0,
+            config=config,
+            outcome_processor=outcome_processor,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+        sequencer._wait_terminal()
+
+        assert 't-1' in state.positions
+        assert state.positions['t-1'].size == Decimal('0.5')
+        assert state.positions['t-1'].pending_exit == Decimal('0')
+
+    def test_shutdown_submit_exit_increments_pending_exit(
+        self, tmp_path: Path,
+    ) -> None:
+        '''MAJOR-L: shutdown `_submit_exit` must increment
+        `position.pending_exit` after `send_command` returns. Pre-fix
+        the increment was only done by the runtime `submit_actions`
+        path; shutdown EXITs bypassed it. Post-fix the bookkeeping is
+        symmetric so subsequent `_handle_reject` / `_handle_cancel`
+        clears can match an actual incremented value.
+        '''
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        state = self._make_state_with_position()
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_42'
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            praxis_inbound=MagicMock(),
+            shutdown_timeout=2.0,
+            config=config,
+        )
+        sequencer._shutdown_actions = {
+            'test': [
+                Action(
+                    action_type=ActionType.EXIT,
+                    trade_id='t-1',
+                    size=Decimal('0.5'),
+                ),
+            ],
+        }
+
+        sequencer._submit_actions()
+
+        assert state.positions['t-1'].pending_exit == Decimal('0.5')
 
     def test_shutdown_exit_without_outcome_processor_logs_warning(
         self, tmp_path: Path,

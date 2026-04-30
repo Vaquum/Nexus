@@ -499,3 +499,81 @@ def test_execution_params_read_only() -> None:
     with pytest.raises(TypeError):
         cmd.execution_params['slippage_bps'] = 999  # type: ignore[index]
 
+
+def test_new_order_accepts_strategy_id() -> None:
+    cmd = TradeCommand(
+        command_id='cmd_010',
+        command_type=TradeCommandType.NEW_ORDER,
+        account_id='acc_001',
+        venue='binance_spot',
+        symbol='BTCUSDT',
+        notional=Decimal('1000'),
+        created_at=_now(),
+        side=OrderSide.BUY,
+        size=Decimal('0.01'),
+        stp_mode=STPMode.CANCEL_TAKER,
+        strategy_id='momentum',
+    )
+    assert cmd.strategy_id == 'momentum'
+
+
+def test_new_order_strategy_id_optional() -> None:
+    cmd = TradeCommand(
+        command_id='cmd_011',
+        command_type=TradeCommandType.NEW_ORDER,
+        account_id='acc_001',
+        venue='binance_spot',
+        symbol='BTCUSDT',
+        notional=Decimal('1000'),
+        created_at=_now(),
+        side=OrderSide.BUY,
+        size=Decimal('0.01'),
+        stp_mode=STPMode.CANCEL_TAKER,
+    )
+    assert cmd.strategy_id is None
+
+
+def test_empty_strategy_id_rejected() -> None:
+    with pytest.raises(ValueError, match='strategy_id'):
+        TradeCommand(
+            command_id='cmd_012',
+            command_type=TradeCommandType.NEW_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('1000'),
+            created_at=_now(),
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            stp_mode=STPMode.CANCEL_TAKER,
+            strategy_id='   ',
+        )
+
+
+def test_amend_order_with_strategy_id_rejected() -> None:
+    with pytest.raises(ValueError, match='AMEND_ORDER must not have strategy_id'):
+        TradeCommand(
+            command_id='cmd_013',
+            command_type=TradeCommandType.AMEND_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('1500'),
+            created_at=_now(),
+            strategy_id='momentum',
+        )
+
+
+def test_cancel_order_with_strategy_id_rejected() -> None:
+    with pytest.raises(ValueError, match='CANCEL_ORDER must not have strategy_id'):
+        TradeCommand(
+            command_id='cmd_014',
+            command_type=TradeCommandType.CANCEL_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('0'),
+            created_at=_now(),
+            strategy_id='momentum',
+        )
+

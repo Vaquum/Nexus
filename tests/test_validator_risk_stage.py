@@ -126,3 +126,84 @@ class TestValidateRiskStage:
         assert decision.allowed is False
         assert decision.failed_stage == ValidationStage.RISK
         assert decision.reason_code == 'RISK_TOTAL_DRAWDOWN_PCT_LIMIT'
+
+
+class TestRollingLossEnforcement:
+    '''MAJOR-H: rolling_loss_24h/7d/30d are now consulted by the
+    validator. Pre-fix the fields were tracked, persisted via WAL codec,
+    and `state_store.refresh_rolling_losses` existed for decay — but no
+    validator stage read them. Configured limits were silently ignored.
+    '''
+
+    def _state_with_rolling_loss(
+        self,
+        rolling_loss_24h: Decimal = Decimal('0'),
+        rolling_loss_7d: Decimal = Decimal('0'),
+        rolling_loss_30d: Decimal = Decimal('0'),
+    ) -> InstanceState:
+        from nexus.core.domain.risk_state import StrategyRiskState
+        state = InstanceState.fresh(Decimal('10000'))
+        state.risk.per_strategy['strat_a'] = StrategyRiskState(
+            strategy_id='strat_a',
+            rolling_loss_24h=rolling_loss_24h,
+            rolling_loss_7d=rolling_loss_7d,
+            rolling_loss_30d=rolling_loss_30d,
+        )
+        return state
+
+    def test_rolling_loss_24h_within_limit_allowed(self) -> None:
+        ctx = _make_context(
+            risk_state=self._state_with_rolling_loss(rolling_loss_24h=Decimal('40')).risk,
+        )
+        decision = validate_risk_stage(
+            ctx,
+            RiskStageLimits(max_rolling_loss_24h=Decimal('100')),
+        )
+        assert decision.allowed is True
+
+    def test_rolling_loss_24h_exceeds_limit_denied(self) -> None:
+        ctx = _make_context(
+            risk_state=self._state_with_rolling_loss(rolling_loss_24h=Decimal('150')).risk,
+        )
+        decision = validate_risk_stage(
+            ctx,
+            RiskStageLimits(max_rolling_loss_24h=Decimal('100')),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'RISK_ROLLING_LOSS_24H_LIMIT'
+
+    def test_rolling_loss_7d_exceeds_limit_denied(self) -> None:
+        ctx = _make_context(
+            risk_state=self._state_with_rolling_loss(rolling_loss_7d=Decimal('500')).risk,
+        )
+        decision = validate_risk_stage(
+            ctx,
+            RiskStageLimits(max_rolling_loss_7d=Decimal('400')),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'RISK_ROLLING_LOSS_7D_LIMIT'
+
+    def test_rolling_loss_30d_exceeds_limit_denied(self) -> None:
+        ctx = _make_context(
+            risk_state=self._state_with_rolling_loss(rolling_loss_30d=Decimal('900')).risk,
+        )
+        decision = validate_risk_stage(
+            ctx,
+            RiskStageLimits(max_rolling_loss_30d=Decimal('500')),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'RISK_ROLLING_LOSS_30D_LIMIT'
+
+    def test_rolling_loss_no_limit_configured_allowed(self) -> None:
+        '''When max_rolling_loss_* is None (not configured), the field
+        is not consulted regardless of value. Backward-compat for
+        deployments not yet wiring rolling-loss limits.
+        '''
+
+        ctx = _make_context(
+            risk_state=self._state_with_rolling_loss(
+                rolling_loss_24h=Decimal('99999'),
+            ).risk,
+        )
+        decision = validate_risk_stage(ctx, RiskStageLimits())
+        assert decision.allowed is True

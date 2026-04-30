@@ -504,6 +504,117 @@ class TestSendOrder:
             ctrl.send_order(res2.reservation.reservation_id, 'ORD-DUP')
 
 
+class TestSendOrderBoundaryRace:
+    '''MAJOR-K + TD-S: the reservation TTL and `send_command` timeout
+    were both 30s. A `send_command` blocking the full timeout could
+    return only at `t == expires_at`, then the launcher's subsequent
+    `send_order` would call `_purge_expired(now)` BEFORE
+    `_reservations.pop(...)` — at boundary equality the heap pop fired
+    first, the reservation was gone, EXPECTED_MISS returned, OrderContext
+    never registered, capital permanently stuck in `in_flight_order_notional`
+    until next boot.
+
+    Post-fix: `_reservations.pop` runs first (so boundary equality is
+    captured), an explicit `now > expires_at` check rejects truly-expired
+    reservations and releases capital, then `_purge_expired` runs as
+    housekeeping for OTHER reservations. `DEFAULT_TTL_SECONDS` also bumped
+    to 60s so TTL > timeout invariant holds.
+    '''
+
+    def test_default_ttl_seconds_exceeds_send_command_timeout(self) -> None:
+        '''Structural: TTL > send_command timeout (30s) so a slow
+        send_command cannot consume the entire reservation window.
+        '''
+
+        from nexus.core.capital_controller.capital_controller import DEFAULT_TTL_SECONDS
+        from nexus.infrastructure.praxis_connector.praxis_outbound import _DEFAULT_TIMEOUT
+
+        assert DEFAULT_TTL_SECONDS > _DEFAULT_TIMEOUT
+
+    def test_send_order_at_boundary_equality_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''A reservation with `expires_at == now` at `send_order` call
+        time is captured via the `_reservations.pop` reorder. Pre-fix
+        `_purge_expired` (which uses `<= now`) ran first and removed
+        the reservation; the subsequent pop returned None → EXPECTED_MISS.
+        Post-fix the pop returns the reservation; `now > expires_at` is
+        False; the reservation is consumed.
+
+        `datetime.now` is patched in the `capital_controller` module so
+        `send_order`'s internal `now` equals `expires_at` exactly —
+        without the patch, `expires_at = anchor + 60s` would leave `now`
+        well before expiry and the test would pass even if the
+        pop-before-purge reorder were reverted.
+        '''
+
+        ctrl = _make_controller()
+        anchor = datetime.now(tz=timezone.utc)
+        boundary = Reservation(
+            reservation_id='boundary_001',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=anchor - timedelta(seconds=60),
+            expires_at=anchor,
+        )
+        ctrl._reservations['boundary_001'] = boundary
+        heapq.heappush(ctrl._expiry_heap, (boundary.expires_at, 'boundary_001'))
+        ctrl._state.reservation_notional = Decimal('101')
+        ctrl._state.per_strategy_deployed['strat_a'] = Decimal('101')
+
+        class _FrozenDatetime(datetime):
+
+            @classmethod
+            def now(cls, tz: Any = None) -> datetime:  # noqa: ARG003
+                return anchor
+
+        monkeypatch.setattr(
+            'nexus.core.capital_controller.capital_controller.datetime',
+            _FrozenDatetime,
+        )
+
+        sent = ctrl.send_order('boundary_001', 'ORD-001')
+
+        assert sent.success is True
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert 'ORD-001' in ctrl._orders
+
+    def test_send_order_just_past_expiry_releases_capital(self) -> None:
+        '''A reservation popped after its expires_at must release the
+        capital aggregates (reservation_notional, per_strategy_deployed)
+        so the strategy budget returns to available. Pre-fix
+        `_purge_expired` did this on its own (because pop returned None);
+        post-fix the pop succeeds and the explicit `now > expires_at`
+        check does the same release before returning EXPECTED_MISS.
+        '''
+
+        ctrl = _make_controller()
+        past = datetime.now(tz=timezone.utc) - timedelta(seconds=10)
+        expired = Reservation(
+            reservation_id='past_001',
+            strategy_id='strat_a',
+            notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            created_at=past - timedelta(seconds=60),
+            expires_at=past,
+        )
+        ctrl._reservations['past_001'] = expired
+        heapq.heappush(ctrl._expiry_heap, (expired.expires_at, 'past_001'))
+        ctrl._state.reservation_notional = Decimal('101')
+        ctrl._state.per_strategy_deployed['strat_a'] = Decimal('101')
+
+        sent = ctrl.send_order('past_001', 'ORD-001')
+
+        assert sent.success is False
+        assert sent.category == FailureCategory.EXPECTED_MISS
+        assert ctrl._state.reservation_notional == _ZERO
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+
 class TestOrderAck:
     def test_order_ack_success(self) -> None:
         ctrl = _make_controller()
@@ -1353,3 +1464,72 @@ class TestReconcileAtBootRebuildsPerStrategyDeployed:
             ctrl.reconcile_at_boot(positions=positions)
 
         assert 'per_strategy_deployed' in caplog.text
+
+
+class TestReconcileAtBootResetsPendingExit:
+    '''MAJOR-R: a persisted Position with `pending_exit > 0` (e.g., from
+    a crash mid-EXIT before the terminal arrived, or from a boot-orphan
+    REJECTED that never reached `_clear_pending_exit`) must be reset to
+    zero with WARN at boot. Pre-fix the stuck value made the next-boot
+    intake deny the next EXIT with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
+    Defense-in-depth: shutdown-time MAJOR-I now also clears pending_exit
+    via OutcomeProcessor routing, but boot-time reset closes any
+    remaining gap (orphan REJECTED path; future leak paths).
+    '''
+
+    def test_pending_exit_reset_to_zero_on_boot(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+        pos.pending_exit = Decimal('0.5')
+
+        ctrl.reconcile_at_boot(positions=[pos])
+
+        assert pos.pending_exit == _ZERO
+
+    def test_pending_exit_zero_no_warning_logged(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot(positions=[pos])
+
+        assert 'pending_exit' not in caplog.text
+
+    def test_pending_exit_nonzero_logs_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+        pos.pending_exit = Decimal('0.3')
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot(positions=[pos])
+
+        assert 'stranded pending_exit' in caplog.text
+
+    def test_pending_exit_reset_only_when_positions_provided(self) -> None:
+        '''When `positions` is omitted (legacy-test invocation),
+        pending_exit reset doesn't run because there are no positions
+        to iterate. The reset only fires through the `positions` path.
+        '''
+
+        ctrl = _make_controller(position_notional=Decimal('100'))
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+        pos.pending_exit = Decimal('0.5')
+
+        ctrl.reconcile_at_boot()
+
+        assert pos.pending_exit == Decimal('0.5')

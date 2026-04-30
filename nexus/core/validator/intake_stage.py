@@ -237,6 +237,21 @@ def make_reference_integrity_hook(
                     reason_code='INTAKE_TRADE_REFERENCE_INVALID',
                     message='EXIT requires trade_id of an open position',
                 )
+            elif (
+                context.state.positions[context.trade_id].strategy_id
+                != context.strategy_id
+            ):
+                decision = ValidationDecision(
+                    allowed=False,
+                    failed_stage=ValidationStage.INTAKE,
+                    reason_code='INTAKE_EXIT_STRATEGY_MISMATCH',
+                    message=(
+                        'EXIT context.strategy_id must match the position '
+                        'owner\'s strategy_id; cross-strategy EXIT would '
+                        'misattribute realized P&L and corrupt rolling_loss '
+                        'and high_water_mark on the wrong bucket'
+                    ),
+                )
             elif context.order_size is None or context.order_size <= _ZERO:
                 decision = ValidationDecision(
                     allowed=False,

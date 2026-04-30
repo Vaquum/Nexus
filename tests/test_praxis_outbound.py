@@ -32,7 +32,7 @@ def event_loop_thread() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
     loop.close()
 
 
-def _make_command(command_id: str = 'cmd_001') -> TradeCommand:
+def _make_command(command_id: str = 'cmd_001', strategy_id: str | None = 'momentum') -> TradeCommand:
     return TradeCommand(
         command_id=command_id,
         command_type=TradeCommandType.NEW_ORDER,
@@ -51,6 +51,7 @@ def _make_command(command_id: str = 'cmd_001') -> TradeCommand:
         deadline=300,
         maker_preference=MakerPreference.NO_PREFERENCE,
         reference_price=Decimal('100000'),
+        strategy_id=strategy_id,
     )
 
 
@@ -109,6 +110,30 @@ class TestPraxisOutbound:
         assert received_kwargs['maker_preference'] == MakerPreference.NO_PREFERENCE
         assert received_kwargs['reference_price'] == Decimal('100000')
         assert received_kwargs['timeout'] == 300
+        assert received_kwargs['strategy_id'] == 'momentum'
+
+    def test_strategy_id_passed_through_when_none(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''When `TradeCommand.strategy_id` is None (legacy path or
+        non-strategy-attributed command), the kwarg is passed as None.
+        Praxis-side `submit_command` accepts `strategy_id: str | None = None`
+        and falls back to its own default behavior.
+        '''
+
+        loop, _ = event_loop_thread
+        received_kwargs: dict[str, object] = {}
+
+        async def capture_submit(**kwargs: object) -> str:
+            received_kwargs.update(kwargs)
+            return 'cmd_id'
+
+        outbound = PraxisOutbound(submit_fn=capture_submit, loop=loop)
+        outbound.send_command(_make_command(strategy_id=None))
+
+        assert 'strategy_id' in received_kwargs
+        assert received_kwargs['strategy_id'] is None
 
     def test_timeout_raises(
         self,
