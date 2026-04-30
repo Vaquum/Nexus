@@ -7,6 +7,8 @@ methods and updates positions on fill outcomes.
 from __future__ import annotations
 
 import logging
+import threading
+from contextlib import nullcontext
 from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
@@ -34,6 +36,16 @@ class OutcomeProcessor:
         capital_controller: Capital lifecycle manager.
         instance_state: Runtime state containing positions.
         state_store: Persistence facade for WAL and snapshots.
+        positions_lock: Optional `threading.Lock` shared with the launcher's
+            `_build_strategy_context` reader and `_ensure_entry_position`
+            writer. When provided, `_grow_position` and `_reduce_position`
+            wrap their `state.positions` mutations + field assignments
+            under it so a concurrent PredictLoop / TimerLoop iteration of
+            `state.positions.values()` cannot fire `RuntimeError:
+            dictionary changed size during iteration` (silently swallowed
+            by PredictLoop's top-level except → silently dropped strategy
+            ticks). When None (legacy single-threaded test paths) no
+            locking is performed.
     '''
 
     def __init__(
@@ -41,10 +53,12 @@ class OutcomeProcessor:
         capital_controller: CapitalController,
         instance_state: InstanceState,
         state_store: StateStore,
+        positions_lock: threading.Lock | None = None,
     ) -> None:
         self._capital = capital_controller
         self._state = instance_state
         self._store = state_store
+        self._positions_lock = positions_lock
 
     def process(
         self,
@@ -361,9 +375,10 @@ class OutcomeProcessor:
             old_size * position.avg_cost_basis + fill_notional + actual_fees
         ) / new_size
 
-        position.size = new_size
-        position.entry_price = new_entry_price
-        position.avg_cost_basis = new_avg_cost_basis
+        with self._positions_lock if self._positions_lock is not None else nullcontext():
+            position.size = new_size
+            position.entry_price = new_entry_price
+            position.avg_cost_basis = new_avg_cost_basis
 
         return True
 
@@ -422,11 +437,12 @@ class OutcomeProcessor:
                 },
             )
 
-        position.size = position.size - fill_size
-        position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
+        with self._positions_lock if self._positions_lock is not None else nullcontext():
+            position.size = position.size - fill_size
+            position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
 
-        if position.is_closed:
-            del self._state.positions[context.trade_id]
+            if position.is_closed:
+                del self._state.positions[context.trade_id]
 
         return True, realized_pnl
 

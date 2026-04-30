@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -1805,3 +1806,208 @@ class TestExitRejectClearsPendingExit:
         assert result.success is False
         assert result.error_reason is not None
         assert 'order_reject failed' in result.error_reason
+
+
+class _CountingLock:
+    '''threading.Lock-shaped wrapper that counts acquires.
+
+    Used to verify `OutcomeProcessor` actually wraps its
+    `state.positions` mutations with the provided lock — a structural
+    check that survives without depending on a flaky race window.
+    '''
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.enter_count = 0
+
+    def __enter__(self) -> _CountingLock:
+        self._lock.acquire()
+        self.enter_count += 1
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self._lock.release()
+
+
+class TestPositionsLockHonoredByWriter:
+    '''MAJOR-J: `OutcomeProcessor._grow_position` and `_reduce_position`
+    must wrap their `state.positions` mutations with the
+    `positions_lock` passed at construction time. Pre-fix the lock
+    was never threaded into `OutcomeProcessor`; mutations ran
+    unguarded on the OutcomeLoop thread while PredictLoop's
+    `_build_strategy_context` reader iterated `state.positions.values()`
+    under the lock — a concurrent `del` mid-iteration could fire
+    `RuntimeError: dictionary changed size during iteration`,
+    swallowed by PredictLoop's top-level except → silently dropped
+    strategy ticks.
+    '''
+
+    def test_grow_position_acquires_positions_lock(self) -> None:
+        lock = _CountingLock()
+        capital_state = CapitalState(capital_pool=_POOL)
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(
+                controller, instance_state, store, positions_lock=lock,
+            )
+            res = controller.check_and_reserve(
+                strategy_id='strat_001',
+                order_notional=Decimal('250'),
+                estimated_fees=Decimal('1'),
+                strategy_budget=Decimal('5000'),
+            )
+            assert res.reservation is not None
+            controller.send_order(res.reservation.reservation_id, 'cmd_001')
+            controller.order_ack('cmd_001')
+            instance_state.positions['trade_001'] = Position(
+                trade_id='trade_001',
+                strategy_id='strat_001',
+                symbol='BTCUSD',
+                side=OrderSide.BUY,
+                size=Decimal('0.005'),
+                entry_price=Decimal('50000'),
+                avg_cost_basis=Decimal('50000'),
+            )
+
+            outcome = TradeOutcome(
+                outcome_id='out_001',
+                command_id='cmd_001',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.005'),
+                fill_price=Decimal('50000'),
+                fill_notional=Decimal('250'),
+                actual_fees=Decimal('0'),
+            )
+
+            result = proc.process(outcome, _entry_context())
+
+            assert result.success is True
+            assert lock.enter_count >= 1
+
+    def test_reduce_position_acquires_positions_lock(self) -> None:
+        lock = _CountingLock()
+        capital_state = CapitalState(capital_pool=_POOL)
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(
+                controller, instance_state, store, positions_lock=lock,
+            )
+            instance_state.positions['trade_001'] = Position(
+                trade_id='trade_001',
+                strategy_id='strat_001',
+                symbol='BTCUSD',
+                side=OrderSide.BUY,
+                size=Decimal('0.01'),
+                entry_price=Decimal('50000'),
+                avg_cost_basis=Decimal('50000'),
+                pending_exit=Decimal('0.01'),
+            )
+            controller._state.position_notional = Decimal('500')
+            controller._state.per_strategy_deployed['strat_001'] = Decimal('500')
+
+            outcome = TradeOutcome(
+                outcome_id='out_001',
+                command_id='cmd_001',
+                outcome_type=TradeOutcomeType.FILLED,
+                timestamp=_now(),
+                fill_size=Decimal('0.01'),
+                fill_price=Decimal('51000'),
+                fill_notional=Decimal('510'),
+                actual_fees=Decimal('1'),
+            )
+
+            proc.process(outcome, _exit_context())
+
+            assert lock.enter_count >= 1
+            assert 'trade_001' not in instance_state.positions
+
+    def test_concurrent_iteration_with_writer_does_not_raise(self) -> None:
+        '''End-to-end: a foreground thread iterates `state.positions.values()`
+        under the lock; a worker thread runs a tight loop of grow/reduce
+        cycles via `OutcomeProcessor`. With the lock plumbed through, the
+        reader sees no `RuntimeError: dictionary changed size during
+        iteration`. Pre-fix this would race occasionally; post-fix the
+        invariant holds.
+        '''
+
+        real_lock = threading.Lock()
+        capital_state = CapitalState(capital_pool=_POOL)
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(
+                controller, instance_state, store, positions_lock=real_lock,
+            )
+
+            stop_event = threading.Event()
+            iteration_failures: list[Exception] = []
+
+            def reader() -> None:
+                try:
+                    while not stop_event.is_set():
+                        with real_lock:
+                            for _ in instance_state.positions.values():
+                                pass
+                except Exception as exc:
+                    iteration_failures.append(exc)
+
+            def writer() -> None:
+                try:
+                    for i in range(200):
+                        trade_id = f'trade_{i}'
+                        order_id = f'cmd_{i}'
+                        instance_state.positions[trade_id] = Position(
+                            trade_id=trade_id,
+                            strategy_id='strat_001',
+                            symbol='BTCUSD',
+                            side=OrderSide.BUY,
+                            size=Decimal('0.001'),
+                            entry_price=Decimal('50000'),
+                            avg_cost_basis=Decimal('50000'),
+                            pending_exit=Decimal('0.001'),
+                        )
+                        controller._state.position_notional = Decimal('50')
+                        controller._state.per_strategy_deployed['strat_001'] = Decimal('50')
+
+                        outcome = TradeOutcome(
+                            outcome_id=f'out_{i}',
+                            command_id=order_id,
+                            outcome_type=TradeOutcomeType.FILLED,
+                            timestamp=_now(),
+                            fill_size=Decimal('0.001'),
+                            fill_price=Decimal('50000'),
+                            fill_notional=Decimal('50'),
+                            actual_fees=Decimal('0'),
+                        )
+                        ctx = OrderContext(
+                            command_id=order_id,
+                            strategy_id='strat_001',
+                            trade_id=trade_id,
+                            side=OrderSide.SELL,
+                            order_size=Decimal('0.001'),
+                            order_notional=Decimal('50'),
+                            estimated_fees=Decimal('0'),
+                            is_entry=False,
+                        )
+                        proc.process(outcome, ctx)
+                finally:
+                    stop_event.set()
+
+            r = threading.Thread(target=reader, daemon=True)
+            w = threading.Thread(target=writer, daemon=True)
+            r.start()
+            w.start()
+            w.join(timeout=15)
+            stop_event.set()
+            r.join(timeout=15)
+
+            assert not iteration_failures, (
+                f'reader observed exceptions during iteration: '
+                f'{iteration_failures[:3]}'
+            )
