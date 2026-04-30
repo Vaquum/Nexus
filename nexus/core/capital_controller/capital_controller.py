@@ -143,6 +143,24 @@ class CapitalController:
             if positions is not None:
                 rebuilt: dict[str, Decimal] = {}
                 for pos in positions:
+                    if pos.pending_exit > _ZERO:
+                        _logger.warning(
+                            'reconcile_at_boot resetting stranded '
+                            'pending_exit: trade_id=%s strategy_id=%s '
+                            'size=%s pending_exit=%s — in-memory _orders '
+                            'is empty post-boot so no in-flight EXIT '
+                            'matches; the prior stuck value would deny '
+                            'future EXITs via INTAKE_EXIT_SIZE_EXCEEDS_'
+                            'REMAINING. Closes the shutdown REJECT/CANCEL/'
+                            'EXPIRED leak (MAJOR-I) and the boot-orphan '
+                            'REJECTED leak (MAJOR-R).',
+                            pos.trade_id,
+                            pos.strategy_id,
+                            pos.size,
+                            pos.pending_exit,
+                        )
+                        pos.pending_exit = _ZERO
+
                     cost_basis = pos.avg_cost_basis
                     if pos.size > _ZERO and cost_basis == _ZERO:
                         fallback_basis = pos.entry_price

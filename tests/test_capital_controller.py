@@ -1445,3 +1445,72 @@ class TestReconcileAtBootRebuildsPerStrategyDeployed:
             ctrl.reconcile_at_boot(positions=positions)
 
         assert 'per_strategy_deployed' in caplog.text
+
+
+class TestReconcileAtBootResetsPendingExit:
+    '''MAJOR-R: a persisted Position with `pending_exit > 0` (e.g., from
+    a crash mid-EXIT before the terminal arrived, or from a boot-orphan
+    REJECTED that never reached `_clear_pending_exit`) must be reset to
+    zero with WARN at boot. Pre-fix the stuck value made the next-boot
+    intake deny the next EXIT with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.
+    Defense-in-depth: shutdown-time MAJOR-I now also clears pending_exit
+    via OutcomeProcessor routing, but boot-time reset closes any
+    remaining gap (orphan REJECTED path; future leak paths).
+    '''
+
+    def test_pending_exit_reset_to_zero_on_boot(self) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+        pos.pending_exit = Decimal('0.5')
+
+        ctrl.reconcile_at_boot(positions=[pos])
+
+        assert pos.pending_exit == _ZERO
+
+    def test_pending_exit_zero_no_warning_logged(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot(positions=[pos])
+
+        assert 'pending_exit' not in caplog.text
+
+    def test_pending_exit_nonzero_logs_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ctrl = _make_controller(
+            position_notional=Decimal('100'),
+            per_strategy_deployed={'strat_a': Decimal('100')},
+        )
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+        pos.pending_exit = Decimal('0.3')
+
+        with caplog.at_level('WARNING'):
+            ctrl.reconcile_at_boot(positions=[pos])
+
+        assert 'stranded pending_exit' in caplog.text
+
+    def test_pending_exit_reset_only_when_positions_provided(self) -> None:
+        '''When `positions` is omitted (legacy-test invocation),
+        pending_exit reset doesn't run because there are no positions
+        to iterate. The reset only fires through the `positions` path.
+        '''
+
+        ctrl = _make_controller(position_notional=Decimal('100'))
+        pos = _position('t-1', 'strat_a', size=Decimal('1'), entry_price=Decimal('100'))
+        pos.pending_exit = Decimal('0.5')
+
+        ctrl.reconcile_at_boot()
+
+        assert pos.pending_exit == Decimal('0.5')
