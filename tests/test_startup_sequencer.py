@@ -590,7 +590,15 @@ class TestExternalIntegrationStubs:
         assert sequencer._state.capital.position_notional == Decimal('40000')
 
     def test_reconcile_capital_skips_praxis_position_without_strategy_id(self) -> None:
-        '''Praxis positions lacking strategy_id are not imported.'''
+        '''Praxis positions lacking strategy_id are not imported AND do not
+        contribute to `position_notional`. Pre-fix the position was dropped
+        from `state.positions` but its `qty * price` still inflated
+        `praxis_total_notional`; downstream `reconcile_at_boot` rebuilt
+        `per_strategy_deployed` only from `state.positions` (excluding the
+        un-importable). Result: `position_notional > sum(per_strategy_deployed)`
+        → `'Per-strategy deployed attribution mismatch for non-flat state'`
+        denial → permanent ENTER refusal for the rest of the boot.
+        '''
 
         praxis_pos = MagicMock()
         praxis_pos.account_id = 'acc_001'
@@ -616,6 +624,52 @@ class TestExternalIntegrationStubs:
         sequencer._reconcile_capital()
 
         assert 'trade_xyz' not in sequencer._state.positions
+        assert sequencer._state.capital.position_notional == Decimal('0')
+
+    def test_reconcile_capital_un_importable_does_not_block_importable(self) -> None:
+        '''When some Praxis positions import successfully and others don't
+        (mixed batch — typical post-TD-E-fix migration period), the
+        un-importable contributions are skipped while importable ones flow
+        through normally. `position_notional` reflects only the importable
+        positions.
+        '''
+
+        importable = MagicMock()
+        importable.account_id = 'acc_001'
+        importable.trade_id = 'trade_good'
+        importable.symbol = 'BTCUSDT'
+        importable.side = OrderSide.BUY
+        importable.qty = Decimal('0.2')
+        importable.avg_entry_price = Decimal('50000')
+        importable.strategy_id = 'momentum'
+
+        un_importable = MagicMock()
+        un_importable.account_id = 'acc_001'
+        un_importable.trade_id = 'trade_orphan'
+        un_importable.symbol = 'ETHUSDT'
+        un_importable.side = OrderSide.BUY
+        un_importable.qty = Decimal('1.5')
+        un_importable.avg_entry_price = Decimal('3000')
+        un_importable.strategy_id = None
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('acc_001', 'trade_good'): importable,
+            ('acc_001', 'trade_orphan'): un_importable,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        sequencer._state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000000')),
+        )
+
+        sequencer._reconcile_capital()
+
+        assert 'trade_good' in sequencer._state.positions
+        assert 'trade_orphan' not in sequencer._state.positions
+        assert sequencer._state.capital.position_notional == Decimal('10000')
 
     def test_restore_strategy_state_without_path_logs_warning(self) -> None:
         sequencer = _make_sequencer()

@@ -91,6 +91,7 @@ class PraxisOutbound:
                 maker_preference=command.maker_preference,
                 stp_mode=command.stp_mode,
                 created_at=command.created_at,
+                strategy_id=command.strategy_id,
             ),
             self._loop,
         )

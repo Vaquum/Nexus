@@ -188,6 +188,7 @@ def test_enter_translation() -> None:
     assert cmd.maker_preference == MakerPreference.NO_PREFERENCE
     assert cmd.reference_price == Decimal('100000')
     assert cmd.execution_params == {'foo': 'bar'}
+    assert cmd.strategy_id == 'strat_001'
 
 
 def test_exit_translation() -> None:
@@ -204,6 +205,41 @@ def test_exit_translation() -> None:
     assert cmd.stp_mode == STPMode.CANCEL_MAKER
     assert cmd.trade_id == 'trade_001'
     assert cmd.reservation_id is None
+    assert cmd.strategy_id == 'strat_001'
+
+
+def test_modify_translation_omits_strategy_id() -> None:
+    '''AMEND_ORDER carries no per-action strategy attribution; the venue
+    side already knows the owning strategy via the original NEW_ORDER's
+    `strategy_id`. TradeCommand invariants reject `strategy_id is not None`
+    on AMEND.
+    '''
+
+    action = _modify_action()
+    context = _modify_context()
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.command_type == TradeCommandType.AMEND_ORDER
+    assert cmd.strategy_id is None
+
+
+def test_cancel_translation_omits_strategy_id() -> None:
+    '''CANCEL_ORDER mirrors AMEND_ORDER's no-strategy-attribution rule.'''
+
+    action = _cancel_action()
+    context = _cancel_context()
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.command_type == TradeCommandType.CANCEL_ORDER
+    assert cmd.strategy_id is None
 
 
 def test_exit_translation_fills_submission_defaults() -> None:
