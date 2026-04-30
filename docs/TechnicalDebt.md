@@ -471,3 +471,133 @@ Race direction analysis: the only way this race produces incorrect behavior is i
 **When to fix**: When a future code path adds a write-write race on `pending_exit` (e.g. a second submit_actions caller on a different thread), OR when the validator's read-modify-write window is widened by additional logic that needs to see a consistent snapshot.
 
 **Migration**: Either (a) add a per-position lock to Position and acquire it around all read/write sites; OR (b) document the predict-loop-thread-only-writer invariant and add a `threading.get_ident()` assertion in `submit_actions` to catch future violations; OR (c) move the increment-decrement pair into a single owner module (e.g. extend `OutcomeProcessor` with a `register_pending_exit` method called from the launcher's submitter closure).
+
+## TD-042: MODIFY action runs CAPITAL/HEALTH/PRICE/RISK/PLATFORM_LIMITS validator stages
+
+**Origin**: Round-12 multi-lens audit
+**Severity**: Low (conservative; possibly too aggressive under degraded conditions)
+**Module**: `nexus/core/validator/pipeline_executor.py:153-158`
+
+`_should_bypass_stage` bypass set is `{EXIT, ABORT, CANCEL}` only. MODIFY falls through and runs CAPITAL / HEALTH / PRICE / RISK / PLATFORM_LIMITS — the same gates as a fresh ENTER. Conservative but possibly too aggressive when an operator's MODIFY only reduces qty or adjusts price downward to cut exposure under degraded health conditions.
+
+**When to fix**: When a MODIFY-down-only path becomes operationally important (e.g., emergency-reduce flows that must succeed even when CAPITAL is exhausted).
+**Migration**: Either (a) document the choice and accept the constraint, OR (b) extend the bypass set with a `MODIFY_REDUCE` action subtype that bypasses CAPITAL/RISK when qty/price decreases.
+
+---
+
+## TD-043: `_clear_pending_exit` clamps negative to zero with no diagnostic
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (operational hygiene; hides cross-strategy or multi-pending bugs)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:459`
+
+`position.pending_exit = max(_ZERO, position.pending_exit - size)` silently absorbs any over-decrement (double-decrement, attribution bug, or a CANCEL for size 2 against pending_exit=1). No log when the clamp fires.
+
+**When to fix**: When a future code path produces multi-pending EXITs on the same position and the clamp would mask attribution drift.
+**Migration**: Add a WARNING log when `position.pending_exit - size < _ZERO` (mirror the `_adjust_strategy_deployed` pattern at `capital_controller.py:836`).
+
+---
+
+## TD-044: `pending_exit` increment not durably persisted at submission time
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (paper-trade safe; tradeoff between durability and submission-path I/O)
+**Module**: `nexus/strategy/action_submit.py:237-240`
+
+The increment runs in-memory. Persistence happens only when a later outcome triggers `process_outcome`'s `append_mutation`. A crash between increment and the first outcome's `append_mutation` loses the increment. Strategies may then submit duplicate EXITs across crash boundaries because the validator's intake check sees `pending_exit=0` even though the venue order is live. The boot-time `pending_exit` reset (MAJOR-R) sweeps stale values, but doesn't help when the in-memory increment is lost.
+
+**When to fix**: When the duplicate-EXIT-across-crash failure mode becomes operationally observable, OR when a Praxis-side reconcile that surfaces in-flight commands becomes the canonical post-crash recovery path.
+**Migration**: Either (a) call `state_store.append_mutation(state)` immediately after the `pending_exit += ctx.order_size` (one extra fsync per submitted EXIT), OR (b) document that EXIT validation post-crash relies on Praxis-side venue state reconciliation rather than Nexus persistence.
+
+---
+
+## TD-045: `_handle_ack` returns `success=False` for EXIT/MODIFY → false-positive WARN stream
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (log noise; no state corruption)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:98-112`
+
+EXIT/MODIFY actions don't reserve capital, so `_orders[command_id]` returns None; `order_ack` returns `INVARIANT_BREACH: order not found`. `_handle_ack` propagates `result.success=False` → the launcher's `process_outcome` logs `'OutcomeProcessor reported failure'` WARNING for every EXIT ACK. Now that MAJOR-M's `append_mutation` gate also reads `capital_updated`, distinguishing these expected failures from genuine ones in the log stream is harder.
+
+**When to fix**: When operators surface log-noise complaints during paper-trade observation, OR when the WARN stream masks a real failure that needs attention.
+**Migration**: Short-circuit `_handle_ack` to no-op + `success=True, capital_updated=False` when `outcome.command_id not in self._capital._orders`, OR route via `context.is_entry` to skip the capital lookup entirely for EXIT/MODIFY ACK.
+
+---
+
+## TD-046: `_handle_cancel` `remaining_size is None` fallback may over-clear `pending_exit`
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (currently dead branch; latent under future translator changes)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:213-219`
+
+For EXIT cancels with prior PARTIAL fills, `_reduce_position` already decremented `pending_exit` by the partial. If `outcome.remaining_size` were None, the fallback uses `context.order_size` — over-decrementing by the already-applied partial amount. `_clear_pending_exit` clamps to zero so the field never goes negative for the immediate clear (TD-043 covers the silent clamp), but a concurrent EXIT on the same position would have its `pending_exit` silently zeroed.
+
+Currently the branch is unreachable: `outcome_translator.py:303-310 _build_terminal` always sets `remaining_size = outcome.target_qty - outcome.filled_qty` for CANCELED/EXPIRED. Fragile in the face of future translator paths.
+
+**When to fix**: When a future translator path or venue adapter emits CANCEL with `remaining_size=None`.
+**Migration**: Drop the `None` fallback in the `clear_size` computation and raise explicitly, OR document the contract that `remaining_size` is always populated for CANCEL/EXPIRED of an EXIT.
+
+---
+
+## TD-047: `_handle_reject` for EXIT silently succeeds after `order_reject` fails
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (currently expected; latent under future EXIT-with-reservation extension)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:184-202`
+
+EXIT actions don't reserve capital so `order_reject` returns `INVARIANT_BREACH`. The handler swallows that as success. `result.reason` is discarded with no log. If a future EXIT path ever DOES register an order_id (EXIT-with-reservation extension), legitimate reject failures would also be silently swallowed.
+
+**When to fix**: When an EXIT-with-reservation extension is added (e.g. fee-reservation for live trading where exit fees are pre-funded).
+**Migration**: Log `result.reason` at WARNING when `result.success is False and context.is_exit`; consider a sentinel result type that distinguishes "expected — no order tracked" from "real failure".
+
+---
+
+## TD-048: `_handle_fill` post-success exception leaves capital + position mutated, registry + WAL inconsistent
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (rare; couples with TD-A on durability path)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:163-170`
+
+After `order_exit` succeeds and `_reduce_position` succeeds, an exception in `update_cumulative_realized_pnl` (line 163) or `append_event` (line 170) propagates back to the launcher's `process_outcome`. The terminal-cleanup block at `praxis/launcher.py:1547-1558` is gated on `outcome.outcome_type.is_terminal` AFTER `outcome_processor.process(...)` returns — exception unwinds before reaching it. Capital + position already mutated; WAL `append_mutation` (gated below) never runs because exception unwound before result return.
+
+**When to fix**: When `update_cumulative_realized_pnl` or `append_event` becomes a real failure mode (e.g., disk-full on the spine path).
+**Migration**: Wrap the post-success block in `_handle_fill` (lines 163-170) in try/except; on raise, still execute the cleanup + `append_mutation` paths, OR panic explicitly.
+
+---
+
+## TD-049: `_purge_expired` only runs lazily inside `check_and_reserve` and `send_order`
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (self-healing on next strategy tick; idle-window hazard only)
+**Module**: `nexus/core/capital_controller/capital_controller.py:238, 459`
+
+No periodic invocation. If neither method is called for >30s (idle window: no new actions, no submissions), expired reservations remain in `_reservations` and `_state.reservation_notional` stays inflated. Self-heals on the next strategy tick because both call sites run `_purge_expired`.
+
+**When to fix**: When idle-window reservation drift becomes operationally observable, OR when a deployment with sparse-tick strategies (e.g. daily-cadence) is added.
+**Migration**: Add a periodic `_purge_expired` tick from a scheduler/timer loop (could piggyback on HealthLoop), OR document the lazy-cleanup invariant alongside the TTL bump (MAJOR-K).
+
+---
+
+## TD-050: `bridge_to_capital` helper defined but production launcher does not use it
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (silent divergence risk — currently no divergence)
+**Module**: `nexus/strategy/action_submit.py:262-359` (helper); `praxis/launcher.py:1466-1469` (open-coded equivalent)
+
+The contract documented in `bridge_to_capital`'s docstring is replicated open-coded in the launcher. Any future safety check added to `bridge_to_capital` silently misses the production path because the launcher calls `capital_controller.send_order(...)` directly.
+
+**When to fix**: Before adding any new safety check to `bridge_to_capital` that the production path must also enforce.
+**Migration**: Route the launcher through `bridge_to_capital`, OR add a smoke test that asserts the launcher's behavior matches the helper's contract on a representative outcome shape.
+
+---
+
+## TD-051: Realized PnL excludes exit fees; latent inconsistency with future fee_rate change
+
+**Origin**: Round-14 8-pass aggregation
+**Severity**: Low (currently safe — couples with TD-030 in Praxis fee_rate=0)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:400`
+
+`realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size` — gross PnL, no exit-fee subtraction. `outcome.actual_fees` is available but unused for EXIT. Documented at `capital_controller.py:608-614` (order_exit docstring) as a deliberate design choice. Combined with Praxis TD-030 (translator fee_rate=0), the gap is currently zero, but a future fee_rate change without updating `_reduce_position` would silently inflate `strategy_realized_pnl` by total exit fees.
+
+**When to fix**: When Praxis TD-030 is addressed (fee_rate flips non-zero), OR when a deployment needs strict realized-PnL accounting.
+**Migration**: Update `_reduce_position` to subtract `outcome.actual_fees` from `realized_pnl`, OR add a `realized_fees` ledger per the existing `order_exit` docstring suggestion.
