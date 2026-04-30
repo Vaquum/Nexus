@@ -247,7 +247,7 @@ def make_reference_integrity_hook(
                     reason_code='INTAKE_EXIT_STRATEGY_MISMATCH',
                     message=(
                         'EXIT context.strategy_id must match the position '
-                        "owner's strategy_id; cross-strategy EXIT would "
+                        'owner\'s strategy_id; cross-strategy EXIT would '
                         'misattribute realized P&L and corrupt rolling_loss '
                         'and high_water_mark on the wrong bucket'
                     ),
