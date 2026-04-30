@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from decimal import Decimal
 
 from nexus.core.capital_controller.capital_controller import CapitalController
@@ -59,6 +59,9 @@ class OutcomeProcessor:
         self._state = instance_state
         self._store = state_store
         self._positions_lock = positions_lock
+        self._positions_cm: AbstractContextManager[object] = (
+            positions_lock if positions_lock is not None else nullcontext()
+        )
 
     def process(
         self,
@@ -375,7 +378,7 @@ class OutcomeProcessor:
             old_size * position.avg_cost_basis + fill_notional + actual_fees
         ) / new_size
 
-        with self._positions_lock if self._positions_lock is not None else nullcontext():
+        with self._positions_cm:
             position.size = new_size
             position.entry_price = new_entry_price
             position.avg_cost_basis = new_avg_cost_basis
@@ -437,7 +440,7 @@ class OutcomeProcessor:
                 },
             )
 
-        with self._positions_lock if self._positions_lock is not None else nullcontext():
+        with self._positions_cm:
             position.size = position.size - fill_size
             position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
 
