@@ -305,7 +305,17 @@ def _make_state_with_risk(
 
 
 class TestRecoverWithEvents:
-    def test_no_events_preserves_snapshot_losses(self, tmp_path: Path) -> None:
+    def test_no_events_decays_snapshot_losses_to_zero(self, tmp_path: Path) -> None:
+        '''FINAL-MAJOR-10: pre-fix this test pinned that with no
+        STRATEGY_EVENT entries `recover()` returned the snapshot's
+        rolling_loss_* values verbatim (frozen at last-snapshot time,
+        not decayed against current time). Post-fix `recover()`
+        always re-derives — with no events all rolling-loss windows
+        decay to zero, since `derive_rolling_losses` returns empty
+        when given no events and the per-strategy fallback branch
+        zeroes the windows.
+        '''
+
         store = StateStore(tmp_path / 'state')
         state = _make_state_with_risk()
         store.append_mutation(state)
@@ -314,9 +324,9 @@ class TestRecoverWithEvents:
         recovered = store2.recover()
         assert recovered is not None
         srs = recovered.risk.per_strategy['strat_a']
-        assert srs.rolling_loss_24h == Decimal('999')
-        assert srs.rolling_loss_7d == Decimal('999')
-        assert srs.rolling_loss_30d == Decimal('999')
+        assert srs.rolling_loss_24h == _ZERO
+        assert srs.rolling_loss_7d == _ZERO
+        assert srs.rolling_loss_30d == _ZERO
 
     def test_events_overwrite_snapshot_losses(self, tmp_path: Path) -> None:
         store = StateStore(tmp_path / 'state')
@@ -340,6 +350,13 @@ class TestRecoverWithEvents:
         assert srs.rolling_loss_30d == Decimal('75')
 
     def test_events_for_unknown_strategy_ignored(self, tmp_path: Path) -> None:
+        '''Events for strategies not present in the snapshot's
+        per_strategy dict are skipped. The known strategy's rolling
+        losses are decayed against current time (FINAL-MAJOR-10) —
+        with no events for `strat_a`, its windows go to zero
+        regardless of the snapshot value.
+        '''
+
         store = StateStore(tmp_path / 'state')
         store.append_mutation(_make_state_with_risk(strategy_id='strat_a'))
 
@@ -355,7 +372,7 @@ class TestRecoverWithEvents:
         recovered = store2.recover()
         assert recovered is not None
         assert 'strat_unknown' not in recovered.risk.per_strategy
-        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('999')
+        assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == _ZERO
 
     def test_multiple_strategies_recovered(self, tmp_path: Path) -> None:
         srs_a = StrategyRiskState(
@@ -660,3 +677,97 @@ class TestFinalMajor04WalAppendAtomicity:
                 assert len(set(sequences)) == len(sequences), (
                     'duplicate sequence numbers across checkpoint boundary'
                 )
+
+
+class TestFinalMajor10RecoverDecaysRollingLossesEvenWithEmptyEvents:
+    '''FINAL-MAJOR-10: pre-fix `state_store.recover()` early-returned
+    when the WAL had zero STRATEGY_EVENT entries, leaving the
+    snapshot's `state.risk.per_strategy[sid].rolling_loss_*` values
+    adopted verbatim — frozen at last-snapshot time, not decayed
+    against the current time. Combined with PredictLoop starting
+    BEFORE HealthLoop in the launcher, the validator could read
+    inflated rolling losses for up to ~5s after boot — denying every
+    ENTER that should pass via stale RISK_ROLLING_LOSS_*_LIMIT
+    breaches. If the first HealthLoop tick fired the FINAL-MAJOR-02
+    dict-resize race and the refresh failed silently, the staleness
+    extended indefinitely.
+
+    Post-fix `recover()` always re-derives `rolling_loss_*` against
+    current time, regardless of WAL event count. Snapshot's
+    `rolling_loss_*` values get zeroed (or recomputed from any
+    surviving events) BEFORE the validator can read them.
+    '''
+
+    def test_snapshot_with_inflated_rolling_loss_decays_to_zero_when_no_events(
+        self, tmp_path: Path,
+    ) -> None:
+        '''Build a snapshot where a strategy has rolling_loss_24h=500
+        (e.g. from a long-ago losing trade that has aged out of the
+        24h window since the snapshot was taken). Truncate the WAL
+        of all events. Recover. Assert the validator reads zero
+        rolling loss for that strategy.
+        '''
+
+        store = StateStore(tmp_path)
+        srs = StrategyRiskState(
+            strategy_id='strat_a',
+            rolling_loss_24h=Decimal('500'),
+            rolling_loss_7d=Decimal('500'),
+            rolling_loss_30d=Decimal('500'),
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs}),
+        )
+        store.checkpoint(state)
+        # Create a fresh store reading the same path; recover should
+        # see zero events and decay rolling losses to zero
+        # (no events => no losses in any window).
+        recovery_store = StateStore(tmp_path)
+        recovered = recovery_store.recover()
+
+        assert recovered is not None
+        recovered_srs = recovered.risk.per_strategy['strat_a']
+        assert recovered_srs.rolling_loss_24h == _ZERO, (
+            f'pre-fix would adopt snapshot value 500; got '
+            f'{recovered_srs.rolling_loss_24h}'
+        )
+        assert recovered_srs.rolling_loss_7d == _ZERO
+        assert recovered_srs.rolling_loss_30d == _ZERO
+
+    def test_snapshot_with_inflated_rolling_loss_recomputes_from_recent_events(
+        self, tmp_path: Path,
+    ) -> None:
+        '''A snapshot has rolling_loss_24h=500 stale; the WAL has a
+        single recent event for -50. Recover should derive 50 (not
+        500 + 50, not 500).
+        '''
+
+        store = StateStore(tmp_path)
+        srs = StrategyRiskState(
+            strategy_id='strat_a',
+            rolling_loss_24h=Decimal('500'),
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs}),
+        )
+        store.checkpoint(state)
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-50'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        recovery_store = StateStore(tmp_path)
+        recovered = recovery_store.recover()
+
+        assert recovered is not None
+        recovered_srs = recovered.risk.per_strategy['strat_a']
+        assert recovered_srs.rolling_loss_24h == Decimal('50'), (
+            f'expected re-derived value 50, got '
+            f'{recovered_srs.rolling_loss_24h}'
+        )

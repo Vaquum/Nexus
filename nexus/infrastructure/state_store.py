@@ -162,19 +162,22 @@ class StateStore:
         if wal_entries:
             self._sequence = wal_entries[-1].sequence + 1
 
-        if state is None or not events:
+        if state is None:
             return state
 
+        # FINAL-MAJOR-10: do NOT early-return when `events` is empty.
+        # Pre-fix the snapshot's `state.risk.per_strategy[sid].rolling_loss_*`
+        # values were adopted verbatim — frozen at last-snapshot time,
+        # not decayed against the current time. Combined with PredictLoop
+        # starting BEFORE HealthLoop in the launcher (`praxis/launcher.py`
+        # 1614 vs 1646), the validator could read inflated rolling losses
+        # for up to ~5s after boot, denying every ENTER that should pass.
+        # Post-fix every per_strategy entry is decayed against current
+        # time on every recover() call, regardless of WAL event count.
         recovery_time = datetime.now(tz=timezone.utc)
-        losses = derive_rolling_losses(events, recovery_time)
-        seen_strategies = {e.strategy_id for e in events}
+        losses = derive_rolling_losses(events, recovery_time) if events else {}
 
-        for sid in seen_strategies:
-            if sid not in state.risk.per_strategy:
-                continue
-
-            srs = state.risk.per_strategy[sid]
-
+        for sid, srs in state.risk.per_strategy.items():
             if sid in losses:
                 srs.rolling_loss_24h = losses[sid].rolling_loss_24h
                 srs.rolling_loss_7d = losses[sid].rolling_loss_7d
