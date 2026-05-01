@@ -40,6 +40,19 @@ DEFAULT_TTL_SECONDS = 60
 _ZERO = Decimal(0)
 _ONE_HUNDRED = Decimal('100')
 
+# FINAL-MAJOR-06: absolute tolerance for the order_exit boundary check.
+# `_compute_exit_cost_basis` round-trips `(N/q) * q` and can overshoot
+# `position_notional` by sub-ULP at default Decimal precision (28 digits;
+# verified `(q=3, N=5)` produces 5.000...001 vs 5). The strict `>` check
+# would silently fail real EXIT FILLs with INVARIANT_BREACH, stranding
+# capital aggregates until the next reboot's _reconcile_capital. This
+# tolerance (1E-12 quote currency, ~10^15x larger than the actual ULP
+# drift but ~10^12x smaller than a satoshi-scale meaningful amount)
+# absorbs the rounding noise without weakening the invariant against
+# real overflows. The actual aggregate decrement is clamped to the
+# available amount so aggregates never go negative.
+_EXIT_BOUNDARY_TOLERANCE = Decimal('1E-12')
+
 
 class CapitalController:
     '''Thread-safe capital reservation manager.
@@ -719,12 +732,17 @@ class CapitalController:
         strategy_id = strategy_id.strip()
 
         with self._lock:
-            if cost_basis_released > self._state.position_notional:
+            position_overshoot = (
+                cost_basis_released - self._state.position_notional
+            )
+            if position_overshoot > _EXIT_BOUNDARY_TOLERANCE:
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'cost_basis_released {cost_basis_released} exceeds '
-                        f'position_notional {self._state.position_notional}'
+                        f'position_notional {self._state.position_notional} '
+                        f'by {position_overshoot} (tolerance '
+                        f'{_EXIT_BOUNDARY_TOLERANCE})'
                     ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
@@ -732,18 +750,25 @@ class CapitalController:
             strategy_deployed = self._state.per_strategy_deployed.get(
                 strategy_id, _ZERO,
             )
-            if cost_basis_released > strategy_deployed:
+            strategy_overshoot = cost_basis_released - strategy_deployed
+            if strategy_overshoot > _EXIT_BOUNDARY_TOLERANCE:
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'cost_basis_released {cost_basis_released} exceeds '
-                        f'per_strategy_deployed[{strategy_id}] {strategy_deployed}'
+                        f'per_strategy_deployed[{strategy_id}] {strategy_deployed} '
+                        f'by {strategy_overshoot} (tolerance '
+                        f'{_EXIT_BOUNDARY_TOLERANCE})'
                     ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
-            self._state.position_notional -= cost_basis_released
-            self._adjust_strategy_deployed(strategy_id, -cost_basis_released)
+            position_release = min(
+                cost_basis_released, self._state.position_notional,
+            )
+            strategy_release = min(cost_basis_released, strategy_deployed)
+            self._state.position_notional -= position_release
+            self._adjust_strategy_deployed(strategy_id, -strategy_release)
 
             return LifecycleResult(success=True)
 

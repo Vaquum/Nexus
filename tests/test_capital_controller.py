@@ -1714,3 +1714,119 @@ class TestReconcileAtBootResetsPendingExit:
         ctrl.reconcile_at_boot()
 
         assert pos.pending_exit == Decimal('0.5')
+
+
+class TestFinalMajor06ExitBoundaryTolerance:
+    '''FINAL-MAJOR-06: `_compute_exit_cost_basis` round-trips
+    `(N/q) * q` and can overshoot `position_notional` by sub-ULP at
+    default Decimal precision (28 digits). Pre-fix `order_exit`'s
+    strict `>` boundary at line 692 would falsely reject the EXIT
+    FILL with INVARIANT_BREACH; `_handle_fill` then returns
+    success=False BEFORE `_reduce_position`, so the venue closed the
+    position but Nexus did not — `position_notional` and
+    `per_strategy_deployed[sid]` stay inflated, the strategy is
+    locked out of new ENTERs by its own budget until the next boot's
+    `_reconcile_capital` heals it.
+
+    Post-fix `order_exit` uses an `_EXIT_BOUNDARY_TOLERANCE`
+    (1E-12 quote) on the `>` checks and clamps the actual decrement
+    to the available aggregate so neither `position_notional` nor
+    `per_strategy_deployed` can be driven negative. Beyond-tolerance
+    overshoots still hard-fail with INVARIANT_BREACH.
+    '''
+
+    def test_n5_q3_repro_succeeds_post_fix(self) -> None:
+        '''The verified single-fill repro from R17-C addendum §1:
+        avg_cost_basis = 5/3 = 1.666...666...7 (last digit rounds up
+        per ROUND_HALF_EVEN); cost_basis_released = avg_cost_basis * 3
+        = 5.000...001 (overshoots position_notional=5 by 1E-27).
+        Pre-fix returns INVARIANT_BREACH; post-fix succeeds, position
+        and strategy aggregates clamp to zero, no negative values.
+        '''
+
+        position_notional = Decimal('5')
+        avg_cost_basis = position_notional / Decimal('3')
+        cost_basis_released = avg_cost_basis * Decimal('3')
+        assert cost_basis_released > position_notional, (
+            'pre-condition: the repro expression must overshoot'
+        )
+
+        ctrl = _make_controller(
+            position_notional=position_notional,
+            per_strategy_deployed={'strat_a': position_notional},
+        )
+
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is True, (
+            f'post-fix order_exit should succeed despite sub-ULP '
+            f'overshoot; got: {result.reason}'
+        )
+        assert ctrl._state.position_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+    def test_within_tolerance_overshoot_clamps_aggregates_to_zero(self) -> None:
+        position_notional = Decimal('100')
+        cost_basis_released = position_notional + Decimal('1E-15')
+        ctrl = _make_controller(
+            position_notional=position_notional,
+            per_strategy_deployed={'strat_a': position_notional},
+        )
+
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is True
+        assert ctrl._state.position_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+    def test_beyond_tolerance_overshoot_still_rejects(self) -> None:
+        '''A real overshoot (a satoshi-scale or larger excess) must
+        still fail with INVARIANT_BREACH; the tolerance only absorbs
+        sub-ULP rounding noise, not material breaches.
+        '''
+
+        position_notional = Decimal('100')
+        cost_basis_released = position_notional + Decimal('1E-6')
+        ctrl = _make_controller(
+            position_notional=position_notional,
+            per_strategy_deployed={'strat_a': position_notional},
+        )
+
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is False
+        assert result.category == FailureCategory.INVARIANT_BREACH
+        assert ctrl._state.position_notional == position_notional
+        assert ctrl._state.per_strategy_deployed['strat_a'] == position_notional
+
+    def test_sweep_documented_triggering_pairs_all_succeed(self) -> None:
+        '''R17-C addendum §1 documented 155 distinct triggering
+        integer pairs in `notional in [1..200] x size in [2..20]`.
+        Sample a representative cross-section and assert all succeed
+        post-fix. (Full 4000-pair sweep would be slow; sample
+        validates the class.)
+        '''
+
+        triggering_pairs = [
+            (Decimal('5'), Decimal('3')),
+            (Decimal('7'), Decimal('3')),
+            (Decimal('11'), Decimal('3')),
+            (Decimal('1'), Decimal('6')),
+            (Decimal('1'), Decimal('7')),
+            (Decimal('100'), Decimal('3')),
+        ]
+
+        for notional, size in triggering_pairs:
+            avg_cost_basis = notional / size
+            released = avg_cost_basis * size
+            ctrl = _make_controller(
+                position_notional=notional,
+                per_strategy_deployed={'strat_a': notional},
+            )
+
+            result = ctrl.order_exit('strat_a', released)
+
+            assert result.success is True, (
+                f'(N={notional}, q={size}): expected success, got '
+                f'{result.reason}'
+            )
