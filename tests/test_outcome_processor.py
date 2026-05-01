@@ -2012,3 +2012,127 @@ class TestPositionsLockHonoredByWriter:
                 f'reader observed exceptions during iteration: '
                 f'{iteration_failures[:3]}'
             )
+
+
+class TestFinalMajor02RiskLockCoverage:
+    '''FINAL-MAJOR-02: state.risk.per_strategy and StrategyRiskState
+    fields are mutated by OutcomeProcessor on the OutcomeLoop thread
+    while the validator's to_risk_check_metrics (PredictLoop /
+    TimerLoop) and HealthLoop's state_store.refresh_rolling_losses
+    (daemon timer) iterate the dict. Pre-fix the writer's first-fill
+    insert at line 491 could fire RuntimeError: dictionary changed
+    size during iteration on either reader; the field-level += ops
+    could lose increments via torn read-modify-write.
+
+    Post-fix all three call sites acquire state.risk.lock (set by the
+    launcher to the shared positions_lock).
+    '''
+
+    def test_writer_vs_refresher_no_iteration_error(self) -> None:
+        '''Writer thread tight-loops _update_strategy_risk_state for
+        new strategy_ids while the foreground thread tight-loops
+        StateStore.refresh_rolling_losses(state). Pre-fix the dict
+        insert during iteration would raise; post-fix the lock
+        serialises and all writes land.
+        '''
+
+        capital_state = CapitalState(capital_pool=Decimal('100000'))
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+
+        risk_lock = threading.Lock()
+        instance_state.risk.lock = risk_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(controller, instance_state, store)
+
+            stop_event = threading.Event()
+            iteration_failures: list[Exception] = []
+
+            def writer() -> None:
+                try:
+                    for i in range(500):
+                        proc._update_strategy_risk_state(
+                            f'strat_{i}', Decimal('-1.0'),
+                        )
+                finally:
+                    stop_event.set()
+
+            def refresher() -> None:
+                try:
+                    while not stop_event.is_set():
+                        store.refresh_rolling_losses(instance_state)
+                except Exception as exc:
+                    iteration_failures.append(exc)
+
+            r = threading.Thread(target=refresher, daemon=True)
+            w = threading.Thread(target=writer, daemon=True)
+            r.start()
+            w.start()
+            w.join(timeout=15)
+            stop_event.set()
+            r.join(timeout=15)
+
+            assert not iteration_failures, (
+                f'refresher observed exceptions during iteration: '
+                f'{iteration_failures[:3]}'
+            )
+            assert len(instance_state.risk.per_strategy) == 500, (
+                f'writer did not complete: '
+                f'len={len(instance_state.risk.per_strategy)}'
+            )
+
+    def test_writer_vs_validator_metrics_no_iteration_error(self) -> None:
+        '''Writer thread tight-loops _update_strategy_risk_state for
+        new strategy_ids while a reader thread tight-loops
+        state.risk.to_risk_check_metrics() (the validator's path).
+        Pre-fix the property iterators (rolling_loss_24h/7d/30d sum
+        comprehensions) raced with the dict insert; post-fix
+        to_risk_check_metrics acquires state.risk.lock and the reader
+        sees a consistent snapshot.
+        '''
+
+        capital_state = CapitalState(capital_pool=Decimal('100000'))
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+
+        risk_lock = threading.Lock()
+        instance_state.risk.lock = risk_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(controller, instance_state, store)
+
+            stop_event = threading.Event()
+            reader_failures: list[Exception] = []
+
+            def writer() -> None:
+                try:
+                    for i in range(500):
+                        proc._update_strategy_risk_state(
+                            f'strat_{i}', Decimal('-2.0'),
+                        )
+                finally:
+                    stop_event.set()
+
+            def reader() -> None:
+                try:
+                    while not stop_event.is_set():
+                        instance_state.risk.to_risk_check_metrics()
+                except Exception as exc:
+                    reader_failures.append(exc)
+
+            r = threading.Thread(target=reader, daemon=True)
+            w = threading.Thread(target=writer, daemon=True)
+            r.start()
+            w.start()
+            w.join(timeout=15)
+            stop_event.set()
+            r.join(timeout=15)
+
+            assert not reader_failures, (
+                f'reader observed exceptions during property iteration: '
+                f'{reader_failures[:3]}'
+            )
+            assert len(instance_state.risk.per_strategy) == 500

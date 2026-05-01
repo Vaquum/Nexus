@@ -481,23 +481,34 @@ class OutcomeProcessor:
         Args:
             strategy_id: Strategy that realized the P&L.
             realized_pnl: P&L from exit fill (negative for losses).
+
+        FINAL-MAJOR-02: the entire dict insert + per-field RMW runs
+        under `state.risk.lock` so the validator's
+        `to_risk_check_metrics` (PredictLoop / TimerLoop reader) and
+        HealthLoop's `state_store.refresh_rolling_losses` (daemon
+        timer reader) cannot trip
+        `RuntimeError: dictionary changed size during iteration` on
+        the first-fill-for-a-strategy insert at line 491, and cannot
+        observe torn intermediate values from the `+=` ops on the
+        rolling-loss fields.
         '''
 
-        strategy_state = self._state.risk.per_strategy.get(strategy_id)
+        with self._state.risk.lock_cm():
+            strategy_state = self._state.risk.per_strategy.get(strategy_id)
 
-        if strategy_state is None:
-            strategy_state = StrategyRiskState(strategy_id=strategy_id)
-            self._state.risk.per_strategy[strategy_id] = strategy_state
+            if strategy_state is None:
+                strategy_state = StrategyRiskState(strategy_id=strategy_id)
+                self._state.risk.per_strategy[strategy_id] = strategy_state
 
-        strategy_state.strategy_realized_pnl += realized_pnl
+            strategy_state.strategy_realized_pnl += realized_pnl
 
-        if realized_pnl < _ZERO:
-            loss = abs(realized_pnl)
-            strategy_state.rolling_loss_24h += loss
-            strategy_state.rolling_loss_7d += loss
-            strategy_state.rolling_loss_30d += loss
+            if realized_pnl < _ZERO:
+                loss = abs(realized_pnl)
+                strategy_state.rolling_loss_24h += loss
+                strategy_state.rolling_loss_7d += loss
+                strategy_state.rolling_loss_30d += loss
 
-        strategy_state.high_water_mark = max(
-            strategy_state.high_water_mark,
-            strategy_state.strategy_realized_pnl,
-        )
+            strategy_state.high_water_mark = max(
+                strategy_state.high_water_mark,
+                strategy_state.strategy_realized_pnl,
+            )
