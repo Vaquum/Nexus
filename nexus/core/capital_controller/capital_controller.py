@@ -65,6 +65,12 @@ class CapitalController:
                 f'got {type(max_allocation_per_trade_pct).__name__}'
             )
             raise TypeError(msg)
+        if not max_allocation_per_trade_pct.is_finite():
+            msg = (
+                'max_allocation_per_trade_pct must be a finite Decimal, '
+                f'got {max_allocation_per_trade_pct}'
+            )
+            raise ValueError(msg)
         if max_allocation_per_trade_pct <= _ZERO:
             msg = (
                 f'max_allocation_per_trade_pct must be > 0, '
