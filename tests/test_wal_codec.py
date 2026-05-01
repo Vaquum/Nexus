@@ -473,7 +473,9 @@ class TestEventCodecVersion:
     def test_version_embedded(self) -> None:
         data = serialize_event(_make_event())
         unpacked = msgpack.unpackb(data, raw=False)
-        assert unpacked['_v'] == 1
+        # Bumped to v2 in FINAL-TD-02 (added outcome_id field for
+        # derive_rolling_losses dedup of Praxis re-deliveries).
+        assert unpacked['_v'] == 2
 
     def test_wrong_version_rejected(self) -> None:
         d = {

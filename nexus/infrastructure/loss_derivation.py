@@ -69,8 +69,19 @@ def derive_rolling_losses(
     cutoff_30d = recovery_time - _WINDOW_30D
 
     accum: dict[str, list[Decimal]] = {}
+    # FINAL-TD-02: dedup by `outcome_id`. A Praxis re-delivery of a
+    # terminal outcome that was already emitted pre-crash would
+    # otherwise double-count the loss across windows. Empty outcome_id
+    # marks legacy v1-codec events that predate this field — those
+    # are NOT deduped (the legacy WAL contract).
+    seen_outcome_ids: set[str] = set()
 
     for event in events:
+        if event.outcome_id and event.outcome_id in seen_outcome_ids:
+            continue
+        if event.outcome_id:
+            seen_outcome_ids.add(event.outcome_id)
+
         if event.realized_pnl >= _ZERO:
             continue
 
@@ -125,8 +136,17 @@ def derive_strategy_realized_pnl(
     '''
 
     accum: dict[str, Decimal] = {}
+    # FINAL-TD-02: dedup by `outcome_id` — same rationale as
+    # `derive_rolling_losses`. Empty outcome_id marks legacy v1-codec
+    # events; not deduped.
+    seen_outcome_ids: set[str] = set()
 
     for event in events:
+        if event.outcome_id and event.outcome_id in seen_outcome_ids:
+            continue
+        if event.outcome_id:
+            seen_outcome_ids.add(event.outcome_id)
+
         sid = event.strategy_id
         accum[sid] = accum.get(sid, _ZERO) + event.realized_pnl
 

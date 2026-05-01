@@ -23,12 +23,20 @@ class StrategyEvent:
         event_type: Kind of event (e.g. 'trade_outcome').
         realized_pnl: Realized profit or loss from the event.
         timestamp: When this event occurred.
+        outcome_id: FINAL-TD-02 — venue-side unique outcome identifier
+            (`TradeOutcome.outcome_id`) carried through so
+            `derive_rolling_losses` can deduplicate events when Praxis
+            re-delivers a terminal outcome that was already emitted
+            pre-crash. Empty string for legacy v1-codec events whose
+            payloads predate this field; those events are processed
+            without dedup (the legacy WAL contract).
     '''
 
     strategy_id: str
     event_type: str
     realized_pnl: Decimal
     timestamp: datetime
+    outcome_id: str = ''
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -54,4 +62,8 @@ class StrategyEvent:
 
         if self.timestamp.tzinfo is not timezone.utc:
             msg = 'StrategyEvent.timestamp must be UTC'
+            raise ValueError(msg)
+
+        if not isinstance(self.outcome_id, str):
+            msg = 'StrategyEvent.outcome_id must be a string'
             raise ValueError(msg)

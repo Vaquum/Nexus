@@ -186,6 +186,7 @@ class OutcomeProcessor:
                 event_type='trade_outcome',
                 realized_pnl=realized_pnl,
                 timestamp=outcome.timestamp,
+                outcome_id=outcome.outcome_id,
             )
             self._store.append_event(event)
 
@@ -395,6 +396,7 @@ class OutcomeProcessor:
     ) -> tuple[bool, Decimal | None]:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
+        assert outcome.actual_fees is not None
 
         if context.trade_id is None:
             msg = f'exit fill without trade_id: command_id={outcome.command_id!r}'
