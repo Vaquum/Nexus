@@ -1830,3 +1830,104 @@ class TestFinalMajor06ExitBoundaryTolerance:
                 f'(N={notional}, q={size}): expected success, got '
                 f'{result.reason}'
             )
+
+
+class TestFinalMajor09OrderFillAttributionLockstep:
+    '''FINAL-MAJOR-09: pre-fix `order_fill` computes
+    `proportional_estimated` and `fill_with_estimated` via a
+    `pre_fill_remaining - updated.remaining_total` round trip through
+    the `(remaining_notional * estimated_fees) / notional` formula.
+    The audit (R17-C MAJOR-ND) flagged this as cumulative per-partial
+    drift that could leave `per_strategy_deployed[sid]` out of step
+    with `position_notional` after several scale-ins, eventually
+    tripping the per-strategy attribution-mismatch denial in
+    `check_and_reserve` (capital_controller.py:333).
+
+    Empirical: with default Decimal precision (28 sig digits), the
+    round-trip subtraction has cancellation properties that keep
+    attribution in lockstep with total_deployed across realistic
+    multi-partial scale-ins. The strict equality denial does not
+    fire. The audit's reachable failure mode is the order_exit
+    boundary trip (FINAL-MAJOR-06), which is closed by the
+    `_EXIT_BOUNDARY_TOLERANCE` clamp.
+
+    These tests pin the lockstep + no-residue properties so a future
+    "fix" cannot regress them.
+    '''
+
+    def test_seven_partial_scale_in_settles_zero_residue(self) -> None:
+        '''7 equal partials of 1 unit each on an awkward
+        notional=7, estimated_fees=1 ratio (no clean Decimal
+        terminator). Working settles to zero; attribution stays
+        in lockstep with total deployed.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='7', fees='1', budget='100')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        # 7 partials with realistic actual_fees ~1/7 = 0.142857...
+        actual_fee_per_fill = Decimal('1') / Decimal('7')
+        for _ in range(7):
+            ctrl.order_fill(
+                'ORD-001', Decimal('1'), actual_fee_per_fill,
+            )
+
+        assert ctrl._state.working_order_notional == _ZERO, (
+            f'working_order_notional residue: '
+            f'{ctrl._state.working_order_notional}'
+        )
+
+        total_deployed = (
+            ctrl._state.position_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.reservation_notional
+        )
+        attributed = sum(
+            ctrl._state.per_strategy_deployed.values(), _ZERO,
+        )
+        assert attributed == total_deployed, (
+            f'attribution mismatch: per_strategy_total={attributed} '
+            f'total_deployed={total_deployed} '
+            f'mismatch={attributed - total_deployed}'
+        )
+
+    def test_one_hundred_partial_scale_in_attribution_lockstep(self) -> None:
+        '''100 partials at notional=100, fee=0.07 (representative
+        Binance maker fee on a 100-unit order). Asserts attribution
+        stays exactly equal to total_deployed across all 100 fills.
+        Pre-fix this was the worry; post-fix verifies it does not
+        manifest under default Decimal precision.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(
+            ctrl, notional='100', fees='0.07', budget='1000',
+        )
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        actual_fee_per_fill = Decimal('0.07') / Decimal('100')
+        for _ in range(100):
+            ctrl.order_fill(
+                'ORD-001', Decimal('1'), actual_fee_per_fill,
+            )
+            total_deployed = (
+                ctrl._state.position_notional
+                + ctrl._state.working_order_notional
+                + ctrl._state.in_flight_order_notional
+                + ctrl._state.reservation_notional
+            )
+            attributed = sum(
+                ctrl._state.per_strategy_deployed.values(), _ZERO,
+            )
+            assert attributed == total_deployed, (
+                f'mid-fill attribution mismatch after fill: '
+                f'attributed={attributed} total={total_deployed}'
+            )
+
+        assert ctrl._state.working_order_notional == _ZERO

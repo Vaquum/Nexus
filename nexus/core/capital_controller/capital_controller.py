@@ -53,6 +53,23 @@ _ONE_HUNDRED = Decimal('100')
 # available amount so aggregates never go negative.
 _EXIT_BOUNDARY_TOLERANCE = Decimal('1E-12')
 
+# FINAL-MAJOR-09: absolute tolerance for the order_fill fee-deficit
+# check. `proportional_estimated` is computed via the
+# `pre_fill_remaining - updated.remaining_total` round trip on the
+# `(remaining * estimated_fees / notional)` formula; on awkward
+# notional/fee ratios (e.g. 7-unit notional with 1-unit fee) the
+# round-trip subtraction drops one sig-digit of precision relative
+# to a direct `actual_fees` computed via `1/7` at default precision,
+# so `fee_delta = proportional - actual_fees` is sub-ULP negative
+# even when the venue's actual fee equals the analytical estimate.
+# Pre-fix this deficit accumulated and tripped the strict
+# `abs(fee_delta) > fee_reserve` check after a few partials — fills
+# silently rejected with EXPECTED_MISS. The tolerance absorbs the
+# rounding noise; the existing fee_reserve check still rejects real
+# fee deficits (>1E-12 quote) just like M06 only absorbs sub-ULP
+# overshoots on the exit boundary.
+_FEE_DEFICIT_TOLERANCE = Decimal('1E-12')
+
 
 class CapitalController:
     '''Thread-safe capital reservation manager.
@@ -863,12 +880,16 @@ class CapitalController:
 
             fee_delta = proportional_estimated - actual_fees
 
-            if fee_delta < _ZERO and abs(fee_delta) > self._state.fee_reserve:
+            if (
+                fee_delta < _ZERO
+                and abs(fee_delta) > self._state.fee_reserve + _FEE_DEFICIT_TOLERANCE
+            ):
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'order {order_id!r} fee deficit {abs(fee_delta)} '
-                        f'exceeds fee_reserve {self._state.fee_reserve}'
+                        f'exceeds fee_reserve {self._state.fee_reserve} '
+                        f'(tolerance {_FEE_DEFICIT_TOLERANCE})'
                     ),
                     category=FailureCategory.EXPECTED_MISS,
                 )
