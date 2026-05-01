@@ -1841,6 +1841,98 @@ class TestFinalMajor06ExitBoundaryTolerance:
         )
 
 
+class TestOrderExitAttributionLockstepUnderTolerance:
+    '''PR #55 review: pre-fix `order_exit` clamped position-side and
+    strategy-side decrements via TWO separate `min(...)` calls
+    (`min(cost_basis_released, position_notional)` and
+    `min(cost_basis_released, strategy_deployed)`). When
+    `cost_basis_released` overshoots ONLY the per-strategy total
+    (within `_SUB_ULP_TOLERANCE`) but NOT the position-level total
+    (because other strategies still have open positions),
+    `position_notional` decreased by the unclamped overshoot while
+    `per_strategy_deployed[sid]` decreased by the clamped strategy
+    total. Result: a sub-ULP attribution mismatch
+    (`sum(per_strategy_deployed) != total_deployed`) that
+    `check_and_reserve` rejects via `INVARIANT_BREACH`, locking out
+    the next reservation.
+
+    Post-fix `order_exit` computes ONE `release_amount = min(
+    cost_basis_released, position_notional, strategy_deployed)` and
+    applies it to BOTH aggregates so the attribution invariant stays
+    exact across the within-tolerance boundary.
+    '''
+
+    def test_within_tolerance_strategy_overshoot_preserves_attribution_invariant(
+        self,
+    ) -> None:
+        '''`cost_basis_released` overshoots `strategy_deployed` by
+        sub-ULP but does NOT overshoot `position_notional` (other
+        strategies still have positions open). Pre-fix the two
+        decrements differ by sub-ULP; post-fix they match.
+        '''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={
+                'strat_a': Decimal('100'),
+                'strat_b': Decimal('900'),
+            },
+        )
+
+        cost_basis_released = Decimal('100') + Decimal('1E-13')
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is True, result.reason
+
+        total_deployed = (
+            ctrl._state.position_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.reservation_notional
+        )
+        attributed = sum(
+            ctrl._state.per_strategy_deployed.values(), _ZERO,
+        )
+        assert attributed == total_deployed, (
+            f'attribution mismatch after within-tolerance order_exit: '
+            f'attributed={attributed} total_deployed={total_deployed} '
+            f'delta={attributed - total_deployed}'
+        )
+
+    def test_within_tolerance_strategy_overshoot_followed_by_reserve_succeeds(
+        self,
+    ) -> None:
+        '''Downstream proof of the lockout-prevention claim: after the
+        within-tolerance overshoot exit, a fresh `check_and_reserve`
+        for `strat_b` must succeed (pre-fix it would be rejected by
+        the strict mismatch denial).
+        '''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={
+                'strat_a': Decimal('100'),
+                'strat_b': Decimal('900'),
+            },
+        )
+
+        cost_basis_released = Decimal('100') + Decimal('1E-13')
+        exit_result = ctrl.order_exit('strat_a', cost_basis_released)
+        assert exit_result.success is True
+
+        reserve_result = _reserve(
+            ctrl,
+            strategy_id='strat_b',
+            notional='50',
+            fees='0.05',
+            budget='10000',
+        )
+        assert reserve_result.reservation is not None, (
+            f'follow-up reserve should succeed post-fix; got: '
+            f'{reserve_result.reason}'
+        )
+
+
 class TestFinalMajor09OrderFillAttributionLockstep:
     '''FINAL-MAJOR-09: pre-fix `order_fill` computes
     `proportional_estimated` and `fill_with_estimated` via a

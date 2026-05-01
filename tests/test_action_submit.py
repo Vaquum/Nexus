@@ -985,8 +985,10 @@ class TestFinalMajor03PendingExitLockCoverage:
         alive = [t.name for t in all_threads if t.is_alive()]
         assert not alive, f'threads did not finish: {alive}'
 
-        expected = (Decimal(increments) * increment_size
-                    - Decimal(decrements) * decrement_size)
+        expected = (
+            Decimal(increments) * increment_size
+            - Decimal(decrements) * decrement_size
+        )
         assert position.pending_exit == expected, (
             f'lost-update detected — pending_exit={position.pending_exit} '
             f'expected={expected}'

@@ -772,12 +772,13 @@ class CapitalController:
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
-            position_release = min(
-                cost_basis_released, self._state.position_notional,
+            release_amount = min(
+                cost_basis_released,
+                self._state.position_notional,
+                strategy_deployed,
             )
-            strategy_release = min(cost_basis_released, strategy_deployed)
-            self._state.position_notional -= position_release
-            self._adjust_strategy_deployed(strategy_id, -strategy_release)
+            self._state.position_notional -= release_amount
+            self._adjust_strategy_deployed(strategy_id, -release_amount)
 
             return LifecycleResult(success=True)
 
