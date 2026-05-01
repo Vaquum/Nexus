@@ -165,6 +165,27 @@ class TestMaxAllocationPerTradePctOverride:
                 cs, max_allocation_per_trade_pct=Decimal('-0.1'),
             )
 
+    def test_nan_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='finite Decimal'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('NaN'),
+            )
+
+    def test_infinity_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='finite Decimal'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('Infinity'),
+            )
+
+    def test_negative_infinity_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='finite Decimal'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('-Infinity'),
+            )
+
 
 class TestStrategyBudgetCheck:
     def test_unknown_per_strategy_deployment_in_non_flat_state_denied(self) -> None:
