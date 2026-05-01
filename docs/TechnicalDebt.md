@@ -786,19 +786,6 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 ---
 
-## TD-068: `RiskState.lock` set as non-dataclass attribute via `__post_init__`
-
-**Origin**: pr-prep Greybeard pre-PR review (round-17)
-**Severity**: Low (works today; convention drift)
-**Module**: `nexus/core/domain/risk_state.py:147`
-
-`RiskState.lock` is set inside `__post_init__` rather than declared as a dataclass field. Consequence: `dataclasses.replace()`, equality comparison, and `repr` silently ignore the attribute. Any future code that copies a `RiskState` via `replace()` will lose the lock without warning. The codec already enumerates persisted fields explicitly so serialization is unaffected, but the attribute escapes the dataclass schema.
-
-**When to fix**: Before any code path uses `dataclasses.replace()` on `RiskState`, OR when introducing additional transient cross-thread coordination state on the dataclass.
-**Migration**: Either declare `lock` as a `field(default=None, init=False, compare=False, repr=False)` so it participates in the dataclass schema, OR move the lock onto a separate `RiskStateCoordination` companion object held by the launcher rather than on the state itself.
-
----
-
 ## TD-069: `StrategyEvent.outcome_id` empty-string is the dedup-skip sentinel
 
 **Origin**: pr-prep Greybeard pre-PR review (round-17)
@@ -835,3 +822,19 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 **When to fix**: When any code path can call `recover()` with worker threads alive (currently impossible by sequencer construction).
 **Migration**: Wrap the per-strategy write loop in `state.risk.lock_cm()` (no-op when lock is None, which is the current boot path).
+
+---
+
+## TD-072: `recover()` overwrites `strategy_realized_pnl` from WAL events alone, losing pre-snapshot cumulative beyond the 30-day retention window
+
+**Origin**: PR #55 round-3 review
+**Severity**: Major (silently understates `cumulative_realized_pnl`, equity, and drawdown derivatives over time)
+**Module**: `nexus/infrastructure/state_store.py:204`, `nexus/infrastructure/snapshot.py:52-53`
+
+`recover()` line 204 unconditionally overwrites `srs.strategy_realized_pnl = derived_pnl.get(sid, _ZERO)` where `derived_pnl` is computed from `STRATEGY_EVENT` entries currently in the WAL. `save_snapshot` truncates the WAL keeping only events within `_EVENT_RETENTION_DAYS = 30` of the snapshot time. Result: any realized P&L that contributed to the persisted snapshot but whose underlying events are now older than 30 days is dropped from the post-recovery `strategy_realized_pnl`. The instance-level `cumulative_realized_pnl` derived from the per-strategy sum at line 213 inherits the same understatement, and downstream `recompute_drawdown_metrics` sees inflated equity / understated drawdown for the rest of the process lifetime.
+
+The behavior is a regression from the FINAL-TD-01 fix, which was specifically designed to re-derive `strategy_realized_pnl` from events to avoid losing a single STATE_MUTATION-side delta on crash between `append_event` and `append_mutation`. The trade-off was made without persisting a snapshot watermark, so the current code chooses "lose a single recent delta on crash" → "lose all events older than 30 days every recover".
+
+**When to fix**: Before any deployment whose lifetime exceeds the 30-day retention window or whose drawdown / equity gates are load-bearing on cumulative P&L accuracy. For paper-trade MMVP at testnet cadence the impact is bounded by the test session length (typically << 30 days), so the regression is dormant.
+
+**Migration**: Persist a snapshot watermark (sequence number or timestamp) inside the snapshot payload. On `recover()` (a) adopt `srs.strategy_realized_pnl` from the snapshot as the baseline, (b) replay only `STRATEGY_EVENT` entries with sequence > watermark to add post-snapshot deltas. Combined with the existing v2 `outcome_id` dedup this preserves both the "no lost delta on crash" guarantee FINAL-TD-01 introduced AND the "no silent 30-day truncation drift" guarantee the snapshot was supposed to provide.
