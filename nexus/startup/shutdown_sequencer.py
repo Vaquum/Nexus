@@ -397,9 +397,15 @@ class ShutdownSequencer:
             and self._state is not None
             and context.order_size is not None
         ):
-            position = self._state.positions.get(action.trade_id)
-            if position is not None:
-                position.pending_exit += context.order_size
+            lock_cm = (
+                self._positions_lock
+                if self._positions_lock is not None
+                else nullcontext()
+            )
+            with lock_cm:
+                position = self._state.positions.get(action.trade_id)
+                if position is not None:
+                    position.pending_exit += context.order_size
 
         try:
             self._exit_contexts[returned_id] = self._build_exit_order_context(

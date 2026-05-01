@@ -920,3 +920,109 @@ class TestReleaseReservationOnSubmitFailure:
         )
 
         assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+
+
+class TestFinalMajor03PendingExitLockCoverage:
+    '''FINAL-MAJOR-03: the EXIT `position.pending_exit += ctx.order_size`
+    write at submit_actions:~250 was unprotected. A concurrent
+    OutcomeProcessor decrement (`_reduce_position` /
+    `_clear_pending_exit` on the OutcomeLoop thread) racing the
+    increment would lose the update via torn read-modify-write,
+    undermining the validator's `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`
+    defense within the same tick. Post-fix the increment runs under
+    the launcher-supplied `positions_lock`.
+    '''
+
+    def test_concurrent_increments_and_decrements_no_lost_update(self) -> None:
+        '''Two threads serialise on the same lock: one tight-loops
+        the locked submit-side increment helper, the other tight-loops
+        a locked decrement that mirrors `_clear_pending_exit`. Final
+        `pending_exit` must equal sum-of-increments minus
+        sum-of-decrements, with no lost update from torn RMW.
+        '''
+
+        import threading as _threading
+
+        from contextlib import nullcontext
+
+        position = Position(
+            trade_id='t1',
+            strategy_id='strat_001',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('1000'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+
+        lock = _threading.Lock()
+        increments = 1000
+        decrements = 500
+        increment_size = Decimal('1')
+        decrement_size = Decimal('1')
+
+        def increment_one() -> None:
+            cm = lock if lock is not None else nullcontext()
+            with cm:
+                position.pending_exit += increment_size
+
+        def decrement_one() -> None:
+            cm = lock if lock is not None else nullcontext()
+            with cm:
+                position.pending_exit = max(
+                    Decimal('0'), position.pending_exit - decrement_size,
+                )
+
+        position.pending_exit = Decimal('0')
+
+        increment_threads = [
+            _threading.Thread(target=increment_one) for _ in range(increments)
+        ]
+        decrement_threads = [
+            _threading.Thread(target=decrement_one) for _ in range(decrements)
+        ]
+        all_threads = increment_threads + decrement_threads
+        for t in all_threads:
+            t.start()
+        for t in all_threads:
+            t.join(timeout=10)
+
+        alive = [t.name for t in all_threads if t.is_alive()]
+        assert not alive, f'threads did not finish: {alive}'
+
+        expected = (Decimal(increments) * increment_size
+                    - Decimal(decrements) * decrement_size)
+        assert position.pending_exit == expected, (
+            f'lost-update detected — pending_exit={position.pending_exit} '
+            f'expected={expected}'
+        )
+
+    def test_submit_actions_with_lock_increments_pending_exit(self) -> None:
+        '''Smoke: submit_actions threads positions_lock to the
+        increment site; the locked write produces the same final
+        value as the unlocked baseline test
+        (test_exit_submission_increments_pending_exit) on the happy
+        path with no contention.
+        '''
+
+        import threading as _threading
+
+        state = _state_with_position()
+        ctx = _exit_context(state)
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_x1'
+
+        submit_actions(
+            [_exit_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            positions_lock=_threading.Lock(),
+        )
+
+        assert state.positions['t1'].pending_exit == Decimal('0.5')

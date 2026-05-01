@@ -17,7 +17,9 @@ so unit tests can drive it with a fake context builder.
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -88,6 +90,7 @@ def submit_actions(
     build_context: ContextBuilder,
     now: Callable[[], datetime],
     capital_controller: CapitalController | None = None,
+    positions_lock: threading.Lock | None = None,
 ) -> list[tuple[Action, SubmissionOutcome]]:
     '''Run a list of strategy actions through validation and submission.
 
@@ -112,6 +115,16 @@ def submit_actions(
             deterministic-failure retry storms (config bug, malformed
             symbol). MAJOR-G fix. None preserves legacy test behavior
             (no rollback).
+        positions_lock: Optional `threading.Lock` shared with the
+            launcher's `_ensure_entry_position` writer and
+            `_build_strategy_context` reader. When provided, the EXIT
+            `position.pending_exit += ctx.order_size` write at line
+            ~250 runs under the lock so a concurrent OutcomeProcessor
+            `_reduce_position` / `_clear_pending_exit` decrement
+            (FINAL-MAJOR-03) cannot race the read-modify-write and
+            lose the increment, which would undermine the validator's
+            `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING` defense within the
+            same tick. None preserves legacy test behavior.
     '''
 
     results: list[tuple[Action, SubmissionOutcome]] = []
@@ -241,9 +254,11 @@ def submit_actions(
             continue
 
         if action.action_type == ActionType.EXIT and action.trade_id is not None:
-            position = ctx.state.positions.get(action.trade_id)
-            if position is not None and ctx.order_size is not None:
-                position.pending_exit += ctx.order_size
+            lock_cm = positions_lock if positions_lock is not None else nullcontext()
+            with lock_cm:
+                position = ctx.state.positions.get(action.trade_id)
+                if position is not None and ctx.order_size is not None:
+                    position.pending_exit += ctx.order_size
 
         _log.info(
             'action submitted',
