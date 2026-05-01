@@ -418,7 +418,15 @@ class OutcomeProcessor:
 
         entry_price = position.entry_price
         side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
-        realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
+        gross_pnl = side_multiplier * (fill_price - entry_price) * fill_size
+        # FINAL-MAJOR-08: subtract exit fees so realized_pnl is NET, not GROSS.
+        # The net value flows verbatim into strategy_realized_pnl,
+        # cumulative_realized_pnl, equity, equity_hwm, and the rolling-loss
+        # windows; rolling-loss / drawdown gates fire at the correct net-PnL
+        # threshold instead of LATER by the cumulative fee total. On testnet
+        # `fee_rate=0` so this is a no-op; mainnet-fatal once fee_rate flips
+        # non-zero (couples with Praxis TD-030).
+        realized_pnl = gross_pnl - outcome.actual_fees
 
         if position.avg_cost_basis == _ZERO:
             _log.warning(

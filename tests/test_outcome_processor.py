@@ -684,7 +684,10 @@ class TestRiskMetricsRecalculation:
         assert result.success is True
 
         strategy_risk = state.risk.per_strategy['strat_001']
-        expected_loss = Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees.
+        # gross loss = (49000 - 50000) * 0.01 = -10; minus actual_fees=1 -> -11
+        # rolling_loss tracks abs(net loss).
+        expected_loss = Decimal('11')
         assert strategy_risk.rolling_loss_24h == expected_loss
         assert strategy_risk.rolling_loss_7d == expected_loss
         assert strategy_risk.rolling_loss_30d == expected_loss
@@ -726,7 +729,9 @@ class TestRiskMetricsRecalculation:
         assert result.success is True
 
         strategy_risk = state.risk.per_strategy['strat_001']
-        expected_pnl = Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees.
+        # gross = (51000 - 50000) * 0.01 = 10; minus actual_fees=1 -> 9
+        expected_pnl = Decimal('9')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
         assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
@@ -766,7 +771,9 @@ class TestRiskMetricsRecalculation:
         result = proc.process(outcome, _exit_context())
         assert result.success is True
 
-        expected_pnl = Decimal('10')
+        # FINAL-MAJOR-08: cumulative_realized_pnl is NET of exit fees.
+        # gross = (51000 - 50000) * 0.01 = 10; minus actual_fees=1 -> 9
+        expected_pnl = Decimal('9')
         assert state.risk.cumulative_realized_pnl == expected_pnl
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
         assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
@@ -806,7 +813,9 @@ class TestRiskMetricsRecalculation:
         result = proc.process(outcome, _exit_context())
         assert result.success is True
 
-        expected_equity = _POOL + Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees, so equity
+        # adds the net (gross 10 - fees 1 = 9), not the gross.
+        expected_equity = _POOL + Decimal('9')
         assert state.risk.equity == expected_equity
         assert state.risk.equity_hwm == expected_equity
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
@@ -889,7 +898,9 @@ class TestRiskMetricsRecalculation:
         assert 'strat_002' not in state.risk.per_strategy
 
         strat1_risk = state.risk.per_strategy['strat_001']
-        assert strat1_risk.rolling_loss_24h == Decimal('10')
+        # FINAL-MAJOR-08: rolling_loss tracks abs(net loss).
+        # gross loss 10 + actual_fees 1 = net loss 11.
+        assert strat1_risk.rolling_loss_24h == Decimal('11')
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
         assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
@@ -966,7 +977,9 @@ class TestRiskMetricsRecalculation:
         assert result.success is True
 
         strategy_risk = state.risk.per_strategy['strat_001']
-        expected_pnl = Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees.
+        # SHORT: gross = -(49000 - 50000) * 0.01 = +10; minus actual_fees=1 -> 9
+        expected_pnl = Decimal('9')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
         assert strategy_risk.rolling_loss_24h == _ZERO
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
@@ -2136,3 +2149,129 @@ class TestFinalMajor02RiskLockCoverage:
                 f'{reader_failures[:3]}'
             )
             assert len(instance_state.risk.per_strategy) == 500
+
+
+class TestFinalMajor08RealizedPnlIsNetOfFees:
+    '''FINAL-MAJOR-08: pre-fix `_reduce_position` produced GROSS
+    realized_pnl `(fill_price - entry_price) * fill_size` and ignored
+    `outcome.actual_fees`. The gross value flowed verbatim into
+    `strategy_realized_pnl`, `cumulative_realized_pnl`, equity,
+    equity_hwm, and the rolling-loss windows. Rolling-loss / drawdown
+    gates therefore fired LATER than they should by the cumulative
+    fee total. On testnet `fee_rate=0` so unobserved at MMVP today;
+    mainnet-fatal once Praxis TD-030 flips fee_rate non-zero.
+
+    Post-fix `_reduce_position` returns `gross_pnl - actual_fees` so
+    the net value flows through the entire risk derivation chain.
+    '''
+
+    def test_winning_exit_realized_pnl_is_net_of_fees(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+        _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('1'), Decimal('100'),
+        )
+
+        # gross win = (110 - 100) * 1 = 10; fees 0.5 -> net 9.5
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('110'),
+            fill_notional=Decimal('110'),
+            actual_fees=Decimal('0.5'),
+        )
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        srs = state.risk.per_strategy['strat_001']
+        assert srs.strategy_realized_pnl == Decimal('9.5')
+
+    def test_losing_exit_rolling_loss_includes_exit_fee(self) -> None:
+        '''Rolling-loss windows track abs(net loss). When a position
+        exits at a loss AND incurs an exit fee, the rolling-loss
+        bucket grows by gross_loss + fee. Pre-fix the fee was lost
+        from the rolling-loss accounting.
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+        _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('1'), Decimal('100'),
+        )
+
+        # gross loss = (90 - 100) * 1 = -10; fees 1 -> net -11; rolling = 11
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('90'),
+            fill_notional=Decimal('90'),
+            actual_fees=Decimal('1'),
+        )
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        srs = state.risk.per_strategy['strat_001']
+        assert srs.strategy_realized_pnl == Decimal('-11')
+        assert srs.rolling_loss_24h == Decimal('11')
+        assert srs.rolling_loss_7d == Decimal('11')
+        assert srs.rolling_loss_30d == Decimal('11')
+
+    def test_zero_fee_exit_unchanged_from_pre_fix(self) -> None:
+        '''Sanity: when fees are zero the result equals gross PnL,
+        i.e. behaviour matches pre-M08 on testnet (fee_rate=0).
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+        _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('1'), Decimal('100'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('105'),
+            fill_notional=Decimal('105'),
+            actual_fees=Decimal('0'),
+        )
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        srs = state.risk.per_strategy['strat_001']
+        assert srs.strategy_realized_pnl == Decimal('5')

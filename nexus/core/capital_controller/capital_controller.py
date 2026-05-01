@@ -695,13 +695,17 @@ class CapitalController:
         `position_notional`; the matching exit FILLs collectively remove
         the same amount.
 
-        Exit fees are NOT touched here. Under the current model they
-        are not represented in capital aggregates and are also NOT
-        deducted from `realized_pnl` by `_reduce_position`, which uses
-        a gross PnL calculation `(fill_price - entry_price) * fill_size`
-        without subtracting `outcome.actual_fees`. If a future risk
-        extension needs exit-fee tracking, add a separate ledger such
-        as `realized_fees` and wire that accounting in explicitly.
+        Exit fees are NOT touched in capital aggregates here. They ARE
+        deducted from `realized_pnl` at the source in
+        `_reduce_position` (FINAL-MAJOR-08): the formula is
+        `(fill_price - entry_price) * fill_size - outcome.actual_fees`,
+        so `strategy_realized_pnl`, `cumulative_realized_pnl`, equity,
+        and the rolling-loss windows all reflect NET PnL. Rolling-loss
+        and drawdown gates therefore fire at the correct net-PnL
+        threshold rather than later by the cumulative fee total. If a
+        future risk extension needs SEPARATE exit-fee tracking on top
+        of net-of-fee realized PnL, add a `realized_fees` ledger and
+        wire that accounting in explicitly.
 
         Args:
             strategy_id: Strategy whose deployed total is decremented.
