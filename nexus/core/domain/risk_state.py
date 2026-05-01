@@ -130,21 +130,22 @@ class RiskState:
     max_drawdown: Decimal = _ZERO
     max_drawdown_pct: Decimal = _ZERO
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
+    lock: threading.Lock | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.
 
-        Also initialises a transient `lock` attribute used by
-        FINAL-MAJOR-02 to coordinate cross-thread access to
-        `per_strategy` (writers in OutcomeProcessor, readers in the
-        validator's `to_risk_check_metrics` and HealthLoop's
+        The `lock` field is declared above as `init=False, repr=False,
+        compare=False` so it is excluded from `dataclasses.replace()`
+        copies, `repr`, equality, and serialization. FINAL-MAJOR-02
+        uses it to coordinate cross-thread access to `per_strategy`
+        (writers in OutcomeProcessor, readers in the validator's
+        `to_risk_check_metrics` and HealthLoop's
         `state_store.refresh_rolling_losses`). The lock is set
         externally by the launcher after construction; when None,
         callers fall back to `nullcontext()` and no locking happens
         (legacy single-threaded test paths).
         '''
-
-        self.lock: threading.Lock | None = None
 
         if not self.high_water_mark.is_finite() or self.high_water_mark < _ZERO:
             msg = 'RiskState.high_water_mark must be a finite non-negative value'

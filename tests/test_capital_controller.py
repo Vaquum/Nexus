@@ -1940,3 +1940,53 @@ class TestFinalMajor09OrderFillAttributionLockstep:
             )
 
         assert ctrl._state.working_order_notional == _ZERO
+
+
+class TestFeeReserveSubUlpClampToZero:
+    '''PR #55 review: when `fee_delta` is a sub-ULP negative (within
+    `_SUB_ULP_TOLERANCE`) and `fee_reserve` is already at zero, the
+    addition `fee_reserve += fee_delta` would persist a sub-ULP
+    NEGATIVE `fee_reserve` because the deficit-vs-tolerance guard
+    intentionally allows the within-tolerance write through.
+    `CapitalState.fee_reserve` is conceptually non-negative and feeds
+    `available`, so the post-write clamp normalizes the within-tolerance
+    drift back to exactly zero.
+    '''
+
+    def test_sub_ulp_negative_fee_reserve_clamped_to_zero(self) -> None:
+        '''Construct an order_fill where the fee deficit is a sub-ULP
+        negative drift and `fee_reserve` is at zero — the post-write
+        clamp must produce `fee_reserve == 0` exactly, not a sub-ULP
+        negative residue.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(
+            ctrl, notional='100', fees='1', budget='1000',
+        )
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill(
+            'ORD-001', Decimal('100'), Decimal('1'),
+        )
+        assert ctrl._state.fee_reserve == _ZERO
+
+        ctrl._state.fee_reserve = _ZERO
+        result2 = _reserve(
+            ctrl, notional='100', fees='0', budget='1000',
+        )
+        assert result2.reservation is not None
+        ctrl.send_order(result2.reservation.reservation_id, 'ORD-002')
+        ctrl.order_ack('ORD-002')
+
+        sub_ulp_extra_fee = Decimal('1E-13')
+        fill_result = ctrl.order_fill(
+            'ORD-002', Decimal('100'), sub_ulp_extra_fee,
+        )
+        assert fill_result.success, fill_result.reason
+        assert ctrl._state.fee_reserve == _ZERO, (
+            f'sub-ULP negative drift not clamped: '
+            f'fee_reserve={ctrl._state.fee_reserve}'
+        )

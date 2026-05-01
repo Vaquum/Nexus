@@ -891,6 +891,12 @@ class CapitalController:
             self._state.position_notional += fill_notional + actual_fees
             self._state.fee_reserve += fee_delta
 
+            if (
+                self._state.fee_reserve < _ZERO
+                and abs(self._state.fee_reserve) <= _SUB_ULP_TOLERANCE
+            ):
+                self._state.fee_reserve = _ZERO
+
             if fee_delta != _ZERO:
                 self._adjust_strategy_deployed(order.strategy_id, -fee_delta)
 

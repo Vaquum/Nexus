@@ -379,6 +379,14 @@ def _decode_strategy_mode_state(d: dict[str, Any]) -> StrategyModeState:
 def serialize_event(event: StrategyEvent) -> bytes:
     '''Serialize a StrategyEvent to compact binary format.
 
+    Encodes as v2 when `outcome_id` is non-empty so the recovery
+    deduper has a stable key; falls back to v1 (legacy, no dedup)
+    when `outcome_id` is empty so callers that predate FINAL-TD-02
+    keep working. PR #55 review: never tag a payload as v2 without a
+    real `outcome_id`, since the strict v2 decoder rejects empty /
+    missing values to prevent silent double-counting on WAL
+    corruption.
+
     Args:
         event: The strategy event to serialize.
 
@@ -386,14 +394,24 @@ def serialize_event(event: StrategyEvent) -> bytes:
         Msgpack-encoded bytes.
     '''
 
-    d: dict[str, str | int] = {
-        '_v': _EVENT_CODEC_VERSION_LATEST,
-        'strategy_id': event.strategy_id,
-        'event_type': event.event_type,
-        'realized_pnl': str(event.realized_pnl),
-        'timestamp': event.timestamp.isoformat(),
-        'outcome_id': event.outcome_id,
-    }
+    d: dict[str, str | int]
+    if event.outcome_id:
+        d = {
+            '_v': _EVENT_CODEC_VERSION_LATEST,
+            'strategy_id': event.strategy_id,
+            'event_type': event.event_type,
+            'realized_pnl': str(event.realized_pnl),
+            'timestamp': event.timestamp.isoformat(),
+            'outcome_id': event.outcome_id,
+        }
+    else:
+        d = {
+            '_v': _EVENT_CODEC_VERSION_1,
+            'strategy_id': event.strategy_id,
+            'event_type': event.event_type,
+            'realized_pnl': str(event.realized_pnl),
+            'timestamp': event.timestamp.isoformat(),
+        }
     return cast(bytes, msgpack.packb(d))
 
 
@@ -473,12 +491,19 @@ def _decode_event_v2(d: dict[str, Any]) -> StrategyEvent:
     '''
 
     try:
+        outcome_id = d['outcome_id']
+        if not isinstance(outcome_id, str) or not outcome_id:
+            msg = (
+                f'v2 event payload requires a non-empty `outcome_id` string; '
+                f'got {outcome_id!r}'
+            )
+            raise ValueError(msg)
         return StrategyEvent(
             strategy_id=d['strategy_id'],
             event_type=d['event_type'],
             realized_pnl=Decimal(d['realized_pnl']),
             timestamp=datetime.fromisoformat(d['timestamp']),
-            outcome_id=d.get('outcome_id', ''),
+            outcome_id=outcome_id,
         )
     except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation) as exc:
         msg = f'Malformed event codec payload: {exc}'

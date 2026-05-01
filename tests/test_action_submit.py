@@ -943,8 +943,6 @@ class TestFinalMajor03PendingExitLockCoverage:
 
         import threading as _threading
 
-        from contextlib import nullcontext
-
         position = Position(
             trade_id='t1',
             strategy_id='strat_001',
@@ -961,27 +959,24 @@ class TestFinalMajor03PendingExitLockCoverage:
         increment_size = Decimal('1')
         decrement_size = Decimal('1')
 
-        def increment_one() -> None:
-            cm = lock if lock is not None else nullcontext()
-            with cm:
-                position.pending_exit += increment_size
+        def increment_many() -> None:
+            for _ in range(increments):
+                with lock:
+                    position.pending_exit += increment_size
 
-        def decrement_one() -> None:
-            cm = lock if lock is not None else nullcontext()
-            with cm:
-                position.pending_exit = max(
-                    Decimal('0'), position.pending_exit - decrement_size,
-                )
+        def decrement_many() -> None:
+            for _ in range(decrements):
+                with lock:
+                    position.pending_exit = max(
+                        Decimal('0'), position.pending_exit - decrement_size,
+                    )
 
         position.pending_exit = Decimal('0')
 
-        increment_threads = [
-            _threading.Thread(target=increment_one) for _ in range(increments)
+        all_threads = [
+            _threading.Thread(target=increment_many),
+            _threading.Thread(target=decrement_many),
         ]
-        decrement_threads = [
-            _threading.Thread(target=decrement_one) for _ in range(decrements)
-        ]
-        all_threads = increment_threads + decrement_threads
         for t in all_threads:
             t.start()
         for t in all_threads:
