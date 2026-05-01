@@ -771,3 +771,128 @@ class TestFinalMajor10RecoverDecaysRollingLossesEvenWithEmptyEvents:
             f'expected re-derived value 50, got '
             f'{recovered_srs.rolling_loss_24h}'
         )
+
+
+class TestFinalTd01RecoverDerivesStrategyRealizedPnl:
+    '''FINAL-TD-01: pre-fix `state_store.recover()` re-derived only
+    `rolling_loss_*` from events; `strategy_realized_pnl`,
+    `cumulative_realized_pnl`, and the drawdown derivatives were
+    adopted from the snapshot verbatim. On a crash between
+    `append_event` and `append_mutation`, the per-strategy
+    realized PnL delta from the lost STATE_MUTATION was
+    permanently dropped — drawdown gates fired LATER than they
+    should by the missing delta.
+
+    Post-fix `recover()` re-derives `strategy_realized_pnl` per
+    strategy via `derive_strategy_realized_pnl` (signed, all
+    events) and re-derives the instance-level
+    `cumulative_realized_pnl` as the sum over per-strategy values.
+    high_water_mark is bumped to at least the new
+    strategy_realized_pnl so the drawdown chain stays consistent.
+    '''
+
+    def test_recover_overwrites_strategy_realized_pnl_from_events(
+        self, tmp_path: Path,
+    ) -> None:
+        '''Snapshot has strategy_realized_pnl=0 stale; WAL has a
+        winning fill (+100) and a losing fill (-30). Recover should
+        derive net +70 not 0.
+        '''
+
+        store = StateStore(tmp_path)
+        srs = StrategyRiskState(strategy_id='strat_a')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs}),
+        )
+        store.checkpoint(state)
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('100'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('-30'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        recovery_store = StateStore(tmp_path)
+        recovered = recovery_store.recover()
+
+        assert recovered is not None
+        srs_recovered = recovered.risk.per_strategy['strat_a']
+        assert srs_recovered.strategy_realized_pnl == Decimal('70')
+        assert recovered.risk.cumulative_realized_pnl == Decimal('70')
+
+    def test_recover_decays_strategy_realized_pnl_to_zero_when_no_events(
+        self, tmp_path: Path,
+    ) -> None:
+        '''Snapshot has strategy_realized_pnl=999 stale; WAL has no
+        events. Recover should reset to 0 (since the events the
+        snapshot was derived from are pre-snapshot and no longer in
+        the WAL).
+        '''
+
+        store = StateStore(tmp_path)
+        srs = StrategyRiskState(
+            strategy_id='strat_a',
+            strategy_realized_pnl=Decimal('999'),
+            high_water_mark=Decimal('999'),
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(
+                per_strategy={'strat_a': srs},
+                cumulative_realized_pnl=Decimal('999'),
+            ),
+        )
+        store.checkpoint(state)
+
+        recovery_store = StateStore(tmp_path)
+        recovered = recovery_store.recover()
+
+        assert recovered is not None
+        srs_recovered = recovered.risk.per_strategy['strat_a']
+        assert srs_recovered.strategy_realized_pnl == _ZERO
+        assert recovered.risk.cumulative_realized_pnl == _ZERO
+
+    def test_recover_high_water_mark_at_least_strategy_realized_pnl(
+        self, tmp_path: Path,
+    ) -> None:
+        '''high_water_mark must not drop below the recovered
+        strategy_realized_pnl (the runtime invariant maintained by
+        `_update_strategy_risk_state` is that hwm >= cumulative pnl).
+        Snapshot has hwm=0; WAL events sum to +50; recovered hwm
+        must be >= 50.
+        '''
+
+        store = StateStore(tmp_path)
+        srs = StrategyRiskState(strategy_id='strat_a')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs}),
+        )
+        store.checkpoint(state)
+        store.append_event(
+            StrategyEvent(
+                strategy_id='strat_a',
+                event_type='trade_outcome',
+                realized_pnl=Decimal('50'),
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+        recovery_store = StateStore(tmp_path)
+        recovered = recovery_store.recover()
+
+        assert recovered is not None
+        srs_recovered = recovered.risk.per_strategy['strat_a']
+        assert srs_recovered.strategy_realized_pnl == Decimal('50')
+        assert srs_recovered.high_water_mark >= Decimal('50')

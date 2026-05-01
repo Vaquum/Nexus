@@ -22,7 +22,10 @@ from pathlib import Path
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.snapshot import load_snapshot, save_snapshot
 from nexus.infrastructure.wal import WriteAheadLog
-from nexus.infrastructure.loss_derivation import derive_rolling_losses
+from nexus.infrastructure.loss_derivation import (
+    derive_rolling_losses,
+    derive_strategy_realized_pnl,
+)
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal_codec import (
     deserialize_event,
@@ -177,6 +180,17 @@ class StateStore:
         recovery_time = datetime.now(tz=timezone.utc)
         losses = derive_rolling_losses(events, recovery_time) if events else {}
 
+        # FINAL-TD-01: also re-derive per-strategy SIGNED cumulative
+        # `strategy_realized_pnl` from events. Pre-fix `recover()`
+        # adopted the snapshot's `strategy_realized_pnl` verbatim;
+        # on a crash between `append_event` and `append_mutation` the
+        # delta from the lost STATE_MUTATION was permanently dropped
+        # — drawdown gates fired LATER than they should by the missing
+        # delta. The same residual is then propagated into the
+        # instance-level `cumulative_realized_pnl` so drawdown
+        # derivatives stay consistent.
+        derived_pnl = derive_strategy_realized_pnl(events) if events else {}
+
         for sid, srs in state.risk.per_strategy.items():
             if sid in losses:
                 srs.rolling_loss_24h = losses[sid].rolling_loss_24h
@@ -186,6 +200,17 @@ class StateStore:
                 srs.rolling_loss_24h = _ZERO
                 srs.rolling_loss_7d = _ZERO
                 srs.rolling_loss_30d = _ZERO
+
+            srs.strategy_realized_pnl = derived_pnl.get(sid, _ZERO)
+            srs.high_water_mark = max(
+                srs.high_water_mark, srs.strategy_realized_pnl,
+            )
+
+        # Re-derive instance-level cumulative_realized_pnl as the sum
+        # over per-strategy realized P&L (same identity used by
+        # `state.risk.realized_pnl` property at runtime). Triggers
+        # drawdown recompute under the new value.
+        state.risk.update_cumulative_realized_pnl(state.risk.realized_pnl)
 
         return state
 

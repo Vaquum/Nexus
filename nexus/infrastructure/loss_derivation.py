@@ -13,7 +13,11 @@ from decimal import Decimal
 
 from nexus.infrastructure.strategy_event import StrategyEvent
 
-__all__ = ['RollingLosses', 'derive_rolling_losses']
+__all__ = [
+    'RollingLosses',
+    'derive_rolling_losses',
+    'derive_strategy_realized_pnl',
+]
 
 _ZERO = Decimal(0)
 _WINDOW_24H = timedelta(hours=24)
@@ -96,3 +100,34 @@ def derive_rolling_losses(
         )
         for sid, b in accum.items()
     }
+
+
+def derive_strategy_realized_pnl(
+    events: list[StrategyEvent],
+) -> dict[str, Decimal]:
+    '''Compute per-strategy SIGNED cumulative realized P&L from events.
+
+    Unlike `derive_rolling_losses` (windowed, absolute losses only), this
+    sums every event's `realized_pnl` regardless of sign or age. The
+    result is the authoritative `strategy_realized_pnl` value that
+    survives a crash between `append_event` and `append_mutation`
+    (FINAL-TD-01): pre-fix `state_store.recover()` adopted the snapshot's
+    `strategy_realized_pnl` verbatim, so a lost STATE_MUTATION carrying
+    the +/- delta from a fill left drawdown gates firing LATER than they
+    should by the missing delta.
+
+    Args:
+        events: Strategy events to scan.
+
+    Returns:
+        Mapping of `strategy_id` to signed cumulative realized P&L.
+        Strategies with no events are not in the mapping.
+    '''
+
+    accum: dict[str, Decimal] = {}
+
+    for event in events:
+        sid = event.strategy_id
+        accum[sid] = accum.get(sid, _ZERO) + event.realized_pnl
+
+    return accum
