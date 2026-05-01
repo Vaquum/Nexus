@@ -89,6 +89,104 @@ class TestPerTradeAllocationCheck:
         assert result.granted is True
 
 
+class TestMaxAllocationPerTradePctOverride:
+    def test_default_matches_module_constant(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(cs)
+        limit = _POOL * MAX_ALLOCATION_PER_TRADE_PCT
+        denied = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=Decimal(str(limit + 1)),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('100000'),
+        )
+        assert denied.granted is False
+
+    def test_higher_override_admits_previously_denied(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(
+            cs,
+            max_allocation_per_trade_pct=Decimal('0.50'),
+        )
+        prior_limit = _POOL * MAX_ALLOCATION_PER_TRADE_PCT
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=Decimal(str(prior_limit + 1)),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('100000'),
+        )
+        assert result.granted is True
+
+    def test_lower_override_denies_previously_admitted(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(
+            cs,
+            max_allocation_per_trade_pct=Decimal('0.05'),
+        )
+        notional_at_default = _POOL * MAX_ALLOCATION_PER_TRADE_PCT
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=notional_at_default,
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('100000'),
+        )
+        assert result.granted is False
+
+    def test_denial_reason_carries_override(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(
+            cs,
+            max_allocation_per_trade_pct=Decimal('0.05'),
+        )
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=Decimal('600'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('100000'),
+        )
+        assert result.granted is False
+        assert result.denial_reason is not None
+        assert '0.05' in result.denial_reason
+
+    def test_non_decimal_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(TypeError, match='must be Decimal'):
+            CapitalController(cs, max_allocation_per_trade_pct=0.5)  # type: ignore[arg-type]
+
+    def test_zero_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='must be > 0'):
+            CapitalController(cs, max_allocation_per_trade_pct=Decimal('0'))
+
+    def test_negative_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='must be > 0'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('-0.1'),
+            )
+
+    def test_nan_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='finite Decimal'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('NaN'),
+            )
+
+    def test_infinity_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='finite Decimal'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('Infinity'),
+            )
+
+    def test_negative_infinity_override_raises(self) -> None:
+        cs = CapitalState(capital_pool=_POOL)
+        with pytest.raises(ValueError, match='finite Decimal'):
+            CapitalController(
+                cs, max_allocation_per_trade_pct=Decimal('-Infinity'),
+            )
+
+
 class TestStrategyBudgetCheck:
     def test_unknown_per_strategy_deployment_in_non_flat_state_denied(self) -> None:
         ctrl = _make_controller(position_notional=Decimal('1000'))

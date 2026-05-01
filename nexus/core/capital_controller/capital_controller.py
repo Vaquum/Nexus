@@ -46,10 +46,39 @@ class CapitalController:
 
     Args:
         capital_state: Mutable capital state to guard.
+        max_allocation_per_trade_pct: Maximum fraction of `capital_pool`
+            a single order may consume. Defaults to
+            `MAX_ALLOCATION_PER_TRADE_PCT`. Operators that run higher-Kelly
+            strategies override this at construction; the default
+            preserves prior behaviour bit-for-bit.
     '''
 
-    def __init__(self, capital_state: CapitalState) -> None:
+    def __init__(
+        self,
+        capital_state: CapitalState,
+        *,
+        max_allocation_per_trade_pct: Decimal = MAX_ALLOCATION_PER_TRADE_PCT,
+    ) -> None:
+        if not isinstance(max_allocation_per_trade_pct, Decimal):
+            msg = (
+                f'max_allocation_per_trade_pct must be Decimal, '
+                f'got {type(max_allocation_per_trade_pct).__name__}'
+            )
+            raise TypeError(msg)
+        if not max_allocation_per_trade_pct.is_finite():
+            msg = (
+                'max_allocation_per_trade_pct must be a finite Decimal, '
+                f'got {max_allocation_per_trade_pct}'
+            )
+            raise ValueError(msg)
+        if max_allocation_per_trade_pct <= _ZERO:
+            msg = (
+                f'max_allocation_per_trade_pct must be > 0, '
+                f'got {max_allocation_per_trade_pct}'
+            )
+            raise ValueError(msg)
         self._state = capital_state
+        self._max_allocation_per_trade_pct = max_allocation_per_trade_pct
         self._lock = threading.Lock()
         self._reservations: dict[str, Reservation] = {}
         self._expiry_heap: list[tuple[datetime, str]] = []
@@ -295,12 +324,12 @@ class CapitalController:
 
             allocation_pct = order_notional / self._state.capital_pool
 
-            if allocation_pct > MAX_ALLOCATION_PER_TRADE_PCT:
+            if allocation_pct > self._max_allocation_per_trade_pct:
                 return ReservationResult(
                     granted=False,
                     denial_reason=(
                         f'Per-trade allocation {allocation_pct:.4f} exceeds '
-                        f'limit {MAX_ALLOCATION_PER_TRADE_PCT}'
+                        f'limit {self._max_allocation_per_trade_pct}'
                     ),
                 )
 
