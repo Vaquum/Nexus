@@ -174,4 +174,135 @@ class TestExtractValues:
 
         values = _extract_values(result)
 
-        assert values['_preds'] == 1.0
+        assert values['_preds'] == 1
+
+    def test_multi_element_int_array_preserves_int(self) -> None:
+        '''Multi-element int array yields int (dtype preserved).'''
+
+        result: dict[str, Any] = {
+            '_preds': np.array([0, 1, 1, 0, 1]),
+        }
+
+        values = _extract_values(result)
+
+        assert isinstance(values['_preds'], int)
+        assert not isinstance(values['_preds'], bool)
+
+    def test_multi_element_float_array_yields_float(self) -> None:
+        '''Multi-element float array yields float (dtype preserved).'''
+
+        result: dict[str, Any] = {
+            '_probs': np.array([0.1, 0.5, 0.9]),
+        }
+
+        values = _extract_values(result)
+
+        assert isinstance(values['_probs'], float)
+        assert values['_probs'] == pytest.approx(0.9)
+
+    def test_empty_array_skipped(self) -> None:
+        '''Zero-element array is skipped (no key added).'''
+
+        result: dict[str, Any] = {
+            '_preds': np.array([], dtype=np.int64),
+            '_probs': np.array([0.5]),
+        }
+
+        values = _extract_values(result)
+
+        assert '_preds' not in values
+        assert values['_probs'] == pytest.approx(0.5)
+
+
+@_needs_limen
+class TestLookback:
+
+    def test_default_lookback_one_matches_baseline(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''Default lookback=1 matches the no-lookback caller bit-for-bit.'''
+
+        wired, market_data = _make_wired_sensor(tmp_path)
+        signal_default = produce_signal(wired, market_data)
+        signal_explicit = produce_signal(wired, market_data, lookback=1)
+
+        assert signal_default.values == signal_explicit.values
+
+    def test_lookback_greater_than_one_invokes_predict_with_n_rows(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''lookback=N feeds N rows to sensor.predict.'''
+
+        wired, market_data = _make_wired_sensor(tmp_path)
+
+        captured: dict[str, Any] = {}
+        original_predict = wired.sensor.predict
+
+        def _capturing_predict(data: dict[str, Any]) -> dict[str, Any]:
+            captured['x_test_shape'] = data['x_test'].shape
+            return original_predict(data)
+
+        wired.sensor.predict = _capturing_predict  # type: ignore[method-assign]
+        try:
+            produce_signal(wired, market_data, lookback=10)
+        finally:
+            wired.sensor.predict = original_predict  # type: ignore[method-assign]
+
+        assert captured['x_test_shape'][0] == 10
+
+    def test_lookback_signal_carries_last_row(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''Signal values come from the LAST row of the multi-row predict.'''
+
+        wired, market_data = _make_wired_sensor(tmp_path)
+
+        original_predict = wired.sensor.predict
+
+        def _last_marker_predict(data: dict[str, Any]) -> dict[str, Any]:
+            n = data['x_test'].shape[0]
+            preds = np.zeros(n, dtype=np.int64)
+            probs = np.zeros(n, dtype=np.float64)
+            preds[-1] = 1
+            probs[-1] = 0.9
+            return {'_preds': preds, '_probs': probs}
+
+        wired.sensor.predict = _last_marker_predict  # type: ignore[method-assign]
+        try:
+            signal = produce_signal(wired, market_data, lookback=5)
+        finally:
+            wired.sensor.predict = original_predict  # type: ignore[method-assign]
+
+        assert signal.values['_preds'] == 1
+        assert isinstance(signal.values['_preds'], int)
+        assert signal.values['_probs'] == pytest.approx(0.9)
+
+    def test_lookback_zero_raises(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        wired, market_data = _make_wired_sensor(tmp_path)
+        with pytest.raises(ValueError, match='must be >= 1'):
+            produce_signal(wired, market_data, lookback=0)
+
+    def test_lookback_negative_raises(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        wired, market_data = _make_wired_sensor(tmp_path)
+        with pytest.raises(ValueError, match='must be >= 1'):
+            produce_signal(wired, market_data, lookback=-3)
+
+    def test_lookback_non_int_raises(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        wired, market_data = _make_wired_sensor(tmp_path)
+        with pytest.raises(TypeError, match='must be int'):
+            produce_signal(wired, market_data, lookback=1.0)  # type: ignore[arg-type]
+
+    def test_lookback_bool_raises(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''bool subclasses int but is rejected for clarity.'''
+
+        wired, market_data = _make_wired_sensor(tmp_path)
+        with pytest.raises(TypeError, match='must be int'):
+            produce_signal(wired, market_data, lookback=True)  # type: ignore[arg-type]

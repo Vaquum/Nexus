@@ -46,11 +46,7 @@ class CapitalController:
 
     Args:
         capital_state: Mutable capital state to guard.
-        max_allocation_per_trade_pct: Maximum fraction of `capital_pool`
-            a single order may consume. Defaults to
-            `MAX_ALLOCATION_PER_TRADE_PCT`. Operators that run higher-Kelly
-            strategies override this at construction; the default
-            preserves prior behaviour bit-for-bit.
+        max_allocation_per_trade_pct: Cap on `order_notional / capital_pool`. Defaults to `MAX_ALLOCATION_PER_TRADE_PCT`.
     '''
 
     def __init__(

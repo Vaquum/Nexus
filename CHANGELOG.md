@@ -407,3 +407,9 @@
 
 - Add `max_allocation_per_trade_pct: Decimal` keyword-only argument to [`CapitalController.__init__`](nexus/core/capital_controller/capital_controller.py) — defaults to module constant `MAX_ALLOCATION_PER_TRADE_PCT` (`Decimal('0.15')`) so prior callers are unchanged. The per-trade allocation gate at `check_and_reserve` now reads the instance attribute, letting operators with higher-Kelly strategies raise the cap at construction without forking the controller. Constructor validates the kwarg is a finite, positive `Decimal` (rejects non-`Decimal`, non-finite `NaN` / `±Infinity`, zero, and negative values)
 - Add ten tests in [`test_capital_controller.py`](tests/test_capital_controller.py) under `TestMaxAllocationPerTradePctOverride` covering default-matches-constant, higher-override-admits, lower-override-denies, denial-reason-carries-override, non-Decimal-raises, zero-raises, negative-raises, NaN-raises, Infinity-raises, negative-Infinity-raises
+
+## v0.36.0 on 1st of May, 2026
+
+- Add `lookback: int = 1` keyword-only argument to [`produce_signal`](nexus/strategy/signal_producer.py) — default 1 preserves prior `tail(1)` behaviour bit-for-bit; `lookback=N` feeds the last N prepared rows into `sensor.predict`. Caller-side validation raises `TypeError` on non-int / `bool` and `ValueError` on values < 1
+- Fix dtype preservation in [`_extract_values`](nexus/strategy/signal_producer.py) — multi-element-array branch previously cast `val[-1]` to `float` unconditionally, demoting `_preds` from `int` to `float` for arrays of length > 1. Now the last element's dtype is preserved regardless of array length, and zero-length arrays are skipped instead of indexing into them
+- Add `TestLookback` class (7 tests) and three `TestExtractValues` tests in [`test_signal_producer.py`](tests/test_signal_producer.py); update existing `test_multi_element_array_takes_last` to assert int dtype

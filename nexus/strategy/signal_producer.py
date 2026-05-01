@@ -14,20 +14,34 @@ from nexus.strategy.signal import Signal
 __all__ = ['produce_signal']
 
 
-def produce_signal(wired: WiredSensor, market_data: pl.DataFrame) -> Signal:
+def produce_signal(
+    wired: WiredSensor,
+    market_data: pl.DataFrame,
+    *,
+    lookback: int = 1,
+) -> Signal:
     '''Run feature preparation and predict to produce a Signal.
 
     Args:
         wired: Trained Sensor with limen_manifest and round_params.
         market_data: Rolling DataFrame of market bars.
+        lookback: Trailing prepared rows fed to sensor.predict. Default 1.
 
     Returns:
         Signal with predict output as values.
 
     Raises:
-        ValueError: If market_data is empty or x_train is missing.
+        TypeError: If lookback is not int.
+        ValueError: If market_data is empty, x_train is missing, or lookback < 1.
         Exception: Arbitrary exceptions from Limen prepare_data or predict.
     '''
+
+    if not isinstance(lookback, int) or isinstance(lookback, bool):
+        msg = f'lookback must be int, got {type(lookback).__name__}'
+        raise TypeError(msg)
+    if lookback < 1:
+        msg = f'lookback must be >= 1, got {lookback}'
+        raise ValueError(msg)
 
     if market_data.is_empty():
         msg = f'market_data is empty for sensor {wired.sensor_id}'
@@ -44,9 +58,9 @@ def produce_signal(wired: WiredSensor, market_data: pl.DataFrame) -> Signal:
         msg = f'prepare_data returned no x_train for sensor {wired.sensor_id}'
         raise ValueError(msg)
 
-    last_row = x_train.tail(1).to_numpy()
+    tail_rows = x_train.tail(lookback).to_numpy()
 
-    result = wired.sensor.predict({'x_test': last_row})
+    result = wired.sensor.predict({'x_test': tail_rows})
 
     values = _extract_values(result)
 
@@ -61,7 +75,8 @@ def _extract_values(result: dict[str, Any]) -> dict[str, Any]:
     '''Convert predict output to Signal-compatible values dict.
 
     Extracts scalar values from numpy arrays. Skips private keys
-    that are not signal values.
+    that are not signal values. Multi-element arrays use the last
+    element with dtype preserved.
     '''
 
     values: dict[str, Any] = {}
@@ -71,11 +86,10 @@ def _extract_values(result: dict[str, Any]) -> dict[str, Any]:
             continue
 
         if isinstance(val, np.ndarray):
-            if val.size == 1:
-                scalar = val.item()
-                values[key] = int(scalar) if isinstance(scalar, (np.integer, int)) else float(scalar)
-            else:
-                values[key] = float(val[-1])
+            if val.size == 0:
+                continue
+            last = val.item() if val.size == 1 else val[-1]
+            values[key] = int(last) if isinstance(last, (np.integer, int)) else float(last)
         elif isinstance(val, np.generic):
             values[key] = int(val) if isinstance(val, np.integer) else float(val)
         elif isinstance(val, (int, float)):
