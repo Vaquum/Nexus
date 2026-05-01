@@ -601,3 +601,199 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 **When to fix**: When Praxis TD-030 is addressed (fee_rate flips non-zero), OR when a deployment needs strict realized-PnL accounting.
 **Migration**: Update `_reduce_position` to subtract `outcome.actual_fees` from `realized_pnl`, OR add a `realized_fees` ledger per the existing `order_exit` docstring suggestion.
+
+
+---
+
+## TD-052: `state_store.recover()` does not re-derive `strategy_realized_pnl` / `cumulative_realized_pnl`
+
+**Origin**: Round-17 Codex-supervised audit (R17-C / R17-D)
+**Severity**: Medium (paper-trade blocker per FINAL-TD-01; permanent across reboots once it triggers)
+**Module**: `nexus/infrastructure/state_store.py:142-159` (re-derives only `rolling_loss_*`); `nexus/infrastructure/praxis_connector/outcome_processor.py:182-190` (write order); `nexus/core/domain/risk_state.py:186-190, 192-219, 221-229` (derivative chain); `nexus/startup/shutdown_sequencer.py:730-731` (shutdown-EXIT call site without follow-up `append_mutation`)
+
+`state_store.recover()` re-derives `rolling_loss_*` from STRATEGY_EVENT but does NOT re-derive `strategy_realized_pnl` / `cumulative_realized_pnl` / drawdown derivatives. On a crash between `append_event` and `append_mutation`, per-strategy realized PnL is permanently understated and inherited by all subsequent fills — drawdown gates fire LATER than they should.
+
+**When to fix**: Co-land with FINAL-MAJOR-04 (WAL append atomicity) and FINAL-MAJOR-10 (recovery / risk stale window) — all share the atomic-WAL-append primitive that closes the crash window.
+**Migration**: Extend `derive_rolling_losses` to also accumulate signed `realized_pnl` per strategy; have `recover()` write `strategy_realized_pnl[sid] = derived_sum[sid]` and call `update_cumulative_realized_pnl`.
+
+---
+
+## TD-053: `derive_rolling_losses` has no `outcome_id` deduplication
+
+**Origin**: Round-17 Codex-supervised audit (R16-N TD-NG carried forward as FINAL-TD-02)
+**Severity**: Medium (paper-trade blocker per FINAL-TD-02; dual of TD-052)
+**Module**: `nexus/infrastructure/loss_derivation.py:66-89` (no dedup); `nexus/infrastructure/praxis_connector/outcome_processor.py:181-187` (event-write site); cross-repo: `praxis/outcome_translator.py:222-225` (Praxis-side dedup with FIFO eviction at 10000 entries)
+
+A Praxis re-delivery of a terminal outcome that was already emitted pre-crash would result in duplicate STRATEGY_EVENTs, and `derive_rolling_losses` would double-count them — denying real ENTERs by inflating the rolling-loss windows.
+
+**When to fix**: Co-land with FINAL-MAJOR-04 (WAL append atomicity).
+**Migration**: Add `seen.add(event.outcome_id)` filter inside `derive_rolling_losses`; on duplicate, log WARN and skip the increment.
+
+---
+
+## TD-054: `OrderContext.is_exit = not is_entry` partition is unsafe for MODIFY / CANCEL
+
+**Origin**: Round-17 Codex-supervised audit (R15 MAJOR-D + R16-races TD-009 carried forward as FINAL-TD-03)
+**Severity**: Low (latent — bounded today by `_build_validation_context` returning None for MODIFY)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:204-205, 229-236`; `nexus/infrastructure/praxis_connector/order_context.py:108-114`; cross-repo: `praxis/launcher.py:1574-1581, 478-486` (current MODIFY rejection); `praxis/launcher.py:734-744` (`_build_order_context` discriminant)
+
+`_handle_reject` / `_handle_cancel` branch on `context.is_exit` and call `_clear_pending_exit`. Any future MODIFY context (today a dead branch via `_build_validation_context` early-return) would silently decrement an unrelated EXIT's `pending_exit`. `_clear_pending_exit`'s clamp-to-zero hides the decrement when `pending_exit` is small or zero.
+
+**When to fix**: Before any code path emits MODIFY or any non-ENTER, non-EXIT action (e.g. AMEND, CANCEL_ORDER). MMVP scope does not require it.
+**Migration**: Add an explicit `action_type` discriminant on `OrderContext` so MODIFY does not fall into the EXIT branch; also makes `_clear_pending_exit`'s silent clamp explicit.
+
+---
+
+## TD-055: `CapitalController._orders` not WAL-persisted; mid-boot outcome can hit INVARIANT_BREACH
+
+**Origin**: Round-17 Codex-supervised audit (R15 TD-002 carried forward as FINAL-TD-04)
+**Severity**: Low (Praxis-truth wins on next `pull_positions`; OK at MMVP scope)
+**Module**: `nexus/core/capital_controller/capital_controller.py:64-83, 111-116`; `nexus/infrastructure/wal_codec.py` (no codec for `_orders`)
+
+`CapitalController._orders` is in-memory only. After a crash mid-run with in-flight orders, an outcome arriving in the brief boot startup window between `_reconcile_capital` finishing and `outcome_loop.start()` being fully wired can hit `INVARIANT_BREACH` because the `_orders` skeleton is empty.
+
+**When to fix**: Before long-running deployments without rapid Praxis pull-positions cadence, OR when a boot-window incident is observed.
+**Migration**: Boot-time replay of `CommandAccepted` events from spine to rebuild `_orders` skeleton; substantial work with low expected value at MMVP.
+
+---
+
+## TD-056: Rolling-loss enforced at instance level not per-strategy
+
+**Origin**: Round-17 Codex-supervised audit (R15 TD-004 carried forward as FINAL-TD-05)
+**Severity**: Low (operator-feature gap, not defect)
+**Module**: `nexus/core/validator/risk_stage.py:124-141`; `nexus/core/domain/risk_state.py:168-184`
+
+`validate_risk_stage` reads aggregate `RiskCheckMetrics`. Rolling-loss limits are enforced at the instance level, not per-strategy, even though `StrategyRiskState` per-strategy fields exist and `_update_strategy_risk_state` writes to them. A strategy that has never traded gets blocked when a sibling strategy hits the rolling-loss limit.
+
+**When to fix**: When operator wants per-strategy isolation; conservative-failure-mode (over-deny rather than under-deny) acceptable at MMVP.
+**Migration**: Add a per-strategy `risk_stage` variant; gate it behind a config flag that defaults to instance-level for MMVP.
+
+---
+
+## TD-057: `_build_exit_context` TOCTOU on `state.positions`
+
+**Origin**: Round-17 Codex-supervised audit (R16-races TD-008 carried forward as FINAL-TD-06)
+**Severity**: Low (closed transitively by FINAL-MAJOR-02's `state_lock` rollout)
+**Module**: `nexus/core/validator/intake_stage.py` (verify `_build_exit_context` call site); `nexus/infrastructure/praxis_connector/outcome_processor.py:443-449` (concurrent `_reduce_position` `del`)
+
+`_build_exit_context` checks `if trade_id in state.positions` then reads `position = state.positions[trade_id]` without `positions_lock`. Concurrent `_reduce_position` `del state.positions[trade_id]` between the two reads raises `KeyError`; the action is dropped at the validator layer.
+
+**When to fix**: Closed by FINAL-MAJOR-02 — the `state_lock` rollout covers `state.positions` reads. No standalone fix required.
+**Migration**: N/A — transitive close.
+
+---
+
+## TD-058: `ShutdownSequencer._halt_state_mode` writes `state.mode` without `HealthLoop._lock`
+
+**Origin**: Round-17 Codex-supervised audit (R17-A TD-053 carried forward as FINAL-TD-07)
+**Severity**: Low (closed transitively by FINAL-MAJOR-02's `state_lock`)
+**Module**: `nexus/startup/shutdown_sequencer.py:189-208`; `nexus/core/health_loop.py:160-172`
+
+`ShutdownSequencer._halt_state_mode` writes `state.mode = ModeState(...)` on the shutdown thread without `HealthLoop._lock`. If a HealthLoop tick is mid-flight at `health_loop.py:160` (after `_lock` acquired, just before the write), the LAST writer wins and HALTED can be overwritten. PT-FIX-42's `_running` re-check narrows but does not close the in-flight-tick race.
+
+**When to fix**: Closed by FINAL-MAJOR-02 — the `state_lock` rollout covers `state.mode`. No standalone fix required.
+**Migration**: N/A — transitive close.
+
+---
+
+## TD-059: `WriteAheadLog.truncate_keeping_events` rewrites in-place without temp+rename
+
+**Origin**: Round-17 Codex-supervised audit (R17-D TD-PR-B carried forward as FINAL-TD-08)
+**Severity**: Low (durability hole; NOT corruption — `_find_valid_end` + CRC are robust)
+**Module**: `nexus/infrastructure/wal.py:294-303`; `nexus/infrastructure/snapshot.py:46-51` (snapshot already uses tmp+rename — this should mirror)
+
+A crash mid-rewrite loses preserved STRATEGY_EVENTs, leaving rolling losses under-counted (over-permissive on rolling-loss gates) until manual repair. Truncate window is bounded (tight loop, completes in milliseconds for typical event counts). Failure direction is over-permissive on rolling-loss gates rather than over-restrictive.
+
+**When to fix**: Self-contained one-line-ish fix; ship at convenience.
+**Migration**: Mirror `save_snapshot`'s pattern — write to `wal.bin.tmp`, fsync, atomic rename.
+
+---
+
+## TD-060: `state.capital.fee_reserve` never re-derived from any source on boot
+
+**Origin**: Round-17 Codex-supervised audit (R17-D TD-PR-C carried forward as FINAL-TD-09)
+**Severity**: Low (testnet `fee_rate=0` so unobserved at MMVP today; bounded mainnet failure mode)
+**Module**: `nexus/infrastructure/wal_codec.py:124, 149`; `nexus/startup/sequencer.py:358-491`; `nexus/core/capital_controller/capital_controller.py:117-202, 812-815`; `nexus/infrastructure/state_store.py:112-161`
+
+`state.capital.fee_reserve` is persisted but never re-derived from any source on boot. If a STATE_MUTATION is lost (TD-052 / FINAL-MAJOR-04 windows), `fee_reserve` is durably understated, increasing the chance of `EXPECTED_MISS` denials on future fee-deficit fills.
+
+**When to fix**: When monetary conservation becomes load-bearing (mainnet).
+**Migration**: Same pattern as TD-052 — extend STRATEGY_EVENT to carry the contributing fee delta; re-derive on recovery.
+
+---
+
+## TD-061: `Position.entry_price` / `avg_cost_basis` not aligned with venue tick / lot step
+
+**Origin**: Round-17 Codex-supervised audit (R16-N TD-NB carried forward as FINAL-TD-10)
+**Severity**: Low (none of the targeted Binance USDT pairs has steps coarser than 6 decimals)
+**Module**: `nexus/core/domain/position.py:50-55`; `nexus/strategy/action_submit.py:243-246`
+
+`Position.entry_price` and `avg_cost_basis` are stored at Decimal default precision (28 digits), not aligned with venue `tick_size` / `lot_size_step_size`. Persisted values can carry more precision than the venue accepts on the next EXIT submission.
+
+**When to fix**: Before adding any low-precision symbol; same fix root as FINAL-MAJOR-06 / FINAL-MAJOR-09 (quantize at venue lot-step granularity).
+**Migration**: Quantize at write time using the venue's `lot_size_step_size`.
+
+---
+
+## TD-062: `make_duplicate_order_hook` casts `duplicate_window_ms / 1000` to `float`
+
+**Origin**: Round-17 Codex-supervised audit (R16-N TD-NC carried forward as FINAL-TD-11)
+**Severity**: Low (at-boundary fires fewer than 1-in-2^52)
+**Module**: `nexus/core/validator/intake_stage.py:137, 178`
+
+The cast to `float` makes the comparison at line 178 flip near boundaries by a float ULP. Operational impact bounded; one-line fix.
+
+**When to fix**: At convenience.
+**Migration**: Replace `float` with `Decimal(duplicate_window_ms) / Decimal(1000)` and keep the comparison in Decimal.
+
+---
+
+## TD-063: `check_and_reserve` divides `order_notional / capital_pool` without `capital_pool == 0` guard
+
+**Origin**: Round-17 Codex-supervised audit (R16-N TD-NF carried forward as FINAL-TD-12)
+**Severity**: Low (today unreachable; `CapitalState.__post_init__` rejects `capital_pool <= 0` but the field is mutable)
+**Module**: `nexus/core/capital_controller/capital_controller.py:296-298, 325`
+
+`check_and_reserve` divides `order_notional / capital_pool` for `allocation_pct` without guarding `capital_pool == 0`. Today unreachable because `CapitalState.__post_init__` rejects `capital_pool <= 0`, but the field is mutable.
+
+**When to fix**: Before adding any code path that mutates `capital_pool` post-init.
+**Migration**: Freeze the field (frozen=True dataclass), OR re-validate on mutation.
+
+---
+
+## TD-064: `_compute_exit_cost_basis` silently skips on `avg_cost_basis == 0`
+
+**Origin**: Round-17 Codex-supervised audit (R17-C TD-NM-C + R17-B TD-LC-A carried forward as FINAL-TD-13)
+**Severity**: Low (today reachable only via the `_ensure_entry_position` placeholder, which is gated by the `size==0` EXIT denial at intake_stage.py:255-261; healed at next boot's `_reconcile_capital`)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:319, 391-453`; `nexus/core/domain/position.py:55, 86-88`; `nexus/startup/shutdown_sequencer.py:673-738`; cross-repo: `praxis/launcher.py:679-686` (placeholder source of zero-acb)
+
+`_compute_exit_cost_basis`'s strict equality `position.avg_cost_basis == _ZERO` check silently SKIPS the capital decrement on a position whose `avg_cost_basis` is exactly zero, while `_reduce_position` proceeds to mutate position state and write STRATEGY_EVENT. Capital aggregate stays inflated until next boot's `_reconcile_capital` heals it.
+
+**When to fix**: Before any code path emits an EXIT against a zero-acb placeholder (defensive).
+**Migration**: Replace silent skip with explicit fallback (`avg_cost_basis = entry_price`) or raise a hard error so the bad state is visible.
+
+---
+
+## TD-065: Imported SELL position would write wrong-signed `realized_pnl` (latent / non-MMVP)
+
+**Origin**: Round-17 Codex-supervised audit (R16-N MAJOR-NB downgraded per R17-C addendum §4)
+**Severity**: Low (latent / non-MMVP under current spot-only Praxis `pull_positions` behaviour)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:417-418`; `nexus/core/validator/intake_stage.py:222-229`; `nexus/startup/sequencer.py:293-301, 344-354`
+
+`_reduce_position` honors `OrderSide.SELL` with sign-flipped P&L, but the validator only gates SUBMITTED ACTIONS, not IMPORTED positions. Combined with `_import_praxis_position` accepting any side from Praxis, an imported short position would write WRONG-SIGNED `realized_pnl` to `strategy_realized_pnl`, `cumulative_realized_pnl`, and the rolling-loss windows.
+
+**When to fix**: BEFORE Praxis can import SELL positions from any configured venue / account mode (margin, futures, or any future spot venue path that surfaces short positions). Re-elevate to MAJOR at that point.
+**Migration**: Gate `_resolve_imported_position_fields` on `side=BUY` for spot deployments AND tighten the EXIT validator to additionally require `position.side == OrderSide.BUY`.
+
+---
+
+## TD-066: `_dispatch_shutdown` reads Position references after `positions_lock` release
+
+**Origin**: Round-17 Codex-supervised audit (R15 TD-006 carried forward as FINAL-TD-16)
+**Severity**: Low (closed transitively by FINAL-MAJOR-02's `state_lock`)
+**Module**: `nexus/startup/shutdown_sequencer.py:270-301`
+
+`_dispatch_shutdown` reads Position references after `positions_lock` release. `Position` is mutable; a still-alive OutcomeLoop after timed-out join can write `size` / `entry_price` / `avg_cost_basis` / `pending_exit` mid-`on_shutdown`. Reachability requires both `_stop_outcome_loop` join timeout AND a strategy whose `on_shutdown` reads multi-field Position data.
+
+**When to fix**: Closed by FINAL-MAJOR-02 — the `state_lock` rollout covers `Position` field reads. No standalone fix required.
+**Migration**: N/A — transitive close.
