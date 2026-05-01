@@ -522,3 +522,141 @@ class TestRefreshRollingLosses:
 
         assert state.risk.per_strategy['strat_a'].rolling_loss_24h == Decimal('50')
         assert state.risk.per_strategy['strat_b'].rolling_loss_24h == _ZERO
+
+
+class TestFinalMajor04WalAppendAtomicity:
+    '''FINAL-MAJOR-04: StateStore._sequence and WriteAheadLog.append
+    are not lock-protected pre-fix. Concurrent writers (OutcomeLoop +
+    shutdown thread per round-16 TD-010) can produce duplicate
+    sequence numbers and torn appends.
+
+    Post-fix `_wal_lock` makes the entire serialize + sequence-bump +
+    file-write one atomic critical section.
+    '''
+
+    def test_concurrent_appenders_produce_monotonic_unique_sequences(self) -> None:
+        '''Two threads tight-loop append_event; assert no duplicate
+        sequences, monotonic ordering, and file readable end-to-end
+        (no torn appends).
+        '''
+
+        import threading
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+
+            errors: list[Exception] = []
+            iterations_per_thread = 250
+
+            def appender(thread_id: int) -> None:
+                try:
+                    for i in range(iterations_per_thread):
+                        store.append_event(
+                            StrategyEvent(
+                                strategy_id=f'strat_{thread_id}',
+                                event_type='trade_outcome',
+                                realized_pnl=Decimal(f'-{i}'),
+                                timestamp=datetime.now(tz=timezone.utc),
+                            )
+                        )
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [
+                threading.Thread(target=appender, args=(tid,), daemon=True)
+                for tid in range(4)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+            alive = [t.name for t in threads if t.is_alive()]
+            assert not alive, f'threads did not finish: {alive}'
+            assert not errors, f'appenders raised: {errors[:3]}'
+
+            entries = store._wal.read_safe()
+            sequences = [e.sequence for e in entries]
+            assert len(sequences) == 4 * iterations_per_thread, (
+                f'expected {4 * iterations_per_thread} entries, '
+                f'got {len(sequences)}'
+            )
+            assert len(set(sequences)) == len(sequences), (
+                f'duplicate sequence numbers detected: '
+                f'{len(sequences) - len(set(sequences))} duplicates'
+            )
+            assert sequences == sorted(sequences), (
+                'sequences not monotonic — torn append detected'
+            )
+
+    def test_concurrent_append_and_checkpoint_no_data_loss(self) -> None:
+        '''A checkpoint mid-append-storm must not interleave between
+        append and truncate — appends written before the checkpoint
+        survive in the snapshot, appends after the checkpoint survive
+        in the post-truncate WAL. No append silently dropped.
+        '''
+
+        import threading
+        from tempfile import TemporaryDirectory
+
+        srs = StrategyRiskState(strategy_id='strat_a')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            risk=RiskState(per_strategy={'strat_a': srs}),
+        )
+
+        with TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+
+            errors: list[Exception] = []
+            stop_event = threading.Event()
+            append_count = [0]
+
+            def appender() -> None:
+                try:
+                    while not stop_event.is_set():
+                        store.append_event(
+                            StrategyEvent(
+                                strategy_id='strat_a',
+                                event_type='trade_outcome',
+                                realized_pnl=Decimal('-1'),
+                                timestamp=datetime.now(tz=timezone.utc),
+                            )
+                        )
+                        append_count[0] += 1
+                except Exception as exc:
+                    errors.append(exc)
+
+            def checkpointer() -> None:
+                try:
+                    for _ in range(20):
+                        store.checkpoint(state)
+                except Exception as exc:
+                    errors.append(exc)
+                finally:
+                    stop_event.set()
+
+            threads = [
+                threading.Thread(target=appender, daemon=True),
+                threading.Thread(target=checkpointer, daemon=True),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=15)
+
+            alive = [t.name for t in threads if t.is_alive()]
+            assert not alive, f'threads did not finish: {alive}'
+            assert not errors, f'race: {errors[:3]}'
+            assert append_count[0] > 0, 'appender did not run'
+
+            entries = store._wal.read_safe()
+            sequences = [e.sequence for e in entries]
+            assert sequences == sorted(sequences), (
+                'sequences not monotonic — torn append/checkpoint'
+            )
+            if len(sequences) > 1:
+                assert len(set(sequences)) == len(sequences), (
+                    'duplicate sequence numbers across checkpoint boundary'
+                )

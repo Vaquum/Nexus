@@ -14,6 +14,7 @@ Directory layout:
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -59,6 +60,7 @@ class StateStore:
         self._wal.validate_magic()
         existing = self._wal.read_safe()
         self._sequence = existing[-1].sequence + 1 if existing else 0
+        self._wal_lock = threading.Lock()
 
     @property
     def base_path(self) -> Path:
@@ -69,45 +71,69 @@ class StateStore:
     def checkpoint(self, state: InstanceState) -> None:
         '''Save a full snapshot and truncate the WAL.
 
+        FINAL-MAJOR-04: holds `_wal_lock` so a concurrent
+        `append_mutation` / `append_event` from the OutcomeLoop or
+        shutdown thread cannot interleave between the snapshot write
+        and the WAL truncate, which would either persist appends that
+        the truncate then drops (data loss) or truncate appends the
+        snapshot did not capture.
+
         Args:
             state: The current instance state to persist.
         '''
 
-        save_snapshot(state, self._snapshot_path, self._wal)
+        with self._wal_lock:
+            save_snapshot(state, self._snapshot_path, self._wal)
 
     def append_mutation(self, state: InstanceState) -> None:
         '''Append a full state entry to the WAL.
+
+        FINAL-MAJOR-04: `_sequence += 1` is a 2-bytecode RMW and the
+        WAL append's `_find_valid_end + truncate + write + fsync`
+        sequence is a TOCTOU on file size. Concurrent appenders from
+        OutcomeLoop and the shutdown thread (round-16 TD-010) can
+        produce duplicate `_sequence` records and torn appends. The
+        lock makes the entire serialize + sequence-bump + file-write
+        one atomic critical section. Innermost lock in the chain
+        (`command_registry_lock -> positions_lock -> CapitalController._lock
+        -> wal_lock`) — never holds and acquires another lock.
 
         Args:
             state: The current instance state after mutation.
         '''
 
-        payload = serialize_state(state)
-        entry = WALEntry(
-            sequence=self._sequence,
-            timestamp=datetime.now(tz=timezone.utc),
-            entry_type=WALEntryType.STATE_MUTATION,
-            payload=payload,
-        )
-        self._wal.append(entry)
-        self._sequence += 1
+        with self._wal_lock:
+            payload = serialize_state(state)
+            entry = WALEntry(
+                sequence=self._sequence,
+                timestamp=datetime.now(tz=timezone.utc),
+                entry_type=WALEntryType.STATE_MUTATION,
+                payload=payload,
+            )
+            self._wal.append(entry)
+            self._sequence += 1
 
     def append_event(self, event: StrategyEvent) -> None:
         '''Append a strategy event entry to the WAL.
+
+        FINAL-MAJOR-04: same atomicity guarantee as `append_mutation`
+        — `_sequence += 1` and the WAL file-write are one critical
+        section under `_wal_lock`.
 
         Args:
             event: The strategy event to persist.
         '''
 
-        payload = serialize_event(event)
-        entry = WALEntry(
-            sequence=self._sequence,
-            timestamp=datetime.now(tz=timezone.utc),
-            entry_type=WALEntryType.STRATEGY_EVENT,
-            payload=payload,
-        )
-        self._wal.append(entry)
-        self._sequence += 1
+        with self._wal_lock:
+            payload = serialize_event(event)
+            entry = WALEntry(
+                sequence=self._sequence,
+                timestamp=datetime.now(tz=timezone.utc),
+                entry_type=WALEntryType.STRATEGY_EVENT,
+                payload=payload,
+            )
+            self._wal.append(entry)
+            self._sequence += 1
 
     def recover(self) -> InstanceState | None:
         '''Recover instance state from snapshot and WAL.
