@@ -607,7 +607,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ## TD-054: `OrderContext.is_exit = not is_entry` partition is unsafe for MODIFY / CANCEL
 
-**Origin**: Round-17 Codex-supervised audit (R15 MAJOR-D + R16-races TD-009 carried forward as FINAL-TD-03)
+**Origin**: Round-17 audit (R15 MAJOR-D + R16-races TD-009 carried forward as FINAL-TD-03)
 **Severity**: Low (latent — bounded today by `_build_validation_context` returning None for MODIFY)
 **Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:204-205, 229-236`; `nexus/infrastructure/praxis_connector/order_context.py:108-114`; cross-repo: `praxis/launcher.py:1574-1581, 478-486` (current MODIFY rejection); `praxis/launcher.py:734-744` (`_build_order_context` discriminant)
 
@@ -620,7 +620,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ## TD-055: `CapitalController._orders` not WAL-persisted; mid-boot outcome can hit INVARIANT_BREACH
 
-**Origin**: Round-17 Codex-supervised audit (R15 TD-002 carried forward as FINAL-TD-04)
+**Origin**: Round-17 audit (R15 TD-002 carried forward as FINAL-TD-04)
 **Severity**: Low (Praxis-truth wins on next `pull_positions`; OK at MMVP scope)
 **Module**: `nexus/core/capital_controller/capital_controller.py:64-83, 111-116`; `nexus/infrastructure/wal_codec.py` (no codec for `_orders`)
 
@@ -633,7 +633,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ## TD-056: Rolling-loss enforced at instance level not per-strategy
 
-**Origin**: Round-17 Codex-supervised audit (R15 TD-004 carried forward as FINAL-TD-05)
+**Origin**: Round-17 audit (R15 TD-004 carried forward as FINAL-TD-05)
 **Severity**: Low (operator-feature gap, not defect)
 **Module**: `nexus/core/validator/risk_stage.py:124-141`; `nexus/core/domain/risk_state.py:168-184`
 
@@ -646,7 +646,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ## TD-057: `_build_exit_context` TOCTOU on `state.positions`
 
-**Origin**: Round-17 Codex-supervised audit (R16-races TD-008 carried forward as FINAL-TD-06)
+**Origin**: Round-17 audit (R16-races TD-008 carried forward as FINAL-TD-06)
 **Severity**: Low (bounded reachability; self-corrects on the next tick)
 **Module**: `nexus/core/validator/intake_stage.py` (verify `_build_exit_context` call site); `nexus/infrastructure/praxis_connector/outcome_processor.py:443-449` (concurrent `_reduce_position` `del`)
 
@@ -659,7 +659,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ## TD-058: `ShutdownSequencer._halt_state_mode` writes `state.mode` without `HealthLoop._lock`
 
-**Origin**: Round-17 Codex-supervised audit (R17-A TD-053 carried forward as FINAL-TD-07)
+**Origin**: Round-17 audit (R17-A TD-053 carried forward as FINAL-TD-07)
 **Severity**: Low (in-flight-tick race; PT-FIX-42 narrows the window)
 **Module**: `nexus/startup/shutdown_sequencer.py:189-208`; `nexus/core/health_loop.py:160-172`
 
@@ -672,7 +672,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ## TD-059: `WriteAheadLog.truncate_keeping_events` rewrites in-place without temp+rename
 
-**Origin**: Round-17 Codex-supervised audit (R17-D TD-PR-B carried forward as FINAL-TD-08)
+**Origin**: Round-17 audit (R17-D TD-PR-B carried forward as FINAL-TD-08)
 **Severity**: Low (durability hole; NOT corruption — `_find_valid_end` + CRC are robust)
 **Module**: `nexus/infrastructure/wal.py:294-303`; `nexus/infrastructure/snapshot.py:46-51` (snapshot already uses tmp+rename — this should mirror)
 
@@ -685,7 +685,7 @@ A crash mid-rewrite loses preserved STRATEGY_EVENTs, leaving rolling losses unde
 
 ## TD-060: `state.capital.fee_reserve` never re-derived from any source on boot
 
-**Origin**: Round-17 Codex-supervised audit (R17-D TD-PR-C carried forward as FINAL-TD-09)
+**Origin**: Round-17 audit (R17-D TD-PR-C carried forward as FINAL-TD-09)
 **Severity**: Low (testnet `fee_rate=0` so unobserved at MMVP today; bounded mainnet failure mode)
 **Module**: `nexus/infrastructure/wal_codec.py:124, 149`; `nexus/startup/sequencer.py:358-491`; `nexus/core/capital_controller/capital_controller.py:117-202, 812-815`; `nexus/infrastructure/state_store.py:112-161`
 
@@ -698,7 +698,7 @@ A crash mid-rewrite loses preserved STRATEGY_EVENTs, leaving rolling losses unde
 
 ## TD-061: `Position.entry_price` / `avg_cost_basis` not aligned with venue tick / lot step
 
-**Origin**: Round-17 Codex-supervised audit (R16-N TD-NB carried forward as FINAL-TD-10)
+**Origin**: Round-17 audit (R16-N TD-NB carried forward as FINAL-TD-10)
 **Severity**: Low (none of the targeted Binance USDT pairs has steps coarser than 6 decimals)
 **Module**: `nexus/core/domain/position.py:50-55`; `nexus/strategy/action_submit.py:243-246`
 
@@ -711,7 +711,7 @@ A crash mid-rewrite loses preserved STRATEGY_EVENTs, leaving rolling losses unde
 
 ## TD-062: `make_duplicate_order_hook` casts `duplicate_window_ms / 1000` to `float`
 
-**Origin**: Round-17 Codex-supervised audit (R16-N TD-NC carried forward as FINAL-TD-11)
+**Origin**: Round-17 audit (R16-N TD-NC carried forward as FINAL-TD-11)
 **Severity**: Low (at-boundary fires fewer than 1-in-2^52)
 **Module**: `nexus/core/validator/intake_stage.py:137, 178`
 
@@ -724,7 +724,7 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 ## TD-063: `check_and_reserve` divides `order_notional / capital_pool` without `capital_pool == 0` guard
 
-**Origin**: Round-17 Codex-supervised audit (R16-N TD-NF carried forward as FINAL-TD-12)
+**Origin**: Round-17 audit (R16-N TD-NF carried forward as FINAL-TD-12)
 **Severity**: Low (today unreachable; `CapitalState.__post_init__` rejects `capital_pool <= 0` but the field is mutable)
 **Module**: `nexus/core/capital_controller/capital_controller.py:296-298, 325`
 
@@ -737,7 +737,7 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 ## TD-064: `_compute_exit_cost_basis` silently skips on `avg_cost_basis == 0`
 
-**Origin**: Round-17 Codex-supervised audit (R17-C TD-NM-C + R17-B TD-LC-A carried forward as FINAL-TD-13)
+**Origin**: Round-17 audit (R17-C TD-NM-C + R17-B TD-LC-A carried forward as FINAL-TD-13)
 **Severity**: Low (today reachable only via the `_ensure_entry_position` placeholder, which is gated by the `size==0` EXIT denial at intake_stage.py:255-261; healed at next boot's `_reconcile_capital`)
 **Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:319, 391-453`; `nexus/core/domain/position.py:55, 86-88`; `nexus/startup/shutdown_sequencer.py:673-738`; cross-repo: `praxis/launcher.py:679-686` (placeholder source of zero-acb)
 
@@ -750,7 +750,7 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 ## TD-065: Imported SELL position would write wrong-signed `realized_pnl` (latent / non-MMVP)
 
-**Origin**: Round-17 Codex-supervised audit (R16-N MAJOR-NB downgraded per R17-C addendum §4)
+**Origin**: Round-17 audit (R16-N MAJOR-NB downgraded per R17-C addendum §4)
 **Severity**: Low (latent / non-MMVP under current spot-only Praxis `pull_positions` behaviour)
 **Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:417-418`; `nexus/core/validator/intake_stage.py:222-229`; `nexus/startup/sequencer.py:293-301, 344-354`
 
@@ -763,7 +763,7 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 ## TD-066: `_dispatch_shutdown` reads Position references after `positions_lock` release
 
-**Origin**: Round-17 Codex-supervised audit (R15 TD-006 carried forward as FINAL-TD-16)
+**Origin**: Round-17 audit (R15 TD-006 carried forward as FINAL-TD-16)
 **Severity**: Low (bounded reachability — both join-timeout AND on_shutdown reads multi-field Position data)
 **Module**: `nexus/startup/shutdown_sequencer.py:270-301`
 
