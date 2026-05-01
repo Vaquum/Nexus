@@ -40,35 +40,23 @@ DEFAULT_TTL_SECONDS = 60
 _ZERO = Decimal(0)
 _ONE_HUNDRED = Decimal('100')
 
-# FINAL-MAJOR-06: absolute tolerance for the order_exit boundary check.
-# `_compute_exit_cost_basis` round-trips `(N/q) * q` and can overshoot
-# `position_notional` by sub-ULP at default Decimal precision (28 digits;
-# verified `(q=3, N=5)` produces 5.000...001 vs 5). The strict `>` check
-# would silently fail real EXIT FILLs with INVARIANT_BREACH, stranding
-# capital aggregates until the next reboot's _reconcile_capital. This
-# tolerance (1E-12 quote currency, ~10^15x larger than the actual ULP
-# drift but ~10^12x smaller than a satoshi-scale meaningful amount)
-# absorbs the rounding noise without weakening the invariant against
-# real overflows. The actual aggregate decrement is clamped to the
-# available amount so aggregates never go negative.
-_EXIT_BOUNDARY_TOLERANCE = Decimal('1E-12')
-
-# FINAL-MAJOR-09: absolute tolerance for the order_fill fee-deficit
-# check. `proportional_estimated` is computed via the
-# `pre_fill_remaining - updated.remaining_total` round trip on the
-# `(remaining * estimated_fees / notional)` formula; on awkward
-# notional/fee ratios (e.g. 7-unit notional with 1-unit fee) the
-# round-trip subtraction drops one sig-digit of precision relative
-# to a direct `actual_fees` computed via `1/7` at default precision,
-# so `fee_delta = proportional - actual_fees` is sub-ULP negative
-# even when the venue's actual fee equals the analytical estimate.
-# Pre-fix this deficit accumulated and tripped the strict
-# `abs(fee_delta) > fee_reserve` check after a few partials — fills
-# silently rejected with EXPECTED_MISS. The tolerance absorbs the
-# rounding noise; the existing fee_reserve check still rejects real
-# fee deficits (>1E-12 quote) just like M06 only absorbs sub-ULP
-# overshoots on the exit boundary.
-_FEE_DEFICIT_TOLERANCE = Decimal('1E-12')
+# Sub-ULP tolerance shared by the order_exit boundary check
+# (FINAL-MAJOR-06) and the order_fill fee-deficit check
+# (FINAL-MAJOR-09). Both checks compare values produced via
+# round-trips through the `(remainder * estimated_fees) / notional`
+# formula or `_compute_exit_cost_basis`'s `(N/q) * q` shape. On
+# awkward inputs (notional/size ratios that don't terminate in
+# Decimal) the round-trip drops one sig-digit relative to the
+# analytical answer; the resulting drift is below 1E-12 quote
+# currency at default Decimal precision (28 sig digits) and any
+# realistic paper-trade scale.
+#
+# Scale assumption: the threshold is absolute (quote currency).
+# At paper-trade dollar scale (10^0..10^4) it is well below
+# any meaningful money increment; at extreme scales (sub-cent
+# trades or notional > 10^15) it would need to become relative.
+# Tracked as a TD entry; not load-bearing for current scope.
+_SUB_ULP_TOLERANCE = Decimal('1E-12')
 
 
 class CapitalController:
@@ -756,14 +744,14 @@ class CapitalController:
             position_overshoot = (
                 cost_basis_released - self._state.position_notional
             )
-            if position_overshoot > _EXIT_BOUNDARY_TOLERANCE:
+            if position_overshoot > _SUB_ULP_TOLERANCE:
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'cost_basis_released {cost_basis_released} exceeds '
                         f'position_notional {self._state.position_notional} '
                         f'by {position_overshoot} (tolerance '
-                        f'{_EXIT_BOUNDARY_TOLERANCE})'
+                        f'{_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
@@ -772,14 +760,14 @@ class CapitalController:
                 strategy_id, _ZERO,
             )
             strategy_overshoot = cost_basis_released - strategy_deployed
-            if strategy_overshoot > _EXIT_BOUNDARY_TOLERANCE:
+            if strategy_overshoot > _SUB_ULP_TOLERANCE:
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'cost_basis_released {cost_basis_released} exceeds '
                         f'per_strategy_deployed[{strategy_id}] {strategy_deployed} '
                         f'by {strategy_overshoot} (tolerance '
-                        f'{_EXIT_BOUNDARY_TOLERANCE})'
+                        f'{_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
@@ -882,14 +870,14 @@ class CapitalController:
 
             if (
                 fee_delta < _ZERO
-                and abs(fee_delta) > self._state.fee_reserve + _FEE_DEFICIT_TOLERANCE
+                and abs(fee_delta) > self._state.fee_reserve + _SUB_ULP_TOLERANCE
             ):
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'order {order_id!r} fee deficit {abs(fee_delta)} '
                         f'exceeds fee_reserve {self._state.fee_reserve} '
-                        f'(tolerance {_FEE_DEFICIT_TOLERANCE})'
+                        f'(tolerance {_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.EXPECTED_MISS,
                 )

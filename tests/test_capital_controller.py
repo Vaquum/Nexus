@@ -1799,23 +1799,27 @@ class TestFinalMajor06ExitBoundaryTolerance:
         assert ctrl._state.position_notional == position_notional
         assert ctrl._state.per_strategy_deployed['strat_a'] == position_notional
 
-    def test_sweep_documented_triggering_pairs_all_succeed(self) -> None:
+    def test_sweep_full_triggering_grid_all_succeed(self) -> None:
         '''R17-C addendum §1 documented 155 distinct triggering
         integer pairs in `notional in [1..200] x size in [2..20]`.
-        Sample a representative cross-section and assert all succeed
-        post-fix. (Full 4000-pair sweep would be slow; sample
-        validates the class.)
+        Sweep the full 200x19 = 3800-pair grid, identify every pair
+        whose `(N/q) * q` overshoots `N`, and assert each one's
+        `order_exit` succeeds post-fix. Pre-fix every triggering pair
+        would return INVARIANT_BREACH.
         '''
 
         triggering_pairs = [
-            (Decimal('5'), Decimal('3')),
-            (Decimal('7'), Decimal('3')),
-            (Decimal('11'), Decimal('3')),
-            (Decimal('1'), Decimal('6')),
-            (Decimal('1'), Decimal('7')),
-            (Decimal('100'), Decimal('3')),
+            (Decimal(n), Decimal(q))
+            for n in range(1, 201)
+            for q in range(2, 21)
+            if (Decimal(n) / Decimal(q)) * Decimal(q) > Decimal(n)
         ]
+        assert len(triggering_pairs) > 100, (
+            f'sweep should surface >100 triggering pairs at default Decimal '
+            f'precision; got {len(triggering_pairs)}'
+        )
 
+        failures: list[str] = []
         for notional, size in triggering_pairs:
             avg_cost_basis = notional / size
             released = avg_cost_basis * size
@@ -1826,10 +1830,15 @@ class TestFinalMajor06ExitBoundaryTolerance:
 
             result = ctrl.order_exit('strat_a', released)
 
-            assert result.success is True, (
-                f'(N={notional}, q={size}): expected success, got '
-                f'{result.reason}'
-            )
+            if not result.success:
+                failures.append(
+                    f'(N={notional}, q={size}): {result.reason}'
+                )
+
+        assert not failures, (
+            f'{len(failures)} of {len(triggering_pairs)} triggering pairs '
+            f'failed; first 5: {failures[:5]}'
+        )
 
 
 class TestFinalMajor09OrderFillAttributionLockstep:

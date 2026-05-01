@@ -7,6 +7,7 @@ relative to a recovery timestamp.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -23,6 +24,25 @@ _ZERO = Decimal(0)
 _WINDOW_24H = timedelta(hours=24)
 _WINDOW_7D = timedelta(days=7)
 _WINDOW_30D = timedelta(days=30)
+
+
+def _dedup_by_outcome_id(events: Iterable[StrategyEvent]) -> Iterator[StrategyEvent]:
+    '''Yield events with duplicate `outcome_id` values filtered out.
+
+    FINAL-TD-02: a Praxis re-delivery of a terminal outcome that was
+    already emitted pre-crash would otherwise double-count the loss
+    across windows / cumulative PnL. Empty `outcome_id` marks legacy
+    v1-codec events that predate the field; they pass through without
+    dedup (the legacy WAL contract — they can't be uniquely keyed).
+    '''
+
+    seen: set[str] = set()
+    for event in events:
+        if event.outcome_id:
+            if event.outcome_id in seen:
+                continue
+            seen.add(event.outcome_id)
+        yield event
 
 
 @dataclass(frozen=True)
@@ -69,19 +89,8 @@ def derive_rolling_losses(
     cutoff_30d = recovery_time - _WINDOW_30D
 
     accum: dict[str, list[Decimal]] = {}
-    # FINAL-TD-02: dedup by `outcome_id`. A Praxis re-delivery of a
-    # terminal outcome that was already emitted pre-crash would
-    # otherwise double-count the loss across windows. Empty outcome_id
-    # marks legacy v1-codec events that predate this field — those
-    # are NOT deduped (the legacy WAL contract).
-    seen_outcome_ids: set[str] = set()
 
-    for event in events:
-        if event.outcome_id and event.outcome_id in seen_outcome_ids:
-            continue
-        if event.outcome_id:
-            seen_outcome_ids.add(event.outcome_id)
-
+    for event in _dedup_by_outcome_id(events):
         if event.realized_pnl >= _ZERO:
             continue
 
@@ -136,17 +145,8 @@ def derive_strategy_realized_pnl(
     '''
 
     accum: dict[str, Decimal] = {}
-    # FINAL-TD-02: dedup by `outcome_id` — same rationale as
-    # `derive_rolling_losses`. Empty outcome_id marks legacy v1-codec
-    # events; not deduped.
-    seen_outcome_ids: set[str] = set()
 
-    for event in events:
-        if event.outcome_id and event.outcome_id in seen_outcome_ids:
-            continue
-        if event.outcome_id:
-            seen_outcome_ids.add(event.outcome_id)
-
+    for event in _dedup_by_outcome_id(events):
         sid = event.strategy_id
         accum[sid] = accum.get(sid, _ZERO) + event.realized_pnl
 

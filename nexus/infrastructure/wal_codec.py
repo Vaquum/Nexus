@@ -434,6 +434,11 @@ def _decode_event_v1(d: dict[str, Any]) -> StrategyEvent:
     so dedup is impossible for them. The default empty `outcome_id`
     is preserved; `derive_rolling_losses` skips dedup on empty ids.
 
+    Mixed-WAL caveat: a WAL containing both v1 and v2 entries for the
+    same outcome (transition window from before the v2 codec landed)
+    will count the v1 instance unfiltered. Bounded by checkpoint
+    truncation that drops pre-v2 events; tracked as a TD entry.
+
     Args:
         d: Decoded msgpack dict with v1 schema.
 

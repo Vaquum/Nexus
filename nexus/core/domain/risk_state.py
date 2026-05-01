@@ -8,7 +8,7 @@ on every action.
 from __future__ import annotations
 
 import threading
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
@@ -253,11 +253,13 @@ class RiskState:
         self.unrealized_pnl = unrealized_pnl
         self.recompute_drawdown_metrics()
 
-    def lock_cm(self) -> Any:
+    def lock_cm(self) -> AbstractContextManager[Any]:
         '''Return the `lock` attribute as a context manager, or
         `nullcontext()` when no lock is wired (legacy single-threaded
         paths). Use as `with rs.lock_cm(): ...` to coordinate
-        cross-thread access to `per_strategy` and its values.
+        cross-thread access to `per_strategy` and its values. Both
+        return types satisfy `AbstractContextManager` via the
+        `__enter__` / `__exit__` protocol.
         '''
 
         return self.lock if self.lock is not None else nullcontext()

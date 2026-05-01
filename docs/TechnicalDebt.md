@@ -771,3 +771,67 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 
 **When to fix**: When operator-observable mid-shutdown data tear becomes reachable. The audit anticipated FINAL-MAJOR-02 would close this transitively, but M02's `state.risk.lock` is scoped to the risk dict only; `_dispatch_shutdown`'s Position-field reads remain outside any held lock.
 **Migration**: Hold `positions_lock` across the snapshot iteration AND the per-strategy `on_shutdown` callback dispatch (or copy each Position to a frozen snapshot under the lock before releasing).
+
+
+## TD-067: `recover_orphaned_order` ships with no production caller
+
+**Origin**: pr-prep Greybeard pre-PR review (round-17)
+**Severity**: Low (defense-in-depth helper for FINAL-MAJOR-01; planned cross-repo wiring)
+**Module**: `nexus/core/capital_controller/capital_controller.py:957-994`
+
+`CapitalController.recover_orphaned_order(order_id, outcome_type)` was added as a defense-in-depth helper for FINAL-MAJOR-01: when the launcher's `process_outcome` hits the no-OrderContext terminal cleanup branch, the helper releases the orphan order's capital aggregates. The helper is currently unreferenced — the Praxis launcher's terminal-no-context branch (`praxis/launcher.py:1559-1568`) does not call it. Dead code at ship time.
+
+**When to fix**: When the Praxis launcher follow-up wires the helper into `process_outcome`'s terminal-no-context branch (separate cross-repo PR per the round-17 audit issue).
+**Migration**: Praxis-side: in `process_outcome`'s terminal-cleanup block, call `capital_controller.recover_orphaned_order(outcome.command_id, outcome.outcome_type.value)` for terminal outcomes.
+
+---
+
+## TD-068: `RiskState.lock` set as non-dataclass attribute via `__post_init__`
+
+**Origin**: pr-prep Greybeard pre-PR review (round-17)
+**Severity**: Low (works today; convention drift)
+**Module**: `nexus/core/domain/risk_state.py:147`
+
+`RiskState.lock` is set inside `__post_init__` rather than declared as a dataclass field. Consequence: `dataclasses.replace()`, equality comparison, and `repr` silently ignore the attribute. Any future code that copies a `RiskState` via `replace()` will lose the lock without warning. The codec already enumerates persisted fields explicitly so serialization is unaffected, but the attribute escapes the dataclass schema.
+
+**When to fix**: Before any code path uses `dataclasses.replace()` on `RiskState`, OR when introducing additional transient cross-thread coordination state on the dataclass.
+**Migration**: Either declare `lock` as a `field(default=None, init=False, compare=False, repr=False)` so it participates in the dataclass schema, OR move the lock onto a separate `RiskStateCoordination` companion object held by the launcher rather than on the state itself.
+
+---
+
+## TD-069: `StrategyEvent.outcome_id` empty-string is the dedup-skip sentinel
+
+**Origin**: pr-prep Greybeard pre-PR review (round-17)
+**Severity**: Low (legacy v1-codec compat hack)
+**Module**: `nexus/infrastructure/strategy_event.py:38`; `nexus/infrastructure/loss_derivation.py:_dedup_by_outcome_id`
+
+`StrategyEvent.outcome_id: str = ''` defaults to the empty string. `_dedup_by_outcome_id` treats the empty string as "legacy event, do not dedup" so v1-codec-decoded events pass through unfiltered. A future writer that accidentally produces an empty `outcome_id` (instead of a real id) silently bypasses dedup with no signal — the magic-empty-string sentinel hides the misuse.
+
+**When to fix**: When the v1 event codec is removed (no more legacy events to dedup-skip), OR when a third sentinel state would be useful (e.g. "explicitly opted-out of dedup").
+**Migration**: Change the field to `outcome_id: str | None = None` so the type system catches accidental misuse; update `_dedup_by_outcome_id` to check `is None` instead of empty-string falsy.
+
+---
+
+## TD-070: `_decode_event_v1` and `_decode_event_v2` are near-duplicates
+
+**Origin**: pr-prep Greybeard pre-PR review (round-17)
+**Severity**: Low (two decoders is fine for two versions; refactor when v3 lands)
+**Module**: `nexus/infrastructure/wal_codec.py:430-481`
+
+`_decode_event_v1` and `_decode_event_v2` differ only in whether `outcome_id` is read from the dict. Two near-identical decoders means two places to update on the next schema bump. Pattern scales linearly with codec versions; not yet load-bearing.
+
+**When to fix**: Before adding a v3 event codec.
+**Migration**: Extract a common decoder that takes a list of optional fields with defaults; each version function becomes a thin wrapper that supplies the version-appropriate field set.
+
+---
+
+## TD-071: `state_store.recover()` writes to `srs.high_water_mark` and `srs.strategy_realized_pnl` outside any lock
+
+**Origin**: pr-prep Greybeard pre-PR review (round-17)
+**Severity**: Low (single-threaded at boot per StartupSequencer phase ordering — convention drift, not a race)
+**Module**: `nexus/infrastructure/state_store.py:201-211`
+
+`recover()` runs as part of `StartupSequencer._recover_state` which executes single-threaded before any loops start, so the unlocked writes are safe by construction today. But every other write to these fields (in `_update_strategy_risk_state`, `refresh_rolling_losses`) is lock-protected. The convention drift would bite if any future refactor ever calls `recover()` mid-run (e.g. for soft re-recovery or debugging).
+
+**When to fix**: When any code path can call `recover()` with worker threads alive (currently impossible by sequencer construction).
+**Migration**: Wrap the per-strategy write loop in `state.risk.lock_cm()` (no-op when lock is None, which is the current boot path).
