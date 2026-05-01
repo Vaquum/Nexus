@@ -605,32 +605,6 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ---
 
-## TD-052: `state_store.recover()` does not re-derive `strategy_realized_pnl` / `cumulative_realized_pnl`
-
-**Origin**: Round-17 Codex-supervised audit (R17-C / R17-D)
-**Severity**: Medium (paper-trade blocker per FINAL-TD-01; permanent across reboots once it triggers)
-**Module**: `nexus/infrastructure/state_store.py:142-159` (re-derives only `rolling_loss_*`); `nexus/infrastructure/praxis_connector/outcome_processor.py:182-190` (write order); `nexus/core/domain/risk_state.py:186-190, 192-219, 221-229` (derivative chain); `nexus/startup/shutdown_sequencer.py:730-731` (shutdown-EXIT call site without follow-up `append_mutation`)
-
-`state_store.recover()` re-derives `rolling_loss_*` from STRATEGY_EVENT but does NOT re-derive `strategy_realized_pnl` / `cumulative_realized_pnl` / drawdown derivatives. On a crash between `append_event` and `append_mutation`, per-strategy realized PnL is permanently understated and inherited by all subsequent fills — drawdown gates fire LATER than they should.
-
-**When to fix**: Co-land with FINAL-MAJOR-04 (WAL append atomicity) and FINAL-MAJOR-10 (recovery / risk stale window) — all share the atomic-WAL-append primitive that closes the crash window.
-**Migration**: Extend `derive_rolling_losses` to also accumulate signed `realized_pnl` per strategy; have `recover()` write `strategy_realized_pnl[sid] = derived_sum[sid]` and call `update_cumulative_realized_pnl`.
-
----
-
-## TD-053: `derive_rolling_losses` has no `outcome_id` deduplication
-
-**Origin**: Round-17 Codex-supervised audit (R16-N TD-NG carried forward as FINAL-TD-02)
-**Severity**: Medium (paper-trade blocker per FINAL-TD-02; dual of TD-052)
-**Module**: `nexus/infrastructure/loss_derivation.py:66-89` (no dedup); `nexus/infrastructure/praxis_connector/outcome_processor.py:181-187` (event-write site); cross-repo: `praxis/outcome_translator.py:222-225` (Praxis-side dedup with FIFO eviction at 10000 entries)
-
-A Praxis re-delivery of a terminal outcome that was already emitted pre-crash would result in duplicate STRATEGY_EVENTs, and `derive_rolling_losses` would double-count them — denying real ENTERs by inflating the rolling-loss windows.
-
-**When to fix**: Co-land with FINAL-MAJOR-04 (WAL append atomicity).
-**Migration**: Add `seen.add(event.outcome_id)` filter inside `derive_rolling_losses`; on duplicate, log WARN and skip the increment.
-
----
-
 ## TD-054: `OrderContext.is_exit = not is_entry` partition is unsafe for MODIFY / CANCEL
 
 **Origin**: Round-17 Codex-supervised audit (R15 MAJOR-D + R16-races TD-009 carried forward as FINAL-TD-03)
@@ -673,26 +647,26 @@ A Praxis re-delivery of a terminal outcome that was already emitted pre-crash wo
 ## TD-057: `_build_exit_context` TOCTOU on `state.positions`
 
 **Origin**: Round-17 Codex-supervised audit (R16-races TD-008 carried forward as FINAL-TD-06)
-**Severity**: Low (closed transitively by FINAL-MAJOR-02's `state_lock` rollout)
+**Severity**: Low (bounded reachability; self-corrects on the next tick)
 **Module**: `nexus/core/validator/intake_stage.py` (verify `_build_exit_context` call site); `nexus/infrastructure/praxis_connector/outcome_processor.py:443-449` (concurrent `_reduce_position` `del`)
 
 `_build_exit_context` checks `if trade_id in state.positions` then reads `position = state.positions[trade_id]` without `positions_lock`. Concurrent `_reduce_position` `del state.positions[trade_id]` between the two reads raises `KeyError`; the action is dropped at the validator layer.
 
-**When to fix**: Closed by FINAL-MAJOR-02 — the `state_lock` rollout covers `state.positions` reads. No standalone fix required.
-**Migration**: N/A — transitive close.
+**When to fix**: When the single-tick drop becomes operationally observable. The audit anticipated FINAL-MAJOR-02 would close this transitively, but the M02 fix scoped `state.risk.lock` to the risk dict only — it did not extend `positions_lock` coverage to `_build_exit_context`'s reads.
+**Migration**: Acquire `positions_lock` around the existence check + dereference in `_build_exit_context`, OR catch `KeyError` and fall back to the missing-trade_id branch.
 
 ---
 
 ## TD-058: `ShutdownSequencer._halt_state_mode` writes `state.mode` without `HealthLoop._lock`
 
 **Origin**: Round-17 Codex-supervised audit (R17-A TD-053 carried forward as FINAL-TD-07)
-**Severity**: Low (closed transitively by FINAL-MAJOR-02's `state_lock`)
+**Severity**: Low (in-flight-tick race; PT-FIX-42 narrows the window)
 **Module**: `nexus/startup/shutdown_sequencer.py:189-208`; `nexus/core/health_loop.py:160-172`
 
 `ShutdownSequencer._halt_state_mode` writes `state.mode = ModeState(...)` on the shutdown thread without `HealthLoop._lock`. If a HealthLoop tick is mid-flight at `health_loop.py:160` (after `_lock` acquired, just before the write), the LAST writer wins and HALTED can be overwritten. PT-FIX-42's `_running` re-check narrows but does not close the in-flight-tick race.
 
-**When to fix**: Closed by FINAL-MAJOR-02 — the `state_lock` rollout covers `state.mode`. No standalone fix required.
-**Migration**: N/A — transitive close.
+**When to fix**: When operator-observable mode-loss occurs at shutdown. The audit anticipated FINAL-MAJOR-02 would close this transitively, but the M02 fix scoped `state.risk.lock` to the risk dict only — `state.mode` is not covered.
+**Migration**: Acquire `HealthLoop._lock` (or a shared mode lock) in `_halt_state_mode` before the write so the HealthLoop tick's mode write cannot overwrite the persisted HALTED.
 
 ---
 
@@ -790,10 +764,10 @@ The cast to `float` makes the comparison at line 178 flip near boundaries by a f
 ## TD-066: `_dispatch_shutdown` reads Position references after `positions_lock` release
 
 **Origin**: Round-17 Codex-supervised audit (R15 TD-006 carried forward as FINAL-TD-16)
-**Severity**: Low (closed transitively by FINAL-MAJOR-02's `state_lock`)
+**Severity**: Low (bounded reachability — both join-timeout AND on_shutdown reads multi-field Position data)
 **Module**: `nexus/startup/shutdown_sequencer.py:270-301`
 
 `_dispatch_shutdown` reads Position references after `positions_lock` release. `Position` is mutable; a still-alive OutcomeLoop after timed-out join can write `size` / `entry_price` / `avg_cost_basis` / `pending_exit` mid-`on_shutdown`. Reachability requires both `_stop_outcome_loop` join timeout AND a strategy whose `on_shutdown` reads multi-field Position data.
 
-**When to fix**: Closed by FINAL-MAJOR-02 — the `state_lock` rollout covers `Position` field reads. No standalone fix required.
-**Migration**: N/A — transitive close.
+**When to fix**: When operator-observable mid-shutdown data tear becomes reachable. The audit anticipated FINAL-MAJOR-02 would close this transitively, but M02's `state.risk.lock` is scoped to the risk dict only; `_dispatch_shutdown`'s Position-field reads remain outside any held lock.
+**Migration**: Hold `positions_lock` across the snapshot iteration AND the per-strategy `on_shutdown` callback dispatch (or copy each Position to a frozen snapshot under the lock before releasing).
