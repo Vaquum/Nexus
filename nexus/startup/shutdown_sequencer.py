@@ -14,6 +14,7 @@ from pathlib import Path
 
 import structlog
 
+from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState
@@ -106,6 +107,7 @@ class ShutdownSequencer:
         outcome_processor: OutcomeProcessor | None = None,
         non_pending_outcome_handler: Callable[[TradeOutcome], None] | None = None,
         positions_lock: threading.Lock | None = None,
+        capital_controller: CapitalController | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -162,6 +164,7 @@ class ShutdownSequencer:
         self._exit_contexts: dict[str, OrderContext] = {}
         self._non_pending_outcome_handler = non_pending_outcome_handler
         self._positions_lock = positions_lock
+        self._capital_controller = capital_controller
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
@@ -844,9 +847,34 @@ class ShutdownSequencer:
 
         Calls StateStore.checkpoint to persist current state
         and truncate the WAL before exit.
+
+        FINAL-MAJOR-05: holds positions_lock + CapitalController._lock
+        across the snapshot serialization so the
+        `serialize_state` iterations of `state.positions`,
+        `state.risk.per_strategy`, and `state.capital.per_strategy_deployed`
+        cannot race a still-alive OutcomeLoop worker (after
+        `_stop_outcome_loop`'s join_timeout) writing those dicts;
+        the CapitalController lock also covers the aggregate field
+        reads (`in_flight_order_notional`, `working_order_notional`,
+        `position_notional`, `reservation_notional`, `fee_reserve`)
+        so the snapshot is internally consistent (closes R17-A
+        TD-054 transitively). state_store.checkpoint internally
+        acquires `_wal_lock` (FINAL-MAJOR-04). Lock-order:
+        positions_lock → CapitalController._lock → _wal_lock.
         '''
 
-        self._state_store.checkpoint(self._state)
+        positions_cm = (
+            self._positions_lock
+            if self._positions_lock is not None
+            else nullcontext()
+        )
+        capital_cm = (
+            self._capital_controller.lock_cm()
+            if self._capital_controller is not None
+            else nullcontext()
+        )
+        with positions_cm, capital_cm:
+            self._state_store.checkpoint(self._state)
 
     def _deregister(self) -> None:
         '''Deregister this account from Trading sub-system via PraxisOutbound.'''

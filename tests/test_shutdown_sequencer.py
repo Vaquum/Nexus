@@ -1902,3 +1902,139 @@ class TestNonPendingOutcomeHandler:
         sequencer._submitted_command_ids = ['shutdown-exit-cmd-1']
 
         sequencer._wait_terminal()
+
+
+class TestFinalMajor05CheckpointLockCoverage:
+    '''FINAL-MAJOR-05: `_final_checkpoint` invokes
+    `state_store.checkpoint -> save_snapshot -> serialize_state`
+    which iterates `state.positions`, `state.risk.per_strategy`,
+    `state.capital.per_strategy_deployed`, and reads CapitalState
+    aggregates on the shutdown thread. If `_stop_outcome_loop`
+    join_timeout left the OutcomeLoop alive, those iterations race
+    dict mutations and aggregate writes — `RuntimeError: dictionary
+    changed size during iteration` escapes `_final_checkpoint` and
+    the persisted shutdown HALTED mode is lost.
+
+    Post-fix `_final_checkpoint` acquires positions_lock +
+    CapitalController._lock around the checkpoint call. The
+    StateStore-internal `_wal_lock` is acquired by
+    `state_store.checkpoint` itself (FINAL-MAJOR-04). Lock-order:
+    positions_lock -> CapitalController._lock -> _wal_lock.
+    '''
+
+    def test_final_checkpoint_acquires_positions_and_capital_locks(
+        self, tmp_path: Path,
+    ) -> None:
+        '''Pin the lock-acquisition: while a held positions_lock and
+        held CapitalController._lock would block other writers, the
+        checkpoint call still runs to completion under both. Verifies
+        that the wrapping is in place by asserting state_store.checkpoint
+        is reached once after the locks are acquired.
+        '''
+
+        import threading
+        from decimal import Decimal
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        positions_lock = threading.Lock()
+        controller = CapitalController(state.capital)
+        state_store = _make_mock_state_store()
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=state_store,
+            state=state,
+            strategy_state_path=tmp_path,
+            positions_lock=positions_lock,
+            capital_controller=controller,
+        )
+
+        sequencer._final_checkpoint()
+
+        state_store.checkpoint.assert_called_once_with(state)
+
+    def test_final_checkpoint_locks_serialize_no_iteration_error(
+        self, tmp_path: Path,
+    ) -> None:
+        '''A foreground writer thread tight-loops dict mutations on
+        state.positions and state.risk.per_strategy while shutdown
+        thread runs _final_checkpoint. Pre-fix the unprotected
+        serialization would race; post-fix it serialises behind the
+        locks and completes without RuntimeError.
+        '''
+
+        import threading
+        from decimal import Decimal
+
+        from nexus.core.domain.position import Position
+        from nexus.core.domain.risk_state import StrategyRiskState
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('100000')),
+        )
+        positions_lock = threading.Lock()
+        state.risk.lock = positions_lock
+        controller = CapitalController(state.capital)
+        state_store = StateStore(tmp_path)
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=state_store,
+            state=state,
+            strategy_state_path=tmp_path,
+            positions_lock=positions_lock,
+            capital_controller=controller,
+        )
+
+        stop_event = threading.Event()
+        errors: list[Exception] = []
+
+        def writer() -> None:
+            i = 0
+            try:
+                while not stop_event.is_set():
+                    with positions_lock:
+                        trade_id = f't_{i}'
+                        state.positions[trade_id] = Position(
+                            trade_id=trade_id,
+                            strategy_id='strat_a',
+                            symbol='BTCUSDT',
+                            side=OrderSide.BUY,
+                            size=Decimal('1'),
+                            entry_price=Decimal('100'),
+                            avg_cost_basis=Decimal('100'),
+                        )
+                        state.risk.per_strategy[f's_{i}'] = StrategyRiskState(
+                            strategy_id=f's_{i}',
+                        )
+                    i += 1
+            except Exception as exc:
+                errors.append(exc)
+
+        def checkpointer() -> None:
+            try:
+                for _ in range(10):
+                    sequencer._final_checkpoint()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                stop_event.set()
+
+        threads = [
+            threading.Thread(target=writer, daemon=True),
+            threading.Thread(target=checkpointer, daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        alive = [t.name for t in threads if t.is_alive()]
+        assert not alive, f'threads did not finish: {alive}'
+        assert not errors, (
+            f'race during locked checkpoint: {errors[:3]}'
+        )

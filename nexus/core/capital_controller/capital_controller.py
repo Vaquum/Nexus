@@ -80,6 +80,23 @@ class CapitalController:
         self._expiry_heap: list[tuple[datetime, str]] = []
         self._orders: dict[str, TrackedOrder] = {}
 
+    def lock_cm(self) -> threading.Lock:
+        '''Return the internal lock as a context manager.
+
+        FINAL-MAJOR-05: callers like `ShutdownSequencer._final_checkpoint`
+        need to read `state.capital.per_strategy_deployed` (a dict)
+        and the aggregate fields (`in_flight_order_notional`,
+        `working_order_notional`, `position_notional`,
+        `reservation_notional`, `fee_reserve`) atomically with
+        respect to concurrent CapitalController writes. Acquiring this
+        lock externally serialises the read with all in-flight
+        controller mutations. Innermost-but-one in the lock chain
+        (`command_registry_lock -> positions_lock -> CapitalController._lock
+        -> _wal_lock`).
+        '''
+
+        return self._lock
+
     def reconcile_at_boot(
         self,
         positions: Iterable[Position] | None = None,
