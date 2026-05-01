@@ -888,6 +888,81 @@ class CapitalController:
 
             return LifecycleResult(success=True)
 
+    def recover_orphaned_order(
+        self,
+        order_id: str,
+        outcome_type: str,
+    ) -> LifecycleResult:
+        '''Defense-in-depth release for an order whose `OrderContext` was lost.
+
+        Called by the launcher's `process_outcome` when a terminal outcome
+        arrives but `command_contexts[command_id]` is missing — typically
+        because `_build_order_context` returned None or (pre-FINAL-MAJOR-01)
+        a registry race dropped the registration. The order's
+        `_orders[order_id]` entry was created by `send_order`, so capital
+        aggregates remain inflated until released.
+
+        Idempotent: returns success if the order is already gone (the
+        caller may not know whether `send_order` reached this controller).
+
+        Position growth from a FILL outcome is intentionally NOT performed
+        here — without the `OrderContext` the trade_id / side cannot be
+        recovered. Aggregate release is the priority; the next boot's
+        `_reconcile_capital` pass adopts Praxis truth for position state.
+
+        Args:
+            order_id: command/order id of the orphan.
+            outcome_type: terminal outcome type label, used only for
+                operator-facing logging context.
+
+        Returns:
+            LifecycleResult.success=True when the orphan was released
+            OR was already gone (idempotent). LifecycleResult.success=False
+            with INVARIANT_BREACH only when the tracked order is in an
+            unexpected lifecycle state.
+        '''
+
+        with self._lock:
+            order = self._orders.get(order_id)
+
+            if order is None:
+                return LifecycleResult(
+                    success=True,
+                    reason=f'no orphan to recover for order {order_id!r}',
+                )
+
+            if order.state == OrderLifecycleState.IN_FLIGHT:
+                self._state.in_flight_order_notional -= order.remaining_total
+            elif order.state == OrderLifecycleState.WORKING:
+                self._state.working_order_notional -= order.remaining_total
+            else:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'order {order_id!r} in {order.state.value}, '
+                        f'expected IN_FLIGHT or WORKING for orphan recovery'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
+            self._orders.pop(order_id)
+            self._adjust_strategy_deployed(
+                order.strategy_id, -order.remaining_total,
+            )
+
+            _logger.warning(
+                'Recovered orphaned order — released capital aggregates: '
+                'order_id=%s outcome_type=%s released=%s strategy_id=%s '
+                'prior_state=%s',
+                order_id,
+                outcome_type,
+                order.remaining_total,
+                order.strategy_id,
+                order.state.value,
+            )
+
+            return LifecycleResult(success=True)
+
     def _adjust_strategy_deployed(self, strategy_id: str, delta: Decimal) -> None:
         current = self._state.per_strategy_deployed.get(strategy_id, _ZERO)
         updated = current + delta

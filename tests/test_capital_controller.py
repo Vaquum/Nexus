@@ -967,6 +967,89 @@ class TestOrderCancel:
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
+class TestRecoverOrphanedOrder:
+    '''Defense-in-depth helper for FINAL-MAJOR-01: when the launcher's
+    `process_outcome` hits the no-OrderContext terminal cleanup branch
+    (because `_build_order_context` returned None, or — pre-FINAL-MAJOR-01
+    — a registry race dropped the registration), `_orders[command_id]`
+    was already populated by `send_order` and capital aggregates remain
+    inflated. `recover_orphaned_order` releases the aggregate and pops
+    the tracked order. Idempotent.
+    '''
+
+    def test_recover_in_flight_orphan_releases_aggregates(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'REJECTED')
+
+        assert recovered.success is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_recover_working_orphan_releases_aggregates(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'CANCELED')
+
+        assert recovered.success is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_recover_unknown_order_is_idempotent(self) -> None:
+        '''The launcher may not know whether `send_order` reached this
+        controller (e.g., `send_order` returned failure earlier and the
+        registry was cleaned up); calling `recover_orphaned_order` on a
+        non-existent order returns success without mutating state.
+        '''
+
+        ctrl = _make_controller()
+        pre_in_flight = ctrl._state.in_flight_order_notional
+        pre_working = ctrl._state.working_order_notional
+        pre_deployed = dict(ctrl._state.per_strategy_deployed)
+
+        recovered = ctrl.recover_orphaned_order('nonexistent', 'EXPIRED')
+
+        assert recovered.success is True
+        assert ctrl._state.in_flight_order_notional == pre_in_flight
+        assert ctrl._state.working_order_notional == pre_working
+        assert ctrl._state.per_strategy_deployed == pre_deployed
+
+    def test_recover_after_partial_fill_releases_remaining_working(self) -> None:
+        '''Partial fill moved some capital to position_notional; the
+        remaining working_order_notional is the aggregate at risk for
+        the orphan; recovery releases only that remainder.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
+        assert ctrl._state.position_notional == Decimal('404')
+        assert ctrl._state.working_order_notional == Decimal('606')
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'CANCELED')
+
+        assert recovered.success is True
+        assert ctrl._state.position_notional == Decimal('404')
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+
+
 class TestOrderExitInvariants:
     '''`order_exit` must reject when `cost_basis_released` exceeds either
     `position_notional` OR `per_strategy_deployed[strategy_id]`. Pre-fix
