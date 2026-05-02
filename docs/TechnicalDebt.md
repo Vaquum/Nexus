@@ -879,3 +879,29 @@ Today's only production producer (`OutcomeProcessor._handle_fill` line 184) alwa
 - `LegacyStrategyEvent` (no `outcome_id` field) — used only by `_decode_event_v1` for legacy WAL replay. No dedup contract.
 - `StrategyEvent` (`outcome_id: str` required, no default) — used by all production producers and `_decode_event_v2`. Producer mistakes fail at construction time.
 - `derive_rolling_losses` accepts both via a small adapter that maps `LegacyStrategyEvent` → `StrategyEvent('')` only for the dedup-skip path.
+
+---
+
+## TD-075: `_handle_fill` partial-rollback gap — capital + position mutations not protected by the round-10 append-first contract
+
+**Origin**: PR #55 round-14 review
+**Severity**: Low at MMVP testnet cadence (WAL append failures are rare; capital aggregates self-heal at boot via `_reconcile_capital`); Major for any deployment where mid-run consistency between in-memory state and WAL is load-bearing
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:147-208`
+
+The PR #55 round-10 fix inverted the order inside the `state.risk.lock_cm()` block to "append first, then mutate risk state" so a `StateStore.append_event` raise leaves the **risk fields** in sync with the WAL. But round-10 only protected steps inside that block. The earlier mutations in `_handle_fill` are NOT covered:
+
+1. `self._capital.order_fill(...)` / `order_exit(...)` mutate capital aggregates (`working_order_notional`, `position_notional`, `per_strategy_deployed`, `fee_reserve`) before the risk-lock block.
+2. `_grow_position` / `_reduce_position` mutate position fields (`size`, `entry_price`, `avg_cost_basis`) before the risk-lock block.
+3. The risk-lock block then calls `append_event`. If it raises, steps 1-2 already happened; in-memory state has the fill applied; WAL does not.
+
+Failure-mode propagation:
+- Capital aggregates: self-heal on next boot via `_reconcile_capital` (Praxis is the source of truth — Nexus adopts Praxis position+capital reconciliation at startup).
+- Position fields: `size` cross-checks during reconcile, but `entry_price` and `avg_cost_basis` are not part of Praxis's surface — they would drift permanently across the failure-without-restart window.
+- Shutdown path: `_apply_terminal_outcome` swallows the exception and continues, so the final snapshot can be inconsistent with what was actually processed (no rollback fires before the snapshot is taken).
+
+**When to fix**: Before any deployment whose WAL is on flaky storage, OR whose mid-run `entry_price` / `avg_cost_basis` accuracy is load-bearing for strategy logic between boots.
+
+**Migration**: Refactor `_handle_fill` to compute-then-append-then-mutate:
+- Extract `_compute_position_mutation(outcome, context) → PositionMutation` (pure, no side effects) returning the new size / entry_price / avg_cost_basis values + the realized_pnl for exit fills.
+- Extract `_compute_capital_delta(outcome, context) → CapitalDelta` (pure) returning the aggregate adjustments.
+- Order: build StrategyEvent with the computed `realized_pnl`, acquire `state.risk.lock_cm()`, `append_event(event)` first (raises bubble up with no mutation), then apply `CapitalDelta` (under capital lock, brief), then apply `PositionMutation` (under positions lock, brief — same lock as risk.lock by FINAL-MAJOR-02 wiring), then apply risk update. All three in-memory mutations are pure dict / Decimal ops that cannot raise; if they do, that's a programmer error, not a recoverable I/O failure.
