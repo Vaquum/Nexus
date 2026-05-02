@@ -2399,3 +2399,161 @@ class TestExitFillWalAppendFailureRollback:
             f'cumulative_realized_pnl. pre={pre_cumulative} '
             f'post={post_cumulative}'
         )
+
+
+class TestOutcomeIdIdempotency:
+    '''Round-18 MAJOR-004: process() must dedup by outcome_id so that
+    Praxis's delivery retry / boot-replay paths can call it more than
+    once without double-mutating capital or position state. The dedup
+    is in-memory; cross-restart safety comes from Praxis-side
+    OutcomeAcked tracking that filters un-acked outcomes at boot.
+    '''
+
+    def test_duplicate_ack_returns_no_op_success(self) -> None:
+        '''Second call with same outcome_id returns success without
+        re-incrementing capital aggregates.'''
+
+        proc, ctrl, _, _, _tmp = _make_processor()
+        _setup_in_flight_order(ctrl)
+
+        outcome = TradeOutcome(
+            outcome_id='out_dedup_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=_now(),
+        )
+
+        first = proc.process(outcome, _entry_context())
+        assert first.success is True
+        assert first.capital_updated is True
+
+        snapshot_in_flight = ctrl._state.in_flight_order_notional
+        snapshot_working = ctrl._state.working_order_notional
+
+        second = proc.process(outcome, _entry_context())
+
+        assert second.success is True
+        assert second.capital_updated is False
+        assert second.position_updated is False
+        assert ctrl._state.in_flight_order_notional == snapshot_in_flight
+        assert ctrl._state.working_order_notional == snapshot_working
+
+    def test_duplicate_fill_does_not_double_mutate_capital_or_position(
+        self,
+    ) -> None:
+        '''Same fill outcome processed twice must not double-decrement
+        capital aggregates or double-update the position size.'''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_dedup_002',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        first = proc.process(outcome, _entry_context())
+        assert first.success is True
+
+        snapshot_position_notional = ctrl._state.position_notional
+        snapshot_working = ctrl._state.working_order_notional
+        snapshot_position_size = state.positions['trade_001'].size
+
+        second = proc.process(outcome, _entry_context())
+
+        assert second.success is True
+        assert second.capital_updated is False
+        assert second.position_updated is False
+        assert ctrl._state.position_notional == snapshot_position_notional
+        assert ctrl._state.working_order_notional == snapshot_working
+        assert state.positions['trade_001'].size == snapshot_position_size
+
+    def test_failed_first_attempt_does_not_poison_dedup(self) -> None:
+        '''A previously failed process attempt must NOT add the
+        outcome_id to the dedup set — the caller may legitimately
+        retry with a fixed-up context and the second attempt should
+        run normally.'''
+
+        proc, ctrl, _, _, _tmp = _make_processor()
+        _setup_in_flight_order(ctrl)
+
+        outcome = TradeOutcome(
+            outcome_id='out_dedup_003',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=_now(),
+        )
+        # Mismatched context (command_id) → process returns success=False.
+        bad_ctx = OrderContext(
+            command_id='cmd_other',
+            strategy_id='strat_001',
+            trade_id=None,
+            side=OrderSide.BUY,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            is_entry=True,
+        )
+
+        first = proc.process(outcome, bad_ctx)
+        assert first.success is False
+
+        # Retry with correct context must run normally and succeed.
+        second = proc.process(outcome, _entry_context())
+
+        assert second.success is True
+        assert second.capital_updated is True
+
+    def test_dedup_is_per_outcome_id_not_per_command_id(self) -> None:
+        '''Two outcomes with the same command_id but different
+        outcome_ids (e.g., ACK then FILL on the same order) must
+        BOTH be processed.'''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_in_flight_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        ack = TradeOutcome(
+            outcome_id='out_dedup_004_ack',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=_now(),
+        )
+        fill = TradeOutcome(
+            outcome_id='out_dedup_004_fill',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        ack_result = proc.process(ack, _entry_context())
+        fill_result = proc.process(fill, _entry_context())
+
+        assert ack_result.success is True
+        assert fill_result.success is True
+        assert fill_result.position_updated is True

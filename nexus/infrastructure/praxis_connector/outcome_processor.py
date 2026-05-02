@@ -65,6 +65,8 @@ class OutcomeProcessor:
         self._positions_cm: AbstractContextManager[Any] = (
             positions_lock if positions_lock is not None else nullcontext()
         )
+        self._processed_outcome_ids: set[str] = set()
+        self._dedup_lock = threading.Lock()
 
     def process(
         self,
@@ -86,13 +88,38 @@ class OutcomeProcessor:
             returns `INVARIANT_BREACH: order not found` and capital
             stays parked in `reservation_notional`.
 
+        Idempotency (round-18 MAJOR-004): if an outcome with the same
+        `outcome.outcome_id` has already been processed successfully,
+        return success without mutating state. The Praxis side may
+        retry delivery on transient errors (e.g., a failed
+        `OutcomeAcked` append) and replay un-acked outcomes from
+        EventSpine at boot; both paths can drive `process` with the
+        same outcome more than once. A previously failed attempt does
+        NOT poison the dedup set — the caller may legitimately retry
+        and the second attempt runs normally.
+
         Args:
             outcome: Inbound outcome from Trading sub-system.
             context: Metadata for outcome processing.
 
         Returns:
             ProcessResult indicating success and what was updated.
+            On dedup hit, `position_updated` and `capital_updated` are
+            False so the launcher does not re-trigger
+            `state_store.append_mutation`.
         '''
+
+        with self._dedup_lock:
+            if outcome.outcome_id in self._processed_outcome_ids:
+                _log.debug(
+                    'duplicate outcome dropped: outcome_id=%s command_id=%s',
+                    outcome.outcome_id,
+                    outcome.command_id,
+                )
+                return ProcessResult(
+                    success=True,
+                    outcome_type=outcome.outcome_type,
+                )
 
         if context.command_id != outcome.command_id:
             return ProcessResult(
@@ -105,15 +132,21 @@ class OutcomeProcessor:
             )
 
         if outcome.outcome_type == TradeOutcomeType.ACK:
-            return self._handle_ack(outcome)
+            result = self._handle_ack(outcome)
+        elif outcome.outcome_type in (
+            TradeOutcomeType.PARTIAL, TradeOutcomeType.FILLED,
+        ):
+            result = self._handle_fill(outcome, context)
+        elif outcome.outcome_type == TradeOutcomeType.REJECTED:
+            result = self._handle_reject(outcome, context)
+        else:
+            result = self._handle_cancel(outcome, context)
 
-        if outcome.outcome_type in (TradeOutcomeType.PARTIAL, TradeOutcomeType.FILLED):
-            return self._handle_fill(outcome, context)
+        if result.success:
+            with self._dedup_lock:
+                self._processed_outcome_ids.add(outcome.outcome_id)
 
-        if outcome.outcome_type == TradeOutcomeType.REJECTED:
-            return self._handle_reject(outcome, context)
-
-        return self._handle_cancel(outcome, context)
+        return result
 
     def _handle_ack(self, outcome: TradeOutcome) -> ProcessResult:
         result = self._capital.order_ack(outcome.command_id)
