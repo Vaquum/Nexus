@@ -1049,6 +1049,58 @@ class TestRecoverOrphanedOrder:
         assert ctrl._state.working_order_notional == _ZERO
         assert 'ORD-001' not in ctrl._orders
 
+    def test_recover_called_twice_on_same_order_is_no_op_second_time(
+        self,
+    ) -> None:
+        '''Round-18 MAJOR-003 (M03.4): the launcher's terminal-no-context
+        cleanup may invoke `recover_orphaned_order` for a command_id that
+        has already been recovered (e.g., a duplicate terminal outcome
+        leaks past the registry pop). The second call must return
+        success without mutating aggregates further.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+
+        first = ctrl.recover_orphaned_order('ORD-001', 'REJECTED')
+        assert first.success is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        snapshot_in_flight = ctrl._state.in_flight_order_notional
+        snapshot_working = ctrl._state.working_order_notional
+        snapshot_deployed = dict(ctrl._state.per_strategy_deployed)
+
+        second = ctrl.recover_orphaned_order('ORD-001', 'REJECTED')
+
+        assert second.success is True
+        assert ctrl._state.in_flight_order_notional == snapshot_in_flight
+        assert ctrl._state.working_order_notional == snapshot_working
+        assert ctrl._state.per_strategy_deployed == snapshot_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_recover_restores_capital_for_a_new_reservation(self) -> None:
+        '''Round-18 MAJOR-003: orphan release must actually free the
+        capital — not just decrement the bookkeeping field. After
+        recovery, a fresh `check_and_reserve` for the released amount
+        must succeed (pre-fix the aggregate stayed inflated until
+        boot, blocking the next ENTER for that strategy).
+        '''
+
+        ctrl = _make_controller()
+        first = _reserve(ctrl, notional='100', fees='1')
+        assert first.reservation is not None
+        ctrl.send_order(first.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'REJECTED')
+        assert recovered.success is True
+
+        retry = _reserve(ctrl, notional='100', fees='1')
+        assert retry.granted is True
+        assert retry.reservation is not None
+
 
 class TestOrderExitInvariants:
     '''`order_exit` must reject when `cost_basis_released` exceeds either
