@@ -7,18 +7,42 @@ relative to a recovery timestamp.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 from nexus.infrastructure.strategy_event import StrategyEvent
 
-__all__ = ['RollingLosses', 'derive_rolling_losses']
+__all__ = [
+    'RollingLosses',
+    'derive_rolling_losses',
+    'derive_strategy_realized_pnl',
+]
 
 _ZERO = Decimal(0)
 _WINDOW_24H = timedelta(hours=24)
 _WINDOW_7D = timedelta(days=7)
 _WINDOW_30D = timedelta(days=30)
+
+
+def _dedup_by_outcome_id(events: Iterable[StrategyEvent]) -> Iterator[StrategyEvent]:
+    '''Yield events with duplicate `outcome_id` values filtered out.
+
+    FINAL-TD-02: a Praxis re-delivery of a terminal outcome that was
+    already emitted pre-crash would otherwise double-count the loss
+    across windows / cumulative PnL. Empty `outcome_id` marks legacy
+    v1-codec events that predate the field; they pass through without
+    dedup (the legacy WAL contract — they can't be uniquely keyed).
+    '''
+
+    seen: set[str] = set()
+    for event in events:
+        if event.outcome_id:
+            if event.outcome_id in seen:
+                continue
+            seen.add(event.outcome_id)
+        yield event
 
 
 @dataclass(frozen=True)
@@ -66,7 +90,7 @@ def derive_rolling_losses(
 
     accum: dict[str, list[Decimal]] = {}
 
-    for event in events:
+    for event in _dedup_by_outcome_id(events):
         if event.realized_pnl >= _ZERO:
             continue
 
@@ -96,3 +120,34 @@ def derive_rolling_losses(
         )
         for sid, b in accum.items()
     }
+
+
+def derive_strategy_realized_pnl(
+    events: list[StrategyEvent],
+) -> dict[str, Decimal]:
+    '''Compute per-strategy SIGNED cumulative realized P&L from events.
+
+    Unlike `derive_rolling_losses` (windowed, absolute losses only), this
+    sums every event's `realized_pnl` regardless of sign or age. The
+    result is the authoritative `strategy_realized_pnl` value that
+    survives a crash between `append_event` and `append_mutation`
+    (FINAL-TD-01): pre-fix `state_store.recover()` adopted the snapshot's
+    `strategy_realized_pnl` verbatim, so a lost STATE_MUTATION carrying
+    the +/- delta from a fill left drawdown gates firing LATER than they
+    should by the missing delta.
+
+    Args:
+        events: Strategy events to scan.
+
+    Returns:
+        Mapping of `strategy_id` to signed cumulative realized P&L.
+        Strategies with no events are not in the mapping.
+    '''
+
+    accum: dict[str, Decimal] = {}
+
+    for event in _dedup_by_outcome_id(events):
+        sid = event.strategy_id
+        accum[sid] = accum.get(sid, _ZERO) + event.realized_pnl
+
+    return accum

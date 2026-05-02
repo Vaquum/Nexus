@@ -133,3 +133,118 @@ class TestRollingLossesDataclass:
             raise AssertionError('Should have raised')
         except AttributeError:
             pass
+
+
+class TestFinalTd02OutcomeIdDedup:
+    '''FINAL-TD-02: pre-fix `derive_rolling_losses` did not dedupe
+    events. A Praxis re-delivery of a terminal outcome that was
+    already emitted pre-crash would produce duplicate STRATEGY_EVENTs
+    in the WAL, double-counting the loss across rolling windows.
+    Same applies to `derive_strategy_realized_pnl`.
+
+    Post-fix both functions skip events whose `outcome_id` has been
+    seen. Empty `outcome_id` (legacy v1-codec events that predate
+    this field) is NOT deduped; processed at face value.
+    '''
+
+    def test_duplicate_outcome_id_loss_counted_once(self) -> None:
+        from nexus.infrastructure.loss_derivation import derive_rolling_losses
+
+        e1 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-100'),
+            timestamp=_NOW - timedelta(hours=1),
+            outcome_id='out_001',
+        )
+        e2 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-100'),
+            timestamp=_NOW - timedelta(hours=1),
+            outcome_id='out_001',
+        )
+
+        result = derive_rolling_losses([e1, e2], _NOW)
+        assert result['strat_a'].rolling_loss_24h == Decimal('100'), (
+            f'duplicate outcome_id should count once, got '
+            f'{result["strat_a"].rolling_loss_24h}'
+        )
+
+    def test_empty_outcome_id_not_deduped_legacy_compat(self) -> None:
+        '''Legacy v1-codec events have outcome_id=''. They are NOT
+        deduped — the legacy WAL contract permitted duplicate-emission
+        and downstream systems counted them; deduping them now would
+        break recovery semantics for old WAL files.
+        '''
+
+        from nexus.infrastructure.loss_derivation import derive_rolling_losses
+
+        e1 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-50'),
+            timestamp=_NOW - timedelta(hours=1),
+        )
+        e2 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-50'),
+            timestamp=_NOW - timedelta(hours=1),
+        )
+
+        result = derive_rolling_losses([e1, e2], _NOW)
+        assert result['strat_a'].rolling_loss_24h == Decimal('100')
+
+    def test_distinct_outcome_ids_both_counted(self) -> None:
+        '''Sanity: two genuinely distinct outcomes with their own
+        outcome_ids are BOTH counted. The dedup only catches exact
+        repeats.
+        '''
+
+        from nexus.infrastructure.loss_derivation import derive_rolling_losses
+
+        e1 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-100'),
+            timestamp=_NOW - timedelta(hours=1),
+            outcome_id='out_001',
+        )
+        e2 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-100'),
+            timestamp=_NOW - timedelta(hours=1),
+            outcome_id='out_002',
+        )
+
+        result = derive_rolling_losses([e1, e2], _NOW)
+        assert result['strat_a'].rolling_loss_24h == Decimal('200')
+
+    def test_strategy_realized_pnl_dedup(self) -> None:
+        '''Same dedup rule applies to derive_strategy_realized_pnl.'''
+
+        from nexus.infrastructure.loss_derivation import (
+            derive_strategy_realized_pnl,
+        )
+
+        e1 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('150'),
+            timestamp=_NOW - timedelta(hours=1),
+            outcome_id='out_001',
+        )
+        e2 = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('150'),
+            timestamp=_NOW - timedelta(hours=1),
+            outcome_id='out_001',
+        )
+
+        result = derive_strategy_realized_pnl([e1, e2])
+        assert result['strat_a'] == Decimal('150'), (
+            f'duplicate outcome_id should count once, got {result["strat_a"]}'
+        )

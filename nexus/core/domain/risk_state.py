@@ -7,8 +7,11 @@ on every action.
 
 from __future__ import annotations
 
+import threading
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 __all__ = ['DrawdownDiagnostics', 'RiskCheckMetrics', 'RiskState', 'StrategyRiskState']
 
@@ -127,9 +130,22 @@ class RiskState:
     max_drawdown: Decimal = _ZERO
     max_drawdown_pct: Decimal = _ZERO
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
+    lock: threading.Lock | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        '''Validate invariants at construction time.'''
+        '''Validate invariants at construction time.
+
+        The `lock` field is declared above as `init=False, repr=False,
+        compare=False` so it is excluded from `dataclasses.replace()`
+        copies, `repr`, equality, and serialization. FINAL-MAJOR-02
+        uses it to coordinate cross-thread access to `per_strategy`
+        (writers in OutcomeProcessor, readers in the validator's
+        `to_risk_check_metrics` and HealthLoop's
+        `state_store.refresh_rolling_losses`). The lock is set
+        externally by the launcher after construction; when None,
+        callers fall back to `nullcontext()` and no locking happens
+        (legacy single-threaded test paths).
+        '''
 
         if not self.high_water_mark.is_finite() or self.high_water_mark < _ZERO:
             msg = 'RiskState.high_water_mark must be a finite non-negative value'
@@ -238,18 +254,38 @@ class RiskState:
         self.unrealized_pnl = unrealized_pnl
         self.recompute_drawdown_metrics()
 
-    def to_risk_check_metrics(self) -> RiskCheckMetrics:
-        '''Return drawdown + rolling-loss values needed for validator-style checks.'''
+    def lock_cm(self) -> AbstractContextManager[Any]:
+        '''Return the `lock` attribute as a context manager, or
+        `nullcontext()` when no lock is wired (legacy single-threaded
+        paths). Use as `with rs.lock_cm(): ...` to coordinate
+        cross-thread access to `per_strategy` and its values. Both
+        return types satisfy `AbstractContextManager` via the
+        `__enter__` / `__exit__` protocol.
+        '''
 
-        return RiskCheckMetrics(
-            total_drawdown=self.total_drawdown,
-            total_drawdown_pct=self.total_drawdown_pct,
-            max_drawdown=self.max_drawdown,
-            max_drawdown_pct=self.max_drawdown_pct,
-            rolling_loss_24h=self.rolling_loss_24h,
-            rolling_loss_7d=self.rolling_loss_7d,
-            rolling_loss_30d=self.rolling_loss_30d,
-        )
+        return self.lock if self.lock is not None else nullcontext()
+
+    def to_risk_check_metrics(self) -> RiskCheckMetrics:
+        '''Return drawdown + rolling-loss values needed for validator-style checks.
+
+        Acquires `self.lock` (FINAL-MAJOR-02) so the rolling-loss
+        property iterations and per-strategy P&L sums see a consistent
+        snapshot relative to concurrent OutcomeProcessor writes
+        (`_update_strategy_risk_state`) and HealthLoop refreshes
+        (`state_store.refresh_rolling_losses`). When `lock` is None
+        no locking happens (legacy single-threaded test paths).
+        '''
+
+        with self.lock_cm():
+            return RiskCheckMetrics(
+                total_drawdown=self.total_drawdown,
+                total_drawdown_pct=self.total_drawdown_pct,
+                max_drawdown=self.max_drawdown,
+                max_drawdown_pct=self.max_drawdown_pct,
+                rolling_loss_24h=self.rolling_loss_24h,
+                rolling_loss_7d=self.rolling_loss_7d,
+                rolling_loss_30d=self.rolling_loss_30d,
+            )
 
     def to_drawdown_diagnostics(self) -> DrawdownDiagnostics:
         '''Return full drawdown telemetry for diagnostics consumers.'''

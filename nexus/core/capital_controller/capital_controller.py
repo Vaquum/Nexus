@@ -40,6 +40,24 @@ DEFAULT_TTL_SECONDS = 60
 _ZERO = Decimal(0)
 _ONE_HUNDRED = Decimal('100')
 
+# Sub-ULP tolerance shared by the order_exit boundary check
+# (FINAL-MAJOR-06) and the order_fill fee-deficit check
+# (FINAL-MAJOR-09). Both checks compare values produced via
+# round-trips through the `(remainder * estimated_fees) / notional`
+# formula or `_compute_exit_cost_basis`'s `(N/q) * q` shape. On
+# awkward inputs (notional/size ratios that don't terminate in
+# Decimal) the round-trip drops one sig-digit relative to the
+# analytical answer; the resulting drift is below 1E-12 quote
+# currency at default Decimal precision (28 sig digits) and any
+# realistic paper-trade scale.
+#
+# Scale assumption: the threshold is absolute (quote currency).
+# At paper-trade dollar scale (10^0..10^4) it is well below
+# any meaningful money increment; at extreme scales (sub-cent
+# trades or notional > 10^15) it would need to become relative.
+# Tracked as a TD entry; not load-bearing for current scope.
+_SUB_ULP_TOLERANCE = Decimal('1E-12')
+
 
 class CapitalController:
     '''Thread-safe capital reservation manager.
@@ -79,6 +97,23 @@ class CapitalController:
         self._reservations: dict[str, Reservation] = {}
         self._expiry_heap: list[tuple[datetime, str]] = []
         self._orders: dict[str, TrackedOrder] = {}
+
+    def lock_cm(self) -> threading.Lock:
+        '''Return the internal lock as a context manager.
+
+        FINAL-MAJOR-05: callers like `ShutdownSequencer._final_checkpoint`
+        need to read `state.capital.per_strategy_deployed` (a dict)
+        and the aggregate fields (`in_flight_order_notional`,
+        `working_order_notional`, `position_notional`,
+        `reservation_notional`, `fee_reserve`) atomically with
+        respect to concurrent CapitalController writes. Acquiring this
+        lock externally serialises the read with all in-flight
+        controller mutations. Innermost-but-one in the lock chain
+        (`command_registry_lock -> positions_lock -> CapitalController._lock
+        -> _wal_lock`).
+        '''
+
+        return self._lock
 
     def reconcile_at_boot(
         self,
@@ -665,13 +700,17 @@ class CapitalController:
         `position_notional`; the matching exit FILLs collectively remove
         the same amount.
 
-        Exit fees are NOT touched here. Under the current model they
-        are not represented in capital aggregates and are also NOT
-        deducted from `realized_pnl` by `_reduce_position`, which uses
-        a gross PnL calculation `(fill_price - entry_price) * fill_size`
-        without subtracting `outcome.actual_fees`. If a future risk
-        extension needs exit-fee tracking, add a separate ledger such
-        as `realized_fees` and wire that accounting in explicitly.
+        Exit fees are NOT touched in capital aggregates here. They ARE
+        deducted from `realized_pnl` at the source in
+        `_reduce_position` (FINAL-MAJOR-08): the formula is
+        `(fill_price - entry_price) * fill_size - outcome.actual_fees`,
+        so `strategy_realized_pnl`, `cumulative_realized_pnl`, equity,
+        and the rolling-loss windows all reflect NET PnL. Rolling-loss
+        and drawdown gates therefore fire at the correct net-PnL
+        threshold rather than later by the cumulative fee total. If a
+        future risk extension needs SEPARATE exit-fee tracking on top
+        of net-of-fee realized PnL, add a `realized_fees` ledger and
+        wire that accounting in explicitly.
 
         Args:
             strategy_id: Strategy whose deployed total is decremented.
@@ -682,9 +721,23 @@ class CapitalController:
 
         Returns:
             LifecycleResult with reason on failure. INVARIANT_BREACH
-            when `cost_basis_released > position_notional` OR when
-            `cost_basis_released > per_strategy_deployed[strategy_id]`
-            (either would drive the corresponding aggregate negative).
+            when `cost_basis_released` overshoots either
+            `position_notional` OR
+            `per_strategy_deployed[strategy_id]` by MORE than
+            `_SUB_ULP_TOLERANCE` (FINAL-MAJOR-06: round-trip
+            `(N/q) * q` at default Decimal precision can overshoot
+            its starting value by sub-ULP, so the strict `>` check
+            was relaxed to `> _SUB_ULP_TOLERANCE` to absorb the
+            rounding noise without weakening the underlying
+            non-negativity invariant).
+
+            On a within-tolerance overshoot the actual decrement is
+            clamped to `min(cost_basis_released, position_notional,
+            strategy_deployed)` (PR #55 round-2 review: a single
+            `min(...)` applied to BOTH aggregates so the attribution
+            invariant `sum(per_strategy_deployed) == total_deployed`
+            stays exact across the boundary). Beyond-tolerance
+            overshoots still hard-fail with INVARIANT_BREACH.
         '''
 
         if not isinstance(cost_basis_released, Decimal) or not cost_basis_released.is_finite():
@@ -702,12 +755,17 @@ class CapitalController:
         strategy_id = strategy_id.strip()
 
         with self._lock:
-            if cost_basis_released > self._state.position_notional:
+            position_overshoot = (
+                cost_basis_released - self._state.position_notional
+            )
+            if position_overshoot > _SUB_ULP_TOLERANCE:
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'cost_basis_released {cost_basis_released} exceeds '
-                        f'position_notional {self._state.position_notional}'
+                        f'position_notional {self._state.position_notional} '
+                        f'by {position_overshoot} (tolerance '
+                        f'{_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
@@ -715,18 +773,26 @@ class CapitalController:
             strategy_deployed = self._state.per_strategy_deployed.get(
                 strategy_id, _ZERO,
             )
-            if cost_basis_released > strategy_deployed:
+            strategy_overshoot = cost_basis_released - strategy_deployed
+            if strategy_overshoot > _SUB_ULP_TOLERANCE:
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'cost_basis_released {cost_basis_released} exceeds '
-                        f'per_strategy_deployed[{strategy_id}] {strategy_deployed}'
+                        f'per_strategy_deployed[{strategy_id}] {strategy_deployed} '
+                        f'by {strategy_overshoot} (tolerance '
+                        f'{_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.INVARIANT_BREACH,
                 )
 
-            self._state.position_notional -= cost_basis_released
-            self._adjust_strategy_deployed(strategy_id, -cost_basis_released)
+            release_amount = min(
+                cost_basis_released,
+                self._state.position_notional,
+                strategy_deployed,
+            )
+            self._state.position_notional -= release_amount
+            self._adjust_strategy_deployed(strategy_id, -release_amount)
 
             return LifecycleResult(success=True)
 
@@ -817,12 +883,16 @@ class CapitalController:
 
             fee_delta = proportional_estimated - actual_fees
 
-            if fee_delta < _ZERO and abs(fee_delta) > self._state.fee_reserve:
+            if (
+                fee_delta < _ZERO
+                and abs(fee_delta) > self._state.fee_reserve + _SUB_ULP_TOLERANCE
+            ):
                 return LifecycleResult(
                     success=False,
                     reason=(
                         f'order {order_id!r} fee deficit {abs(fee_delta)} '
-                        f'exceeds fee_reserve {self._state.fee_reserve}'
+                        f'exceeds fee_reserve {self._state.fee_reserve} '
+                        f'(tolerance {_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.EXPECTED_MISS,
                 )
@@ -835,6 +905,12 @@ class CapitalController:
             self._state.working_order_notional -= fill_with_estimated
             self._state.position_notional += fill_notional + actual_fees
             self._state.fee_reserve += fee_delta
+
+            if (
+                self._state.fee_reserve < _ZERO
+                and abs(self._state.fee_reserve) <= _SUB_ULP_TOLERANCE
+            ):
+                self._state.fee_reserve = _ZERO
 
             if fee_delta != _ZERO:
                 self._adjust_strategy_deployed(order.strategy_id, -fee_delta)
@@ -885,6 +961,81 @@ class CapitalController:
 
             self._orders.pop(order_id)
             self._adjust_strategy_deployed(order.strategy_id, -order.remaining_total)
+
+            return LifecycleResult(success=True)
+
+    def recover_orphaned_order(
+        self,
+        order_id: str,
+        outcome_type: str,
+    ) -> LifecycleResult:
+        '''Defense-in-depth release for an order whose `OrderContext` was lost.
+
+        Called by the launcher's `process_outcome` when a terminal outcome
+        arrives but `command_contexts[command_id]` is missing — typically
+        because `_build_order_context` returned None or (pre-FINAL-MAJOR-01)
+        a registry race dropped the registration. The order's
+        `_orders[order_id]` entry was created by `send_order`, so capital
+        aggregates remain inflated until released.
+
+        Idempotent: returns success if the order is already gone (the
+        caller may not know whether `send_order` reached this controller).
+
+        Position growth from a FILL outcome is intentionally NOT performed
+        here — without the `OrderContext` the trade_id / side cannot be
+        recovered. Aggregate release is the priority; the next boot's
+        `_reconcile_capital` pass adopts Praxis truth for position state.
+
+        Args:
+            order_id: command/order id of the orphan.
+            outcome_type: terminal outcome type label, used only for
+                operator-facing logging context.
+
+        Returns:
+            LifecycleResult.success=True when the orphan was released
+            OR was already gone (idempotent). LifecycleResult.success=False
+            with INVARIANT_BREACH only when the tracked order is in an
+            unexpected lifecycle state.
+        '''
+
+        with self._lock:
+            order = self._orders.get(order_id)
+
+            if order is None:
+                return LifecycleResult(
+                    success=True,
+                    reason=f'no orphan to recover for order {order_id!r}',
+                )
+
+            if order.state == OrderLifecycleState.IN_FLIGHT:
+                self._state.in_flight_order_notional -= order.remaining_total
+            elif order.state == OrderLifecycleState.WORKING:
+                self._state.working_order_notional -= order.remaining_total
+            else:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'order {order_id!r} in {order.state.value}, '
+                        f'expected IN_FLIGHT or WORKING for orphan recovery'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
+            self._orders.pop(order_id)
+            self._adjust_strategy_deployed(
+                order.strategy_id, -order.remaining_total,
+            )
+
+            _logger.warning(
+                'Recovered orphaned order — released capital aggregates: '
+                'order_id=%s outcome_type=%s released=%s strategy_id=%s '
+                'prior_state=%s',
+                order_id,
+                outcome_type,
+                order.remaining_total,
+                order.strategy_id,
+                order.state.value,
+            )
 
             return LifecycleResult(success=True)
 

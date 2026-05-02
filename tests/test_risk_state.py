@@ -477,3 +477,73 @@ def test_recompute_seeds_hwm_floor_for_deep_initial_loss() -> None:
     assert rs.realized_equity_hwm == Decimal('1000')
     assert rs.total_drawdown == Decimal('1200')
     assert rs.total_drawdown_pct == Decimal('1.2')
+
+
+class TestRiskStateLockField:
+    '''PR #55 review: `RiskState.lock` was originally attached as a
+    transient `__post_init__` attribute, which excluded it from
+    `dataclasses.replace()`, `repr`, and equality but ALSO meant
+    `dataclasses.replace(state, equity=...)` would silently lose
+    the lock — any consumer copy-then-mutate pattern would create a
+    lock-less RiskState and the FINAL-MAJOR-02 cross-thread
+    serialization would silently no-op on the copy. Post-fix `lock` is
+    a proper dataclass field with `init=False, repr=False,
+    compare=False` so it is excluded from those derived behaviors but
+    survives `replace()`.
+    '''
+
+    def test_lock_default_is_none(self) -> None:
+        '''Newly-constructed RiskState has lock=None — locking is
+        opt-in by the launcher post-construction.
+        '''
+
+        import threading
+
+        rs = RiskState()
+        assert rs.lock is None
+
+        rs.lock = threading.Lock()
+        assert rs.lock is not None
+
+    def test_lock_excluded_from_repr(self) -> None:
+        '''lock with `repr=False` so __repr__ does not depend on
+        threading-object identity (would change between processes).
+        '''
+
+        import threading
+
+        rs = RiskState()
+        rs.lock = threading.Lock()
+
+        assert 'lock' not in repr(rs)
+
+    def test_lock_excluded_from_equality(self) -> None:
+        '''Two otherwise-identical RiskStates with different lock
+        objects compare equal — equality is value-only, not
+        coordination-state-aware.
+        '''
+
+        import threading
+
+        rs1 = RiskState()
+        rs2 = RiskState()
+        rs1.lock = threading.Lock()
+        rs2.lock = threading.Lock()
+        assert rs1 == rs2
+
+    def test_lock_survives_replace(self) -> None:
+        '''After `dataclasses.replace`, the copy retains its own lock
+        attribute (default None) — it does NOT silently drop the field
+        the way a __post_init__-only attribute would.
+        '''
+
+        import dataclasses
+        import threading
+
+        rs = RiskState()
+        rs.lock = threading.Lock()
+
+        rs2 = dataclasses.replace(rs, equity=Decimal('100'))
+        assert hasattr(rs2, 'lock')
+        assert rs2.lock is None
+        assert rs.lock is not None

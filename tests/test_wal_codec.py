@@ -470,10 +470,35 @@ class TestEventRoundTrip:
 
 
 class TestEventCodecVersion:
-    def test_version_embedded(self) -> None:
+    def test_version_embedded_v1_when_outcome_id_empty(self) -> None:
+        '''PR #55 review: an event without `outcome_id` is encoded as
+        v1 so the strict v2 decoder never sees an empty / missing key.
+        FINAL-TD-02 added `outcome_id` for `derive_rolling_losses`
+        dedup of Praxis re-deliveries; events that predate that field
+        keep the legacy v1 contract (no dedup).
+        '''
+
         data = serialize_event(_make_event())
         unpacked = msgpack.unpackb(data, raw=False)
         assert unpacked['_v'] == 1
+        assert 'outcome_id' not in unpacked
+
+    def test_version_embedded_v2_when_outcome_id_present(self) -> None:
+        '''Events with a non-empty `outcome_id` encode as v2 so the
+        recovery deduper has a stable key.
+        '''
+
+        event = StrategyEvent(
+            strategy_id='strat_a',
+            event_type='trade_outcome',
+            realized_pnl=Decimal('-50.25'),
+            timestamp=datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc),
+            outcome_id='outcome-abc-123',
+        )
+        data = serialize_event(event)
+        unpacked = msgpack.unpackb(data, raw=False)
+        assert unpacked['_v'] == 2
+        assert unpacked['outcome_id'] == 'outcome-abc-123'
 
     def test_wrong_version_rejected(self) -> None:
         d = {
@@ -523,6 +548,62 @@ class TestEventMalformedPayload:
             'event_type': 'trade_outcome',
             'realized_pnl': '100',
             'timestamp': 'not-a-date',
+        }
+        data = cast(bytes, msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_v2_missing_outcome_id_rejected(self) -> None:
+        '''PR #55 review: v2 payloads without `outcome_id` must hard-fail
+        instead of silently decoding with `outcome_id=''` (which would
+        disable dedup and reintroduce double-counting on WAL corruption).
+        '''
+
+        d = {
+            '_v': 2,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': '100',
+            'timestamp': '2026-03-19T12:00:00+00:00',
+        }
+        data = cast(bytes, msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_v2_empty_outcome_id_rejected(self) -> None:
+        '''PR #55 review: v2 payloads with empty-string `outcome_id`
+        must hard-fail — empty strings would collide in the dedup set
+        across distinct outcomes, defeating dedup entirely.
+        '''
+
+        d = {
+            '_v': 2,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': '100',
+            'timestamp': '2026-03-19T12:00:00+00:00',
+            'outcome_id': '',
+        }
+        data = cast(bytes, msgpack.packb(d))
+
+        with pytest.raises(ValueError, match='Malformed event codec payload'):
+            deserialize_event(data)
+
+    def test_v2_non_string_outcome_id_rejected(self) -> None:
+        '''PR #55 review: v2 payloads with non-string `outcome_id`
+        (e.g. accidental int from upstream serializer drift) must
+        hard-fail rather than silently coerce.
+        '''
+
+        d = {
+            '_v': 2,
+            'strategy_id': 'strat_a',
+            'event_type': 'trade_outcome',
+            'realized_pnl': '100',
+            'timestamp': '2026-03-19T12:00:00+00:00',
+            'outcome_id': 12345,
         }
         data = cast(bytes, msgpack.packb(d))
 

@@ -14,14 +14,19 @@ Directory layout:
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.infrastructure.snapshot import load_snapshot, save_snapshot
 from nexus.infrastructure.wal import WriteAheadLog
-from nexus.infrastructure.loss_derivation import derive_rolling_losses
+from nexus.infrastructure.loss_derivation import (
+    derive_rolling_losses,
+    derive_strategy_realized_pnl,
+)
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal_codec import (
     deserialize_event,
@@ -59,6 +64,7 @@ class StateStore:
         self._wal.validate_magic()
         existing = self._wal.read_safe()
         self._sequence = existing[-1].sequence + 1 if existing else 0
+        self._wal_lock = threading.Lock()
 
     @property
     def base_path(self) -> Path:
@@ -69,45 +75,69 @@ class StateStore:
     def checkpoint(self, state: InstanceState) -> None:
         '''Save a full snapshot and truncate the WAL.
 
+        FINAL-MAJOR-04: holds `_wal_lock` so a concurrent
+        `append_mutation` / `append_event` from the OutcomeLoop or
+        shutdown thread cannot interleave between the snapshot write
+        and the WAL truncate, which would either persist appends that
+        the truncate then drops (data loss) or truncate appends the
+        snapshot did not capture.
+
         Args:
             state: The current instance state to persist.
         '''
 
-        save_snapshot(state, self._snapshot_path, self._wal)
+        with self._wal_lock:
+            save_snapshot(state, self._snapshot_path, self._wal)
 
     def append_mutation(self, state: InstanceState) -> None:
         '''Append a full state entry to the WAL.
+
+        FINAL-MAJOR-04: `_sequence += 1` is a 2-bytecode RMW and the
+        WAL append's `_find_valid_end + truncate + write + fsync`
+        sequence is a TOCTOU on file size. Concurrent appenders from
+        OutcomeLoop and the shutdown thread (round-16 TD-010) can
+        produce duplicate `_sequence` records and torn appends. The
+        lock makes the entire serialize + sequence-bump + file-write
+        one atomic critical section. Innermost lock in the chain
+        (`command_registry_lock -> positions_lock -> CapitalController._lock
+        -> wal_lock`) — never holds and acquires another lock.
 
         Args:
             state: The current instance state after mutation.
         '''
 
-        payload = serialize_state(state)
-        entry = WALEntry(
-            sequence=self._sequence,
-            timestamp=datetime.now(tz=timezone.utc),
-            entry_type=WALEntryType.STATE_MUTATION,
-            payload=payload,
-        )
-        self._wal.append(entry)
-        self._sequence += 1
+        with self._wal_lock:
+            payload = serialize_state(state)
+            entry = WALEntry(
+                sequence=self._sequence,
+                timestamp=datetime.now(tz=timezone.utc),
+                entry_type=WALEntryType.STATE_MUTATION,
+                payload=payload,
+            )
+            self._wal.append(entry)
+            self._sequence += 1
 
     def append_event(self, event: StrategyEvent) -> None:
         '''Append a strategy event entry to the WAL.
+
+        FINAL-MAJOR-04: same atomicity guarantee as `append_mutation`
+        — `_sequence += 1` and the WAL file-write are one critical
+        section under `_wal_lock`.
 
         Args:
             event: The strategy event to persist.
         '''
 
-        payload = serialize_event(event)
-        entry = WALEntry(
-            sequence=self._sequence,
-            timestamp=datetime.now(tz=timezone.utc),
-            entry_type=WALEntryType.STRATEGY_EVENT,
-            payload=payload,
-        )
-        self._wal.append(entry)
-        self._sequence += 1
+        with self._wal_lock:
+            payload = serialize_event(event)
+            entry = WALEntry(
+                sequence=self._sequence,
+                timestamp=datetime.now(tz=timezone.utc),
+                entry_type=WALEntryType.STRATEGY_EVENT,
+                payload=payload,
+            )
+            self._wal.append(entry)
+            self._sequence += 1
 
     def recover(self) -> InstanceState | None:
         '''Recover instance state from snapshot and WAL.
@@ -136,19 +166,47 @@ class StateStore:
         if wal_entries:
             self._sequence = wal_entries[-1].sequence + 1
 
-        if state is None or not events:
+        if state is None:
             return state
 
+        # FINAL-MAJOR-10: do NOT early-return when `events` is empty.
+        # Pre-fix the snapshot's `state.risk.per_strategy[sid].rolling_loss_*`
+        # values were adopted verbatim — frozen at last-snapshot time,
+        # not decayed against the current time. Combined with PredictLoop
+        # starting BEFORE HealthLoop in the launcher (`praxis/launcher.py`
+        # 1614 vs 1646), the validator could read inflated rolling losses
+        # for up to ~5s after boot, denying every ENTER that should pass.
+        # Post-fix every per_strategy entry is decayed against current
+        # time on every recover() call, regardless of WAL event count.
         recovery_time = datetime.now(tz=timezone.utc)
-        losses = derive_rolling_losses(events, recovery_time)
-        seen_strategies = {e.strategy_id for e in events}
+        losses = derive_rolling_losses(events, recovery_time) if events else {}
 
-        for sid in seen_strategies:
+        # FINAL-TD-01: also re-derive per-strategy SIGNED cumulative
+        # `strategy_realized_pnl` from events. Pre-fix `recover()`
+        # adopted the snapshot's `strategy_realized_pnl` verbatim;
+        # on a crash between `append_event` and `append_mutation` the
+        # delta from the lost STATE_MUTATION was permanently dropped
+        # — drawdown gates fired LATER than they should by the missing
+        # delta. The same residual is then propagated into the
+        # instance-level `cumulative_realized_pnl` so drawdown
+        # derivatives stay consistent.
+        derived_pnl = derive_strategy_realized_pnl(events) if events else {}
+
+        # PR #55 round-5: lazily insert StrategyRiskState for any strategy
+        # that has WAL events but is missing from the snapshot's
+        # `per_strategy` dict. OutcomeProcessor creates `StrategyRiskState`
+        # entries lazily on first exit. A crash between `append_event` and
+        # the next STATE_MUTATION leaves the WAL with a STRATEGY_EVENT for
+        # a strategy whose StrategyRiskState was not yet persisted; without
+        # this, the loop below would skip it and the first realized P&L /
+        # rolling-loss delta would be permanently dropped on recovery.
+        for sid in (set(losses.keys()) | set(derived_pnl.keys())):
             if sid not in state.risk.per_strategy:
-                continue
+                state.risk.per_strategy[sid] = StrategyRiskState(
+                    strategy_id=sid,
+                )
 
-            srs = state.risk.per_strategy[sid]
-
+        for sid, srs in state.risk.per_strategy.items():
             if sid in losses:
                 srs.rolling_loss_24h = losses[sid].rolling_loss_24h
                 srs.rolling_loss_7d = losses[sid].rolling_loss_7d
@@ -157,6 +215,17 @@ class StateStore:
                 srs.rolling_loss_24h = _ZERO
                 srs.rolling_loss_7d = _ZERO
                 srs.rolling_loss_30d = _ZERO
+
+            srs.strategy_realized_pnl = derived_pnl.get(sid, _ZERO)
+            srs.high_water_mark = max(
+                srs.high_water_mark, srs.strategy_realized_pnl,
+            )
+
+        # Re-derive instance-level cumulative_realized_pnl as the sum
+        # over per-strategy realized P&L (same identity used by
+        # `state.risk.realized_pnl` property at runtime). Triggers
+        # drawdown recompute under the new value.
+        state.risk.update_cumulative_realized_pnl(state.risk.realized_pnl)
 
         return state
 
@@ -181,21 +250,36 @@ class StateStore:
         Call periodically during uptime to ensure rolling loss windows
         remain accurate as old events age out of the 24h/7d/30d windows.
 
+        FINAL-MAJOR-02: the per-strategy iteration + field assignments
+        run under `state.risk.lock` so the OutcomeProcessor writer
+        (`_update_strategy_risk_state`) cannot insert a fresh strategy
+        key mid-iteration, which would raise
+        `RuntimeError: dictionary changed size during iteration` and
+        be silently swallowed by HealthLoop's catch-all.
+
+        PR #55 round-7: the WAL read + derivation also runs under the
+        same lock. Pre-fix the read happened BEFORE the lock acquisition,
+        so a concurrent OutcomeProcessor write between the WAL read and
+        the lock-protected write produced a stale derivation that
+        overwrote the just-applied fill. Holding the lock across the
+        entire read-derive-write sequence ensures the snapshot we
+        derive from is consistent with the values we then write.
+
         Args:
             state: Instance state whose rolling losses will be updated in place.
         '''
 
-        events = self.read_events()
+        with state.risk.lock_cm():
+            events = self.read_events()
+            recovery_time = datetime.now(tz=timezone.utc)
+            losses = derive_rolling_losses(events, recovery_time) if events else {}
 
-        recovery_time = datetime.now(tz=timezone.utc)
-        losses = derive_rolling_losses(events, recovery_time) if events else {}
-
-        for sid, srs in state.risk.per_strategy.items():
-            if sid in losses:
-                srs.rolling_loss_24h = losses[sid].rolling_loss_24h
-                srs.rolling_loss_7d = losses[sid].rolling_loss_7d
-                srs.rolling_loss_30d = losses[sid].rolling_loss_30d
-            else:
-                srs.rolling_loss_24h = _ZERO
-                srs.rolling_loss_7d = _ZERO
-                srs.rolling_loss_30d = _ZERO
+            for sid, srs in state.risk.per_strategy.items():
+                if sid in losses:
+                    srs.rolling_loss_24h = losses[sid].rolling_loss_24h
+                    srs.rolling_loss_7d = losses[sid].rolling_loss_7d
+                    srs.rolling_loss_30d = losses[sid].rolling_loss_30d
+                else:
+                    srs.rolling_loss_24h = _ZERO
+                    srs.rolling_loss_7d = _ZERO
+                    srs.rolling_loss_30d = _ZERO

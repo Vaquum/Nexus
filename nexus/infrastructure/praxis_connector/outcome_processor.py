@@ -179,15 +179,37 @@ class OutcomeProcessor:
         )
 
         if realized_pnl is not None:
-            self._update_strategy_risk_state(context.strategy_id, realized_pnl)
-            self._state.risk.update_cumulative_realized_pnl(self._state.risk.realized_pnl)
             event = StrategyEvent(
                 strategy_id=context.strategy_id,
                 event_type='trade_outcome',
                 realized_pnl=realized_pnl,
                 timestamp=outcome.timestamp,
+                outcome_id=outcome.outcome_id,
             )
-            self._store.append_event(event)
+            with self._state.risk.lock_cm():
+                # PR #55 round-10 review: WAL append FIRST under the
+                # held risk.lock, then in-memory mutation. Pre-fix the
+                # order was mutate-then-append; if append_event raised
+                # (transient I/O / WAL validation failure), the
+                # per-strategy and cumulative risk fields had already
+                # been mutated but the event was never persisted —
+                # `refresh_rolling_losses` only rebuilds rolling-loss
+                # windows, NOT strategy_realized_pnl /
+                # cumulative_realized_pnl, so the in-memory risk state
+                # would stay inconsistent until restart.
+                # Post-fix: append raises → no in-memory change, caller
+                # sees the exception, in-memory + WAL stay in sync.
+                # The single risk.lock acquisition still closes the
+                # round-7 race (refresher cannot interleave between
+                # append and in-memory mutation because it would block
+                # on the lock).
+                self._store.append_event(event)
+                self._update_strategy_risk_state_locked(
+                    context.strategy_id, realized_pnl,
+                )
+                self._state.risk.update_cumulative_realized_pnl(
+                    self._state.risk.realized_pnl,
+                )
 
         return ProcessResult(
             success=True,
@@ -395,6 +417,7 @@ class OutcomeProcessor:
     ) -> tuple[bool, Decimal | None]:
         assert outcome.fill_size is not None
         assert outcome.fill_price is not None
+        assert outcome.actual_fees is not None
 
         if context.trade_id is None:
             msg = f'exit fill without trade_id: command_id={outcome.command_id!r}'
@@ -418,7 +441,15 @@ class OutcomeProcessor:
 
         entry_price = position.entry_price
         side_multiplier = Decimal(-1) if position.side == OrderSide.SELL else Decimal(1)
-        realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size
+        gross_pnl = side_multiplier * (fill_price - entry_price) * fill_size
+        # FINAL-MAJOR-08: subtract exit fees so realized_pnl is NET, not GROSS.
+        # The net value flows verbatim into strategy_realized_pnl,
+        # cumulative_realized_pnl, equity, equity_hwm, and the rolling-loss
+        # windows; rolling-loss / drawdown gates fire at the correct net-PnL
+        # threshold instead of LATER by the cumulative fee total. On testnet
+        # `fee_rate=0` so this is a no-op; mainnet-fatal once fee_rate flips
+        # non-zero (couples with Praxis TD-030).
+        realized_pnl = gross_pnl - outcome.actual_fees
 
         if position.avg_cost_basis == _ZERO:
             _log.warning(
@@ -472,7 +503,38 @@ class OutcomeProcessor:
         strategy_id: str,
         realized_pnl: Decimal,
     ) -> None:
+        '''Lock-acquiring wrapper around `_update_strategy_risk_state_locked`.
+
+        Used by tests and any caller that wants the legacy "this
+        function handles its own locking" contract. The hot path in
+        `_handle_fill` calls `_update_strategy_risk_state_locked`
+        directly under an already-held lock so the WAL append at the
+        end of the same critical section is race-free against
+        `refresh_rolling_losses`.
+
+        Args:
+            strategy_id: Strategy that realized the P&L.
+            realized_pnl: P&L from exit fill (negative for losses).
+        '''
+
+        with self._state.risk.lock_cm():
+            self._update_strategy_risk_state_locked(strategy_id, realized_pnl)
+
+    def _update_strategy_risk_state_locked(
+        self,
+        strategy_id: str,
+        realized_pnl: Decimal,
+    ) -> None:
         '''Update per-strategy risk metrics after an exit fill.
+
+        Caller MUST hold `state.risk.lock` (`threading.Lock` is non-
+        reentrant, so this method does NOT re-acquire it). Per PR #55
+        round-7, callers in `_handle_fill` hold the risk lock across
+        the per-strategy update + `update_cumulative_realized_pnl` +
+        `append_event` so a concurrent `refresh_rolling_losses` cannot
+        observe a window where the WAL is missing the new event but
+        `per_strategy` already reflects it (and write back stale
+        WAL-derived values that overwrite the just-applied loss).
 
         Gets or creates StrategyRiskState for strategy_id, increments
         strategy_realized_pnl, adds to rolling loss counters if loss,

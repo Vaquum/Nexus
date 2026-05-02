@@ -28,8 +28,12 @@ __all__ = [
     'serialize_state',
 ]
 
-_CODEC_VERSION = 1
-_EVENT_CODEC_VERSION = 1
+_CODEC_VERSION_1 = 1
+_CODEC_VERSION_LATEST = _CODEC_VERSION_1
+
+_EVENT_CODEC_VERSION_1 = 1
+_EVENT_CODEC_VERSION_2 = 2
+_EVENT_CODEC_VERSION_LATEST = _EVENT_CODEC_VERSION_2
 
 
 def serialize_state(state: InstanceState) -> bytes:
@@ -43,7 +47,7 @@ def serialize_state(state: InstanceState) -> bytes:
     '''
 
     d: dict[str, Any] = {
-        '_v': _CODEC_VERSION,
+        '_v': _CODEC_VERSION_LATEST,
         'capital': _encode_capital_state(state.capital),
         'risk': _encode_risk_state(state.risk),
         'positions': {k: _encode_position(v) for k, v in state.positions.items()},
@@ -69,9 +73,9 @@ def deserialize_state(data: bytes) -> InstanceState:
     if not isinstance(d, dict):
         msg = f'Expected dict from WAL payload, got {type(d).__name__}'
         raise ValueError(msg)
-    version = d.get('_v', 1)
+    version = d.get('_v', _CODEC_VERSION_1)
 
-    if version == 1:
+    if version == _CODEC_VERSION_1:
         return _decode_state_v1(d)
 
     msg = f'Unsupported WAL codec version: {version}'
@@ -375,6 +379,14 @@ def _decode_strategy_mode_state(d: dict[str, Any]) -> StrategyModeState:
 def serialize_event(event: StrategyEvent) -> bytes:
     '''Serialize a StrategyEvent to compact binary format.
 
+    Encodes as v2 when `outcome_id` is non-empty so the recovery
+    deduper has a stable key; falls back to v1 (legacy, no dedup)
+    when `outcome_id` is empty so callers that predate FINAL-TD-02
+    keep working. PR #55 review: never tag a payload as v2 without a
+    real `outcome_id`, since the strict v2 decoder rejects empty /
+    missing values to prevent silent double-counting on WAL
+    corruption.
+
     Args:
         event: The strategy event to serialize.
 
@@ -382,13 +394,24 @@ def serialize_event(event: StrategyEvent) -> bytes:
         Msgpack-encoded bytes.
     '''
 
-    d: dict[str, str | int] = {
-        '_v': _EVENT_CODEC_VERSION,
-        'strategy_id': event.strategy_id,
-        'event_type': event.event_type,
-        'realized_pnl': str(event.realized_pnl),
-        'timestamp': event.timestamp.isoformat(),
-    }
+    d: dict[str, str | int]
+    if event.outcome_id:
+        d = {
+            '_v': _EVENT_CODEC_VERSION_LATEST,
+            'strategy_id': event.strategy_id,
+            'event_type': event.event_type,
+            'realized_pnl': str(event.realized_pnl),
+            'timestamp': event.timestamp.isoformat(),
+            'outcome_id': event.outcome_id,
+        }
+    else:
+        d = {
+            '_v': _EVENT_CODEC_VERSION_1,
+            'strategy_id': event.strategy_id,
+            'event_type': event.event_type,
+            'realized_pnl': str(event.realized_pnl),
+            'timestamp': event.timestamp.isoformat(),
+        }
     return cast(bytes, msgpack.packb(d))
 
 
@@ -407,13 +430,16 @@ def deserialize_event(data: bytes) -> StrategyEvent:
         msg = f'Expected dict from event payload, got {type(d).__name__}'
         raise ValueError(msg)
     try:
-        version = int(d.get('_v', 1))
+        version = int(d.get('_v', _EVENT_CODEC_VERSION_1))
     except (ValueError, TypeError) as exc:
         msg = f'Malformed event codec version: {exc}'
         raise ValueError(msg) from exc
 
-    if version == 1:
+    if version == _EVENT_CODEC_VERSION_1:
         return _decode_event_v1(d)
+
+    if version == _EVENT_CODEC_VERSION_2:
+        return _decode_event_v2(d)
 
     msg = f'Unsupported event codec version: {version}'
     raise ValueError(msg)
@@ -422,11 +448,20 @@ def deserialize_event(data: bytes) -> StrategyEvent:
 def _decode_event_v1(d: dict[str, Any]) -> StrategyEvent:
     '''Decode v1 event payload to StrategyEvent.
 
+    Legacy events predate FINAL-TD-02 — they have no `outcome_id`,
+    so dedup is impossible for them. The default empty `outcome_id`
+    is preserved; `derive_rolling_losses` skips dedup on empty ids.
+
+    Mixed-WAL caveat: a WAL containing both v1 and v2 entries for the
+    same outcome (transition window from before the v2 codec landed)
+    will count the v1 instance unfiltered. Bounded by checkpoint
+    truncation that drops pre-v2 events; tracked as a TD entry.
+
     Args:
         d: Decoded msgpack dict with v1 schema.
 
     Returns:
-        Reconstructed StrategyEvent.
+        Reconstructed StrategyEvent with `outcome_id=''`.
     '''
 
     try:
@@ -435,6 +470,40 @@ def _decode_event_v1(d: dict[str, Any]) -> StrategyEvent:
             event_type=d['event_type'],
             realized_pnl=Decimal(d['realized_pnl']),
             timestamp=datetime.fromisoformat(d['timestamp']),
+        )
+    except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation) as exc:
+        msg = f'Malformed event codec payload: {exc}'
+        raise ValueError(msg) from exc
+
+
+def _decode_event_v2(d: dict[str, Any]) -> StrategyEvent:
+    '''Decode v2 event payload to StrategyEvent.
+
+    v2 adds `outcome_id` (FINAL-TD-02) carried from
+    `TradeOutcome.outcome_id` so duplicate venue re-deliveries can
+    be filtered in `derive_rolling_losses`.
+
+    Args:
+        d: Decoded msgpack dict with v2 schema.
+
+    Returns:
+        Reconstructed StrategyEvent.
+    '''
+
+    try:
+        outcome_id = d['outcome_id']
+        if not isinstance(outcome_id, str) or not outcome_id or not outcome_id.strip():
+            msg = (
+                f'v2 event payload requires a non-blank `outcome_id` string; '
+                f'got {outcome_id!r}'
+            )
+            raise ValueError(msg)
+        return StrategyEvent(
+            strategy_id=d['strategy_id'],
+            event_type=d['event_type'],
+            realized_pnl=Decimal(d['realized_pnl']),
+            timestamp=datetime.fromisoformat(d['timestamp']),
+            outcome_id=outcome_id,
         )
     except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation) as exc:
         msg = f'Malformed event codec payload: {exc}'

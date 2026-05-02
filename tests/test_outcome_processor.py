@@ -684,7 +684,10 @@ class TestRiskMetricsRecalculation:
         assert result.success is True
 
         strategy_risk = state.risk.per_strategy['strat_001']
-        expected_loss = Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees.
+        # gross loss = (49000 - 50000) * 0.01 = -10; minus actual_fees=1 -> -11
+        # rolling_loss tracks abs(net loss).
+        expected_loss = Decimal('11')
         assert strategy_risk.rolling_loss_24h == expected_loss
         assert strategy_risk.rolling_loss_7d == expected_loss
         assert strategy_risk.rolling_loss_30d == expected_loss
@@ -726,7 +729,9 @@ class TestRiskMetricsRecalculation:
         assert result.success is True
 
         strategy_risk = state.risk.per_strategy['strat_001']
-        expected_pnl = Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees.
+        # gross = (51000 - 50000) * 0.01 = 10; minus actual_fees=1 -> 9
+        expected_pnl = Decimal('9')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
         assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
@@ -766,7 +771,9 @@ class TestRiskMetricsRecalculation:
         result = proc.process(outcome, _exit_context())
         assert result.success is True
 
-        expected_pnl = Decimal('10')
+        # FINAL-MAJOR-08: cumulative_realized_pnl is NET of exit fees.
+        # gross = (51000 - 50000) * 0.01 = 10; minus actual_fees=1 -> 9
+        expected_pnl = Decimal('9')
         assert state.risk.cumulative_realized_pnl == expected_pnl
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
         assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
@@ -806,7 +813,9 @@ class TestRiskMetricsRecalculation:
         result = proc.process(outcome, _exit_context())
         assert result.success is True
 
-        expected_equity = _POOL + Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees, so equity
+        # adds the net (gross 10 - fees 1 = 9), not the gross.
+        expected_equity = _POOL + Decimal('9')
         assert state.risk.equity == expected_equity
         assert state.risk.equity_hwm == expected_equity
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
@@ -889,7 +898,9 @@ class TestRiskMetricsRecalculation:
         assert 'strat_002' not in state.risk.per_strategy
 
         strat1_risk = state.risk.per_strategy['strat_001']
-        assert strat1_risk.rolling_loss_24h == Decimal('10')
+        # FINAL-MAJOR-08: rolling_loss tracks abs(net loss).
+        # gross loss 10 + actual_fees 1 = net loss 11.
+        assert strat1_risk.rolling_loss_24h == Decimal('11')
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
         assert ctrl._state.per_strategy_deployed['strat_001'] == pre_deployed - cost_basis
 
@@ -966,7 +977,9 @@ class TestRiskMetricsRecalculation:
         assert result.success is True
 
         strategy_risk = state.risk.per_strategy['strat_001']
-        expected_pnl = Decimal('10')
+        # FINAL-MAJOR-08: realized_pnl is NET of exit fees.
+        # SHORT: gross = -(49000 - 50000) * 0.01 = +10; minus actual_fees=1 -> 9
+        expected_pnl = Decimal('9')
         assert strategy_risk.strategy_realized_pnl == expected_pnl
         assert strategy_risk.rolling_loss_24h == _ZERO
         assert ctrl._state.position_notional == pre_position_notional - cost_basis
@@ -2012,3 +2025,377 @@ class TestPositionsLockHonoredByWriter:
                 f'reader observed exceptions during iteration: '
                 f'{iteration_failures[:3]}'
             )
+
+
+class TestFinalMajor02RiskLockCoverage:
+    '''FINAL-MAJOR-02: state.risk.per_strategy and StrategyRiskState
+    fields are mutated by OutcomeProcessor on the OutcomeLoop thread
+    while the validator's to_risk_check_metrics (PredictLoop /
+    TimerLoop) and HealthLoop's state_store.refresh_rolling_losses
+    (daemon timer) iterate the dict. Pre-fix the writer's first-fill
+    insert at line 491 could fire RuntimeError: dictionary changed
+    size during iteration on either reader; the field-level += ops
+    could lose increments via torn read-modify-write.
+
+    Post-fix all three call sites acquire state.risk.lock (set by the
+    launcher to the shared positions_lock).
+    '''
+
+    def test_writer_vs_refresher_no_iteration_error(self) -> None:
+        '''Writer thread tight-loops _update_strategy_risk_state for
+        new strategy_ids while the foreground thread tight-loops
+        StateStore.refresh_rolling_losses(state). Pre-fix the dict
+        insert during iteration would raise; post-fix the lock
+        serialises and all writes land.
+        '''
+
+        capital_state = CapitalState(capital_pool=Decimal('100000'))
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+
+        risk_lock = threading.Lock()
+        instance_state.risk.lock = risk_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(controller, instance_state, store)
+
+            stop_event = threading.Event()
+            iteration_failures: list[Exception] = []
+
+            def writer() -> None:
+                try:
+                    for i in range(500):
+                        proc._update_strategy_risk_state(
+                            f'strat_{i}', Decimal('-1.0'),
+                        )
+                finally:
+                    stop_event.set()
+
+            def refresher() -> None:
+                try:
+                    while not stop_event.is_set():
+                        store.refresh_rolling_losses(instance_state)
+                except Exception as exc:
+                    iteration_failures.append(exc)
+
+            r = threading.Thread(target=refresher, daemon=True)
+            w = threading.Thread(target=writer, daemon=True)
+            r.start()
+            w.start()
+            w.join(timeout=15)
+            stop_event.set()
+            r.join(timeout=15)
+
+            assert not iteration_failures, (
+                f'refresher observed exceptions during iteration: '
+                f'{iteration_failures[:3]}'
+            )
+            assert len(instance_state.risk.per_strategy) == 500, (
+                f'writer did not complete: '
+                f'len={len(instance_state.risk.per_strategy)}'
+            )
+
+    def test_writer_vs_validator_metrics_no_iteration_error(self) -> None:
+        '''Writer thread tight-loops _update_strategy_risk_state for
+        new strategy_ids while a reader thread tight-loops
+        state.risk.to_risk_check_metrics() (the validator's path).
+        Pre-fix the property iterators (rolling_loss_24h/7d/30d sum
+        comprehensions) raced with the dict insert; post-fix
+        to_risk_check_metrics acquires state.risk.lock and the reader
+        sees a consistent snapshot.
+        '''
+
+        capital_state = CapitalState(capital_pool=Decimal('100000'))
+        instance_state = InstanceState(capital=capital_state)
+        controller = CapitalController(capital_state)
+
+        risk_lock = threading.Lock()
+        instance_state.risk.lock = risk_lock
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = StateStore(Path(tmp))
+            proc = OutcomeProcessor(controller, instance_state, store)
+
+            stop_event = threading.Event()
+            reader_failures: list[Exception] = []
+
+            def writer() -> None:
+                try:
+                    for i in range(500):
+                        proc._update_strategy_risk_state(
+                            f'strat_{i}', Decimal('-2.0'),
+                        )
+                finally:
+                    stop_event.set()
+
+            def reader() -> None:
+                try:
+                    while not stop_event.is_set():
+                        instance_state.risk.to_risk_check_metrics()
+                except Exception as exc:
+                    reader_failures.append(exc)
+
+            r = threading.Thread(target=reader, daemon=True)
+            w = threading.Thread(target=writer, daemon=True)
+            r.start()
+            w.start()
+            w.join(timeout=15)
+            stop_event.set()
+            r.join(timeout=15)
+
+            assert not reader_failures, (
+                f'reader observed exceptions during property iteration: '
+                f'{reader_failures[:3]}'
+            )
+            assert len(instance_state.risk.per_strategy) == 500
+
+
+class TestFinalMajor08RealizedPnlIsNetOfFees:
+    '''FINAL-MAJOR-08: pre-fix `_reduce_position` produced GROSS
+    realized_pnl `(fill_price - entry_price) * fill_size` and ignored
+    `outcome.actual_fees`. The gross value flowed verbatim into
+    `strategy_realized_pnl`, `cumulative_realized_pnl`, equity,
+    equity_hwm, and the rolling-loss windows. Rolling-loss / drawdown
+    gates therefore fired LATER than they should by the cumulative
+    fee total. On testnet `fee_rate=0` so unobserved at MMVP today;
+    mainnet-fatal once Praxis TD-030 flips fee_rate non-zero.
+
+    Post-fix `_reduce_position` returns `gross_pnl - actual_fees` so
+    the net value flows through the entire risk derivation chain.
+    '''
+
+    def test_winning_exit_realized_pnl_is_net_of_fees(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+        _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('1'), Decimal('100'),
+        )
+
+        # gross win = (110 - 100) * 1 = 10; fees 0.5 -> net 9.5
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('110'),
+            fill_notional=Decimal('110'),
+            actual_fees=Decimal('0.5'),
+        )
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        srs = state.risk.per_strategy['strat_001']
+        assert srs.strategy_realized_pnl == Decimal('9.5')
+
+    def test_losing_exit_rolling_loss_includes_exit_fee(self) -> None:
+        '''Rolling-loss windows track abs(net loss). When a position
+        exits at a loss AND incurs an exit fee, the rolling-loss
+        bucket grows by gross_loss + fee. Pre-fix the fee was lost
+        from the rolling-loss accounting.
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+        _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('1'), Decimal('100'),
+        )
+
+        # gross loss = (90 - 100) * 1 = -10; fees 1 -> net -11; rolling = 11
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('90'),
+            fill_notional=Decimal('90'),
+            actual_fees=Decimal('1'),
+        )
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        srs = state.risk.per_strategy['strat_001']
+        assert srs.strategy_realized_pnl == Decimal('-11')
+        assert srs.rolling_loss_24h == Decimal('11')
+        assert srs.rolling_loss_7d == Decimal('11')
+        assert srs.rolling_loss_30d == Decimal('11')
+
+    def test_zero_fee_exit_unchanged_from_pre_fix(self) -> None:
+        '''Sanity: when fees are zero the result equals gross PnL,
+        i.e. behaviour matches pre-M08 on testnet (fee_rate=0).
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('1'),
+            entry_price=Decimal('100'),
+            avg_cost_basis=Decimal('100'),
+        )
+        _prime_open_position_capital(
+            ctrl, 'strat_001', Decimal('1'), Decimal('100'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('105'),
+            fill_notional=Decimal('105'),
+            actual_fees=Decimal('0'),
+        )
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+
+        srs = state.risk.per_strategy['strat_001']
+        assert srs.strategy_realized_pnl == Decimal('5')
+
+
+class TestExitFillWalAppendFailureRollback:
+    '''PR #55 round-10 review: if `state_store.append_event` raises
+    inside `_handle_fill`'s critical section (transient I/O / WAL
+    validation failure), the per-strategy and instance-level risk
+    fields must NOT have been mutated. Pre-fix the order was
+    mutate-then-append, leaving in-memory state inconsistent with WAL
+    until restart — `refresh_rolling_losses` only rebuilds rolling-loss
+    windows, NOT `strategy_realized_pnl` / `cumulative_realized_pnl`,
+    so the inconsistency persisted until next boot.
+
+    Post-fix the order is append-then-mutate inside the same
+    `state.risk.lock_cm()` acquisition. Append raise → no in-memory
+    change, caller sees the exception, in-memory + WAL stay in sync.
+    The single lock acquisition still closes the round-7 race because
+    a refresher cannot interleave between the append and the mutation
+    (it would block on the lock).
+    '''
+
+    def test_append_event_raise_leaves_risk_state_unchanged(self) -> None:
+        '''Monkey-patch `StateStore.append_event` to raise on the
+        EXIT FILL. Assert: (a) `process` returns success=False or
+        raises, (b) `strategy_realized_pnl` is still _ZERO,
+        (c) `rolling_loss_*` are still _ZERO,
+        (d) `cumulative_realized_pnl` is still _ZERO.
+        '''
+
+        from unittest.mock import patch
+
+        proc, ctrl, state, store, _tmp = _make_processor()
+
+        _setup_working_order(ctrl, order_id='cmd_enter')
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        entry_outcome = TradeOutcome(
+            outcome_id='out_enter',
+            command_id='cmd_enter',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+        entry_ctx = OrderContext(
+            command_id='cmd_enter',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            is_entry=True,
+        )
+        proc.process(entry_outcome, entry_ctx)
+
+        srs_pre = state.risk.per_strategy.get('strat_001')
+        pre_realized_pnl = (
+            srs_pre.strategy_realized_pnl if srs_pre is not None else _ZERO
+        )
+        pre_rolling_24h = (
+            srs_pre.rolling_loss_24h if srs_pre is not None else _ZERO
+        )
+        pre_cumulative = state.risk.cumulative_realized_pnl
+
+        exit_outcome = TradeOutcome(
+            outcome_id='out_exit',
+            command_id='cmd_exit',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('102'),
+            actual_fees=Decimal('1'),
+        )
+        exit_ctx = OrderContext(
+            command_id='cmd_exit',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('102'),
+            estimated_fees=Decimal('1'),
+            is_entry=False,
+        )
+
+        injected_failure = OSError('disk full')
+        with (
+            patch.object(store, 'append_event', side_effect=injected_failure),
+            pytest.raises(OSError, match='disk full'),
+        ):
+            proc.process(exit_outcome, exit_ctx)
+
+        srs_post = state.risk.per_strategy.get('strat_001')
+        post_realized_pnl = (
+            srs_post.strategy_realized_pnl if srs_post is not None else _ZERO
+        )
+        post_rolling_24h = (
+            srs_post.rolling_loss_24h if srs_post is not None else _ZERO
+        )
+        post_cumulative = state.risk.cumulative_realized_pnl
+
+        assert post_realized_pnl == pre_realized_pnl, (
+            f'PR #55 round-10: WAL append failure must NOT mutate '
+            f'strategy_realized_pnl. pre={pre_realized_pnl} '
+            f'post={post_realized_pnl}'
+        )
+        assert post_rolling_24h == pre_rolling_24h, (
+            f'PR #55 round-10: WAL append failure must NOT mutate '
+            f'rolling_loss_24h. pre={pre_rolling_24h} '
+            f'post={post_rolling_24h}'
+        )
+        assert post_cumulative == pre_cumulative, (
+            f'PR #55 round-10: WAL append failure must NOT mutate '
+            f'cumulative_realized_pnl. pre={pre_cumulative} '
+            f'post={post_cumulative}'
+        )

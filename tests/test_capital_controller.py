@@ -967,6 +967,89 @@ class TestOrderCancel:
         assert 'strat_a' not in ctrl._state.per_strategy_deployed
 
 
+class TestRecoverOrphanedOrder:
+    '''Defense-in-depth helper for FINAL-MAJOR-01: when the launcher's
+    `process_outcome` hits the no-OrderContext terminal cleanup branch
+    (because `_build_order_context` returned None, or — pre-FINAL-MAJOR-01
+    — a registry race dropped the registration), `_orders[command_id]`
+    was already populated by `send_order` and capital aggregates remain
+    inflated. `recover_orphaned_order` releases the aggregate and pops
+    the tracked order. Idempotent.
+    '''
+
+    def test_recover_in_flight_orphan_releases_aggregates(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        assert ctrl._state.in_flight_order_notional == Decimal('101')
+        assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('101')
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'REJECTED')
+
+        assert recovered.success is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_recover_working_orphan_releases_aggregates(self) -> None:
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='100', fees='1')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+        assert ctrl._state.working_order_notional == Decimal('101')
+        assert ctrl._state.in_flight_order_notional == _ZERO
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'CANCELED')
+
+        assert recovered.success is True
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+        assert 'ORD-001' not in ctrl._orders
+
+    def test_recover_unknown_order_is_idempotent(self) -> None:
+        '''The launcher may not know whether `send_order` reached this
+        controller (e.g., `send_order` returned failure earlier and the
+        registry was cleaned up); calling `recover_orphaned_order` on a
+        non-existent order returns success without mutating state.
+        '''
+
+        ctrl = _make_controller()
+        pre_in_flight = ctrl._state.in_flight_order_notional
+        pre_working = ctrl._state.working_order_notional
+        pre_deployed = dict(ctrl._state.per_strategy_deployed)
+
+        recovered = ctrl.recover_orphaned_order('nonexistent', 'EXPIRED')
+
+        assert recovered.success is True
+        assert ctrl._state.in_flight_order_notional == pre_in_flight
+        assert ctrl._state.working_order_notional == pre_working
+        assert ctrl._state.per_strategy_deployed == pre_deployed
+
+    def test_recover_after_partial_fill_releases_remaining_working(self) -> None:
+        '''Partial fill moved some capital to position_notional; the
+        remaining working_order_notional is the aggregate at risk for
+        the orphan; recovery releases only that remainder.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
+        assert ctrl._state.position_notional == Decimal('404')
+        assert ctrl._state.working_order_notional == Decimal('606')
+
+        recovered = ctrl.recover_orphaned_order('ORD-001', 'CANCELED')
+
+        assert recovered.success is True
+        assert ctrl._state.position_notional == Decimal('404')
+        assert ctrl._state.working_order_notional == _ZERO
+        assert 'ORD-001' not in ctrl._orders
+
+
 class TestOrderExitInvariants:
     '''`order_exit` must reject when `cost_basis_released` exceeds either
     `position_notional` OR `per_strategy_deployed[strategy_id]`. Pre-fix
@@ -1631,3 +1714,371 @@ class TestReconcileAtBootResetsPendingExit:
         ctrl.reconcile_at_boot()
 
         assert pos.pending_exit == Decimal('0.5')
+
+
+class TestFinalMajor06ExitBoundaryTolerance:
+    '''FINAL-MAJOR-06: `_compute_exit_cost_basis` round-trips
+    `(N/q) * q` and can overshoot `position_notional` by sub-ULP at
+    default Decimal precision (28 digits). Pre-fix `order_exit`'s
+    strict `>` boundary at line 692 would falsely reject the EXIT
+    FILL with INVARIANT_BREACH; `_handle_fill` then returns
+    success=False BEFORE `_reduce_position`, so the venue closed the
+    position but Nexus did not — `position_notional` and
+    `per_strategy_deployed[sid]` stay inflated, the strategy is
+    locked out of new ENTERs by its own budget until the next boot's
+    `_reconcile_capital` heals it.
+
+    Post-fix `order_exit` uses an `_EXIT_BOUNDARY_TOLERANCE`
+    (1E-12 quote) on the `>` checks and clamps the actual decrement
+    to the available aggregate so neither `position_notional` nor
+    `per_strategy_deployed` can be driven negative. Beyond-tolerance
+    overshoots still hard-fail with INVARIANT_BREACH.
+    '''
+
+    def test_n5_q3_repro_succeeds_post_fix(self) -> None:
+        '''The verified single-fill repro from R17-C addendum §1:
+        avg_cost_basis = 5/3 = 1.666...666...7 (last digit rounds up
+        per ROUND_HALF_EVEN); cost_basis_released = avg_cost_basis * 3
+        = 5.000...001 (overshoots position_notional=5 by 1E-27).
+        Pre-fix returns INVARIANT_BREACH; post-fix succeeds, position
+        and strategy aggregates clamp to zero, no negative values.
+        '''
+
+        position_notional = Decimal('5')
+        avg_cost_basis = position_notional / Decimal('3')
+        cost_basis_released = avg_cost_basis * Decimal('3')
+        assert cost_basis_released > position_notional, (
+            'pre-condition: the repro expression must overshoot'
+        )
+
+        ctrl = _make_controller(
+            position_notional=position_notional,
+            per_strategy_deployed={'strat_a': position_notional},
+        )
+
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is True, (
+            f'post-fix order_exit should succeed despite sub-ULP '
+            f'overshoot; got: {result.reason}'
+        )
+        assert ctrl._state.position_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+    def test_within_tolerance_overshoot_clamps_aggregates_to_zero(self) -> None:
+        position_notional = Decimal('100')
+        cost_basis_released = position_notional + Decimal('1E-15')
+        ctrl = _make_controller(
+            position_notional=position_notional,
+            per_strategy_deployed={'strat_a': position_notional},
+        )
+
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is True
+        assert ctrl._state.position_notional == _ZERO
+        assert 'strat_a' not in ctrl._state.per_strategy_deployed
+
+    def test_beyond_tolerance_overshoot_still_rejects(self) -> None:
+        '''A real overshoot (a satoshi-scale or larger excess) must
+        still fail with INVARIANT_BREACH; the tolerance only absorbs
+        sub-ULP rounding noise, not material breaches.
+        '''
+
+        position_notional = Decimal('100')
+        cost_basis_released = position_notional + Decimal('1E-6')
+        ctrl = _make_controller(
+            position_notional=position_notional,
+            per_strategy_deployed={'strat_a': position_notional},
+        )
+
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is False
+        assert result.category == FailureCategory.INVARIANT_BREACH
+        assert ctrl._state.position_notional == position_notional
+        assert ctrl._state.per_strategy_deployed['strat_a'] == position_notional
+
+    def test_sweep_full_triggering_grid_all_succeed(self) -> None:
+        '''R17-C addendum §1 documented 155 distinct triggering
+        integer pairs in `notional in [1..200] x size in [2..20]`.
+        Sweep the full 200x19 = 3800-pair grid, identify every pair
+        whose `(N/q) * q` overshoots `N`, and assert each one's
+        `order_exit` succeeds post-fix. Pre-fix every triggering pair
+        would return INVARIANT_BREACH.
+        '''
+
+        triggering_pairs = [
+            (Decimal(n), Decimal(q))
+            for n in range(1, 201)
+            for q in range(2, 21)
+            if (Decimal(n) / Decimal(q)) * Decimal(q) > Decimal(n)
+        ]
+        assert len(triggering_pairs) > 100, (
+            f'sweep should surface >100 triggering pairs at default Decimal '
+            f'precision; got {len(triggering_pairs)}'
+        )
+
+        failures: list[str] = []
+        for notional, size in triggering_pairs:
+            avg_cost_basis = notional / size
+            released = avg_cost_basis * size
+            ctrl = _make_controller(
+                position_notional=notional,
+                per_strategy_deployed={'strat_a': notional},
+            )
+
+            result = ctrl.order_exit('strat_a', released)
+
+            if not result.success:
+                failures.append(
+                    f'(N={notional}, q={size}): {result.reason}'
+                )
+
+        assert not failures, (
+            f'{len(failures)} of {len(triggering_pairs)} triggering pairs '
+            f'failed; first 5: {failures[:5]}'
+        )
+
+
+class TestOrderExitAttributionLockstepUnderTolerance:
+    '''PR #55 review: pre-fix `order_exit` clamped position-side and
+    strategy-side decrements via TWO separate `min(...)` calls
+    (`min(cost_basis_released, position_notional)` and
+    `min(cost_basis_released, strategy_deployed)`). When
+    `cost_basis_released` overshoots ONLY the per-strategy total
+    (within `_SUB_ULP_TOLERANCE`) but NOT the position-level total
+    (because other strategies still have open positions),
+    `position_notional` decreased by the unclamped overshoot while
+    `per_strategy_deployed[sid]` decreased by the clamped strategy
+    total. Result: a sub-ULP attribution mismatch
+    (`sum(per_strategy_deployed) != total_deployed`) that
+    `check_and_reserve` rejects via `INVARIANT_BREACH`, locking out
+    the next reservation.
+
+    Post-fix `order_exit` computes ONE `release_amount = min(
+    cost_basis_released, position_notional, strategy_deployed)` and
+    applies it to BOTH aggregates so the attribution invariant stays
+    exact across the within-tolerance boundary.
+    '''
+
+    def test_within_tolerance_strategy_overshoot_preserves_attribution_invariant(
+        self,
+    ) -> None:
+        '''`cost_basis_released` overshoots `strategy_deployed` by
+        sub-ULP but does NOT overshoot `position_notional` (other
+        strategies still have positions open). Pre-fix the two
+        decrements differ by sub-ULP; post-fix they match.
+        '''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={
+                'strat_a': Decimal('100'),
+                'strat_b': Decimal('900'),
+            },
+        )
+
+        cost_basis_released = Decimal('100') + Decimal('1E-13')
+        result = ctrl.order_exit('strat_a', cost_basis_released)
+
+        assert result.success is True, result.reason
+
+        total_deployed = (
+            ctrl._state.position_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.reservation_notional
+        )
+        attributed = sum(
+            ctrl._state.per_strategy_deployed.values(), _ZERO,
+        )
+        assert attributed == total_deployed, (
+            f'attribution mismatch after within-tolerance order_exit: '
+            f'attributed={attributed} total_deployed={total_deployed} '
+            f'delta={attributed - total_deployed}'
+        )
+
+    def test_within_tolerance_strategy_overshoot_followed_by_reserve_succeeds(
+        self,
+    ) -> None:
+        '''Downstream proof of the lockout-prevention claim: after the
+        within-tolerance overshoot exit, a fresh `check_and_reserve`
+        for `strat_b` must succeed (pre-fix it would be rejected by
+        the strict mismatch denial).
+        '''
+
+        ctrl = _make_controller(
+            position_notional=Decimal('1000'),
+            per_strategy_deployed={
+                'strat_a': Decimal('100'),
+                'strat_b': Decimal('900'),
+            },
+        )
+
+        cost_basis_released = Decimal('100') + Decimal('1E-13')
+        exit_result = ctrl.order_exit('strat_a', cost_basis_released)
+        assert exit_result.success is True
+
+        reserve_result = _reserve(
+            ctrl,
+            strategy_id='strat_b',
+            notional='50',
+            fees='0.05',
+            budget='10000',
+        )
+        assert reserve_result.reservation is not None, (
+            f'follow-up reserve should succeed post-fix; got: '
+            f'{reserve_result.reason}'
+        )
+
+
+class TestFinalMajor09OrderFillAttributionLockstep:
+    '''FINAL-MAJOR-09: pre-fix `order_fill` computes
+    `proportional_estimated` and `fill_with_estimated` via a
+    `pre_fill_remaining - updated.remaining_total` round trip through
+    the `(remaining_notional * estimated_fees) / notional` formula.
+    The audit (R17-C MAJOR-ND) flagged this as cumulative per-partial
+    drift that could leave `per_strategy_deployed[sid]` out of step
+    with `position_notional` after several scale-ins, eventually
+    tripping the per-strategy attribution-mismatch denial in
+    `check_and_reserve` (capital_controller.py:333).
+
+    Empirical: with default Decimal precision (28 sig digits), the
+    round-trip subtraction has cancellation properties that keep
+    attribution in lockstep with total_deployed across realistic
+    multi-partial scale-ins. The strict equality denial does not
+    fire. The audit's reachable failure mode is the order_exit
+    boundary trip (FINAL-MAJOR-06), which is closed by the
+    `_EXIT_BOUNDARY_TOLERANCE` clamp.
+
+    These tests pin the lockstep + no-residue properties so a future
+    "fix" cannot regress them.
+    '''
+
+    def test_seven_partial_scale_in_settles_zero_residue(self) -> None:
+        '''7 equal partials of 1 unit each on an awkward
+        notional=7, estimated_fees=1 ratio (no clean Decimal
+        terminator). Working settles to zero; attribution stays
+        in lockstep with total deployed.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='7', fees='1', budget='100')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        # 7 partials with realistic actual_fees ~1/7 = 0.142857...
+        actual_fee_per_fill = Decimal('1') / Decimal('7')
+        for _ in range(7):
+            ctrl.order_fill(
+                'ORD-001', Decimal('1'), actual_fee_per_fill,
+            )
+
+        assert ctrl._state.working_order_notional == _ZERO, (
+            f'working_order_notional residue: '
+            f'{ctrl._state.working_order_notional}'
+        )
+
+        total_deployed = (
+            ctrl._state.position_notional
+            + ctrl._state.working_order_notional
+            + ctrl._state.in_flight_order_notional
+            + ctrl._state.reservation_notional
+        )
+        attributed = sum(
+            ctrl._state.per_strategy_deployed.values(), _ZERO,
+        )
+        assert attributed == total_deployed, (
+            f'attribution mismatch: per_strategy_total={attributed} '
+            f'total_deployed={total_deployed} '
+            f'mismatch={attributed - total_deployed}'
+        )
+
+    def test_one_hundred_partial_scale_in_attribution_lockstep(self) -> None:
+        '''100 partials at notional=100, fee=0.07 (representative
+        Binance maker fee on a 100-unit order). Asserts attribution
+        stays exactly equal to total_deployed across all 100 fills.
+        Pre-fix this was the worry; post-fix verifies it does not
+        manifest under default Decimal precision.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(
+            ctrl, notional='100', fees='0.07', budget='1000',
+        )
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        actual_fee_per_fill = Decimal('0.07') / Decimal('100')
+        for _ in range(100):
+            ctrl.order_fill(
+                'ORD-001', Decimal('1'), actual_fee_per_fill,
+            )
+            total_deployed = (
+                ctrl._state.position_notional
+                + ctrl._state.working_order_notional
+                + ctrl._state.in_flight_order_notional
+                + ctrl._state.reservation_notional
+            )
+            attributed = sum(
+                ctrl._state.per_strategy_deployed.values(), _ZERO,
+            )
+            assert attributed == total_deployed, (
+                f'mid-fill attribution mismatch after fill: '
+                f'attributed={attributed} total={total_deployed}'
+            )
+
+        assert ctrl._state.working_order_notional == _ZERO
+
+
+class TestFeeReserveSubUlpClampToZero:
+    '''PR #55 review: when `fee_delta` is a sub-ULP negative (within
+    `_SUB_ULP_TOLERANCE`) and `fee_reserve` is already at zero, the
+    addition `fee_reserve += fee_delta` would persist a sub-ULP
+    NEGATIVE `fee_reserve` because the deficit-vs-tolerance guard
+    intentionally allows the within-tolerance write through.
+    `CapitalState.fee_reserve` is conceptually non-negative and feeds
+    `available`, so the post-write clamp normalizes the within-tolerance
+    drift back to exactly zero.
+    '''
+
+    def test_sub_ulp_negative_fee_reserve_clamped_to_zero(self) -> None:
+        '''Construct an order_fill where the fee deficit is a sub-ULP
+        negative drift and `fee_reserve` is at zero — the post-write
+        clamp must produce `fee_reserve == 0` exactly, not a sub-ULP
+        negative residue.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(
+            ctrl, notional='100', fees='1', budget='1000',
+        )
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill(
+            'ORD-001', Decimal('100'), Decimal('1'),
+        )
+        assert ctrl._state.fee_reserve == _ZERO
+
+        ctrl._state.fee_reserve = _ZERO
+        result2 = _reserve(
+            ctrl, notional='100', fees='0', budget='1000',
+        )
+        assert result2.reservation is not None
+        ctrl.send_order(result2.reservation.reservation_id, 'ORD-002')
+        ctrl.order_ack('ORD-002')
+
+        sub_ulp_extra_fee = Decimal('1E-13')
+        fill_result = ctrl.order_fill(
+            'ORD-002', Decimal('100'), sub_ulp_extra_fee,
+        )
+        assert fill_result.success, fill_result.reason
+        assert ctrl._state.fee_reserve == _ZERO, (
+            f'sub-ULP negative drift not clamped: '
+            f'fee_reserve={ctrl._state.fee_reserve}'
+        )
