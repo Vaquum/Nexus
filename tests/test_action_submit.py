@@ -922,6 +922,158 @@ class TestReleaseReservationOnSubmitFailure:
         assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
 
 
+class TestReleaseReservationOnLateValidatorDeny:
+    '''Round-18 MAJOR-006: validator stage order is INTAKE -> RISK ->
+    PRICE -> CAPITAL -> HEALTH -> PLATFORM_LIMITS. CAPITAL is fourth,
+    not last. When CAPITAL grants but HEALTH or PLATFORM_LIMITS denies,
+    Pipeline.validate attaches the granted reservation to the denied
+    decision so the caller can release. Pre-fix submit_actions REJECTED
+    branch returned without calling _release_granted_reservation,
+    leaving the reservation parked in _reservations until TTL eviction.
+    Repeated late-stage denies (e.g., spread limit on degraded venue)
+    starved available capital.
+    '''
+
+    def test_health_deny_after_capital_grant_releases_reservation(
+        self,
+    ) -> None:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        res = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert res.reservation is not None
+        # Sanity: capital is parked.
+        assert controller._state.reservation_notional == Decimal('101')
+        denial = ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.HEALTH,
+            reason_code='HEALTH_RATE_LIMIT_HEADROOM',
+            message='venue rate-limit headroom below threshold',
+            reservation=res.reservation,
+        )
+        validator = MagicMock()
+        validator.validate.return_value = denial
+        outbound = MagicMock()
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+            capital_controller=controller,
+        )
+
+        assert results[0][1].status == SubmissionStatus.REJECTED
+        assert results[0][1].decision is denial
+        assert controller._state.reservation_notional == Decimal('0')
+        assert res.reservation.reservation_id not in controller._reservations
+        outbound.send_command.assert_not_called()
+
+    def test_platform_limits_deny_after_capital_grant_releases(
+        self,
+    ) -> None:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        res = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert res.reservation is not None
+        denial = ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.PLATFORM_LIMITS,
+            reason_code='PLATFORM_LIMITS_MAX_ORDER_NOTIONAL_LIMIT',
+            message='order_notional exceeded operator cap',
+            reservation=res.reservation,
+        )
+        validator = MagicMock()
+        validator.validate.return_value = denial
+        outbound = MagicMock()
+
+        submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+            capital_controller=controller,
+        )
+
+        assert controller._state.reservation_notional == Decimal('0')
+        assert res.reservation.reservation_id not in controller._reservations
+
+    def test_pre_capital_deny_is_safe_when_no_reservation_attached(
+        self,
+    ) -> None:
+        '''Pre-CAPITAL stages (INTAKE, RISK, PRICE) deny without a
+        reservation. _release_granted_reservation must short-circuit
+        on `decision.reservation is None` so the rejected-branch call
+        is a no-op rather than touching the controller. Asserted by
+        spying on the controller via MagicMock in place of the real
+        one — `release_reservation` must not be invoked.
+        '''
+
+        controller = MagicMock(spec=CapitalController)
+        denial = ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.INTAKE,
+            reason_code='INTAKE_MODE_BLOCKS_ENTER',
+            message='operational mode HALTED blocks new entries',
+        )
+        validator = MagicMock()
+        validator.validate.return_value = denial
+        outbound = MagicMock()
+
+        submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+            capital_controller=controller,
+        )
+
+        controller.release_reservation.assert_not_called()
+        outbound.send_command.assert_not_called()
+
+    def test_abort_path_does_not_invoke_release(self) -> None:
+        '''ABORT bypasses the validator entirely (validator.validate is
+        not called for ABORT actions) so the late-deny code path is
+        unreachable for ABORT. Confirm the controller is never touched.
+        '''
+
+        controller = MagicMock(spec=CapitalController)
+        validator = MagicMock()
+        outbound = MagicMock()
+
+        submit_actions(
+            [_abort_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+            capital_controller=controller,
+        )
+
+        validator.validate.assert_not_called()
+        controller.release_reservation.assert_not_called()
+        outbound.send_command.assert_not_called()
+        outbound.send_abort.assert_called_once()
+
+
 class TestFinalMajor03PendingExitLockCoverage:
     '''FINAL-MAJOR-03: the EXIT `position.pending_exit += ctx.order_size`
     write at submit_actions:~250 was unprotected. A concurrent

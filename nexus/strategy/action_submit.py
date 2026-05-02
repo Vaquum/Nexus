@@ -202,6 +202,7 @@ def submit_actions(
                     'reason_code': decision.reason_code,
                 },
             )
+            _release_granted_reservation(capital_controller, decision)
             results.append((
                 action,
                 SubmissionOutcome(
@@ -286,12 +287,25 @@ def _release_granted_reservation(
 ) -> None:
     '''Roll back a granted reservation when downstream submission fails.
 
-    MAJOR-G fix: pre-fix translate / send_command exceptions left the
-    Reservation parked in `_reservations` until TTL eviction.
-    Deterministic failures (config bug, malformed symbol) re-granted on
-    the next tick and parked again, eventually starving capital.
-    Post-fix the reservation is released immediately so available
-    capital returns within the same tick.
+    Called from three sites in `submit_actions`:
+
+    1. translate_to_trade_command exception (MAJOR-G).
+    2. praxis_outbound.send_command exception (MAJOR-G).
+    3. Validator denial after CAPITAL granted (round-18 MAJOR-006).
+       The validator stage order runs CAPITAL fourth (before HEALTH and
+       PLATFORM_LIMITS); a denial in either later stage propagates the
+       granted reservation back through `Pipeline.validate` so the
+       caller can release it. Pre-fix the REJECTED branch returned
+       without calling this helper, leaving the reservation parked in
+       `_reservations` until TTL eviction. Repeated late-stage denies
+       (e.g., spread limit on a degraded venue, headroom failure
+       during sustained rate-limit pressure) starved available capital.
+
+    Idempotent on `decision.reservation is None` — pre-CAPITAL stages
+    (INTAKE, RISK, PRICE) deny without granting a reservation, so the
+    early-return covers them and ABORT (which bypasses the validator
+    entirely with `decision is None`-equivalent state) cannot reach
+    here.
     '''
 
     if capital_controller is None:
