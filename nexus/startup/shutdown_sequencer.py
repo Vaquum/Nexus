@@ -166,20 +166,21 @@ class ShutdownSequencer:
         self._positions_lock = positions_lock
         self._capital_controller = capital_controller
 
-        if (
-            positions_lock is not None
-            and getattr(state.risk, 'lock', None) is not None
-            and state.risk.lock is not positions_lock
+        if positions_lock is not None and (
+            not hasattr(state.risk, 'lock')
+            or state.risk.lock is not positions_lock
         ):
+            risk_lock = getattr(state.risk, 'lock', '<missing>')
             msg = (
                 'ShutdownSequencer requires `state.risk.lock is positions_lock` '
-                'so a single acquisition in `_final_checkpoint` covers both '
-                '`state.positions` AND `state.risk.per_strategy` iteration. '
-                'Pre-fix the protection silently degraded if the launcher '
-                'wired a separate lock for risk; new-strategy inserts from a '
-                'still-alive OutcomeLoop would race the snapshot serializer. '
+                'whenever `positions_lock` is supplied so a single acquisition '
+                'in `_final_checkpoint` covers both `state.positions` AND '
+                '`state.risk.per_strategy` iteration. Without identity-equal '
+                'locks the snapshot serializer would iterate `per_strategy` '
+                'unguarded against new-strategy inserts from a still-alive '
+                'OutcomeLoop worker (FINAL-MAJOR-05 race remains reachable). '
                 f'Got positions_lock={positions_lock!r}, '
-                f'state.risk.lock={state.risk.lock!r}.'
+                f'state.risk.lock={risk_lock!r}.'
             )
             raise RuntimeError(msg)
 

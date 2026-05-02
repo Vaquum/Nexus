@@ -271,6 +271,7 @@ class TestDispatchShutdown:
                 size=Decimal('1'),
                 entry_price=Decimal('50000'),
             )
+        state.risk.lock = lock
         sequencer = ShutdownSequencer(
             runner=runner,
             manifest=_make_manifest(),
@@ -1939,6 +1940,7 @@ class TestFinalMajor05CheckpointLockCoverage:
             capital=CapitalState(capital_pool=Decimal('10000')),
         )
         positions_lock = threading.Lock()
+        state.risk.lock = positions_lock
         controller = CapitalController(state.capital)
         state_store = _make_mock_state_store()
 
@@ -2037,4 +2039,111 @@ class TestFinalMajor05CheckpointLockCoverage:
         assert not alive, f'threads did not finish: {alive}'
         assert not errors, (
             f'race during locked checkpoint: {errors[:3]}'
+        )
+
+
+class TestShutdownSequencerLockIdentityGuard:
+    '''PR #55 round-6 review: when `positions_lock` is supplied,
+    `state.risk.lock` MUST be the same object. The earlier guard
+    only rejected the case where `state.risk.lock` was a DIFFERENT
+    lock and let the `state.risk.lock is None` case slip through —
+    leaving `_final_checkpoint` to iterate `state.risk.per_strategy`
+    unguarded against new-strategy inserts from a still-alive
+    OutcomeLoop worker (FINAL-MAJOR-05 race remains reachable).
+    Tightened guard: positions_lock supplied → state.risk.lock IS
+    positions_lock or RuntimeError.
+    '''
+
+    def test_init_rejects_positions_lock_when_risk_lock_is_none(
+        self, tmp_path: Path,
+    ) -> None:
+        '''positions_lock supplied AND state.risk.lock is None →
+        RuntimeError. Pre-fix this slipped through silently.
+        '''
+
+        import threading
+        from decimal import Decimal
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        positions_lock = threading.Lock()
+
+        with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
+            ShutdownSequencer(
+                runner=_make_mock_runner(),
+                manifest=_make_manifest(),
+                state_store=_make_mock_state_store(),
+                state=state,
+                strategy_state_path=tmp_path,
+                positions_lock=positions_lock,
+            )
+
+    def test_init_rejects_positions_lock_when_risk_lock_is_different_object(
+        self, tmp_path: Path,
+    ) -> None:
+        '''positions_lock supplied AND state.risk.lock is a different
+        lock object → RuntimeError.
+        '''
+
+        import threading
+        from decimal import Decimal
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        positions_lock = threading.Lock()
+        state.risk.lock = threading.Lock()
+
+        with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
+            ShutdownSequencer(
+                runner=_make_mock_runner(),
+                manifest=_make_manifest(),
+                state_store=_make_mock_state_store(),
+                state=state,
+                strategy_state_path=tmp_path,
+                positions_lock=positions_lock,
+            )
+
+    def test_init_allows_no_positions_lock(self, tmp_path: Path) -> None:
+        '''positions_lock=None bypasses the guard entirely (legacy
+        single-threaded test paths).
+        '''
+
+        from decimal import Decimal
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+
+        ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            positions_lock=None,
+        )
+
+    def test_init_allows_identity_equal_locks(self, tmp_path: Path) -> None:
+        '''positions_lock supplied AND state.risk.lock IS positions_lock
+        → no error. The expected wiring path.
+        '''
+
+        import threading
+        from decimal import Decimal
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        positions_lock = threading.Lock()
+        state.risk.lock = positions_lock
+
+        ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            positions_lock=positions_lock,
         )
