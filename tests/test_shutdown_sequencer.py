@@ -1523,6 +1523,84 @@ class TestSubmitExitMissingPositionRace:
         assert 'praxis_cmd_42' not in sequencer._submitted_command_ids
         assert 'praxis_cmd_42' not in sequencer._exit_contexts
 
+    def test_pending_exit_not_inflated_when_build_order_context_raises(
+        self, tmp_path: Path,
+    ) -> None:
+        '''PR #55 round-16 review: pre-fix `_submit_exit` incremented
+        `position.pending_exit += context.order_size` BEFORE calling
+        `_build_exit_order_context`. If that helper raised ValueError
+        AFTER the increment, the except block returned without
+        reverting `pending_exit`, leaving the position artificially
+        blocked for the rest of shutdown.
+
+        Mocks `_build_exit_order_context` to raise ValueError so the
+        position remains in `state.positions` (the increment site sees
+        it) but the OrderContext construction fails. Pre-fix:
+        `pending_exit` ends at order_size. Post-fix: stays at zero.
+        '''
+
+        import threading
+        from unittest.mock import patch
+
+        config = InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+        position = Position(
+            trade_id='t-1',
+            strategy_id='test',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+        )
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            positions={'t-1': position},
+        )
+
+        outbound = MagicMock(spec=['send_command', 'send_abort'])
+        outbound.send_command.return_value = 'praxis_cmd_99'
+
+        positions_lock = threading.Lock()
+        state.risk.lock = positions_lock
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=tmp_path,
+            praxis_outbound=outbound,
+            shutdown_timeout=0.01,
+            config=config,
+            positions_lock=positions_lock,
+            capital_controller=CapitalController(state.capital),
+        )
+
+        action = Action(
+            action_type=ActionType.EXIT,
+            trade_id='t-1',
+            size=Decimal('0.5'),
+        )
+
+        pre_pending = position.pending_exit
+
+        with patch.object(
+            sequencer,
+            '_build_exit_order_context',
+            side_effect=ValueError('injected: bad invariant'),
+        ):
+            sequencer._submit_exit(strategy_id='test', action=action)
+
+        assert position.pending_exit == pre_pending, (
+            f'PR #55 round-16: failed _build_exit_order_context must NOT '
+            f'leave pending_exit inflated. pre={pre_pending} '
+            f'post={position.pending_exit}'
+        )
+        assert 'praxis_cmd_99' not in sequencer._submitted_command_ids
+        assert 'praxis_cmd_99' not in sequencer._exit_contexts
+
     def test_build_exit_order_context_raises_value_error_for_missing_position(
         self,
     ) -> None:

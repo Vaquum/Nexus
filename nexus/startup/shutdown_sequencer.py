@@ -441,23 +441,17 @@ class ShutdownSequencer:
             )
             return
 
-        if (
-            action.trade_id is not None
-            and self._state is not None
-            and context.order_size is not None
-        ):
-            lock_cm = (
-                self._positions_lock
-                if self._positions_lock is not None
-                else nullcontext()
-            )
-            with lock_cm:
-                position = self._state.positions.get(action.trade_id)
-                if position is not None:
-                    position.pending_exit += context.order_size
-
+        # PR #55 round-16 review: build the OrderContext FIRST (pure
+        # construction, raises ValueError on bad inputs but mutates
+        # nothing). Pre-fix the `pending_exit` increment ran before
+        # this call; if `_build_exit_order_context` raised, the except
+        # block returned without reverting `pending_exit`, leaving the
+        # position artificially blocked for the rest of shutdown
+        # (subsequent EXIT submissions for the same trade would see
+        # `pending_exit > 0` from the failed prior attempt). Post-fix
+        # the increment only runs after construction succeeds.
         try:
-            self._exit_contexts[returned_id] = self._build_exit_order_context(
+            order_context = self._build_exit_order_context(
                 strategy_id=strategy_id,
                 action=action,
                 command_id=returned_id,
@@ -476,6 +470,22 @@ class ShutdownSequencer:
             )
             return
 
+        if (
+            action.trade_id is not None
+            and self._state is not None
+            and context.order_size is not None
+        ):
+            lock_cm = (
+                self._positions_lock
+                if self._positions_lock is not None
+                else nullcontext()
+            )
+            with lock_cm:
+                position = self._state.positions.get(action.trade_id)
+                if position is not None:
+                    position.pending_exit += context.order_size
+
+        self._exit_contexts[returned_id] = order_context
         self._submitted_command_ids.append(returned_id)
 
         _log.info(
