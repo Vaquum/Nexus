@@ -30,6 +30,18 @@ class StrategyEvent:
             pre-crash. Empty string for legacy v1-codec events whose
             payloads predate this field; those events are processed
             without dedup (the legacy WAL contract).
+
+            PRODUCER CONTRACT: every NEW production producer must set
+            this field to a non-empty string. The empty-string default
+            exists ONLY so `_decode_event_v1` can legally construct a
+            legacy event from a payload that predates the field. Any
+            production producer that constructs a `StrategyEvent`
+            without setting `outcome_id` will silently emit a v1-encoded
+            payload (per `serialize_event`'s conditional dispatch) and
+            bypass dedup on recovery, manifesting later as duplicate
+            P&L / rolling-loss accounting on Praxis re-deliveries.
+            Tracked as TD-074 (split into `LegacyStrategyEvent` +
+            `StrategyEvent` with required `outcome_id` for production).
     '''
 
     strategy_id: str

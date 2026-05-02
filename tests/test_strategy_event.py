@@ -81,3 +81,49 @@ class TestValidation:
         non_utc = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone(timedelta(hours=5)))
         with pytest.raises(ValueError, match='must be UTC'):
             _make_event(timestamp=non_utc)
+
+
+class TestOutcomeIdValidation:
+    '''PR #55 round-8 review: pin the new `outcome_id` invariants
+    directly on `StrategyEvent.__post_init__` so future refactors
+    cannot relax them independently of the WAL codec tests.
+    '''
+
+    def test_default_empty_string_accepted(self) -> None:
+        '''The empty-string default is the legacy v1 marker; must
+        construct cleanly so `_decode_event_v1` keeps working.
+        '''
+
+        event = _make_event()
+        assert event.outcome_id == ''
+
+    def test_explicit_non_empty_string_accepted(self) -> None:
+        '''Production producers pass a non-empty venue outcome id;
+        it must round-trip through construction unchanged.
+        '''
+
+        event = _make_event(outcome_id='outcome-abc-123')
+        assert event.outcome_id == 'outcome-abc-123'
+
+    def test_non_string_outcome_id_rejected(self) -> None:
+        '''Type errors must fail at construction time, not later in
+        the WAL codec or the dedup set.
+        '''
+
+        with pytest.raises(ValueError, match='outcome_id must be a string'):
+            _make_event(outcome_id=12345)
+
+    def test_whitespace_only_outcome_id_rejected(self) -> None:
+        '''A whitespace-only outcome_id would collide in the dedup
+        set across distinct outcomes — must be either truly empty
+        (legacy v1) or non-blank.
+        '''
+
+        with pytest.raises(ValueError, match='non-blank'):
+            _make_event(outcome_id='   ')
+
+    def test_tab_only_outcome_id_rejected(self) -> None:
+        '''Tabs and newlines are also whitespace; same rejection.'''
+
+        with pytest.raises(ValueError, match='non-blank'):
+            _make_event(outcome_id='\t\n ')

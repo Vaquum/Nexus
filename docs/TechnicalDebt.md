@@ -838,3 +838,44 @@ The behavior is a regression from the FINAL-TD-01 fix, which was specifically de
 **When to fix**: Before any deployment whose lifetime exceeds the 30-day retention window or whose drawdown / equity gates are load-bearing on cumulative P&L accuracy. For paper-trade MMVP at testnet cadence the impact is bounded by the test session length (typically << 30 days), so the regression is dormant.
 
 **Migration**: Persist a snapshot watermark (sequence number or timestamp) inside the snapshot payload. On `recover()` (a) adopt `srs.strategy_realized_pnl` from the snapshot as the baseline, (b) replay only `STRATEGY_EVENT` entries with sequence > watermark to add post-snapshot deltas. Combined with the existing v2 `outcome_id` dedup this preserves both the "no lost delta on crash" guarantee FINAL-TD-01 introduced AND the "no silent 30-day truncation drift" guarantee the snapshot was supposed to provide.
+
+---
+
+## TD-073: `state.risk.lock` held across WAL fsync / full-scan creates validator-latency spikes
+
+**Origin**: PR #55 round-8 review
+**Severity**: Low at MMVP testnet cadence (event count low, fsync fast on local SSD); Major at sustained mainnet cadence with large WAL retention
+**Module**: `nexus/infrastructure/state_store.py:269-285` (`refresh_rolling_losses`); `nexus/infrastructure/praxis_connector/outcome_processor.py:181-197` (`_handle_fill`)
+
+The PR #55 round-7 fix held `state.risk.lock` across two slow operations to close a read-overwrite race:
+1. `_handle_fill` holds the lock across `_update_strategy_risk_state_locked` + `update_cumulative_realized_pnl` + `append_event` (synchronous WAL append + fsync).
+2. `refresh_rolling_losses` holds the lock across `read_events()` (full WAL scan + decode) + derivation + per-strategy write.
+
+The validator's `to_risk_check_metrics()` and `intake_stage` action validation also acquire `state.risk.lock`. Result: every exit-fill validator path waits for an fsync, and every refresh tick blocks all action validation for the full WAL-scan duration. On a 30-day retained WAL with material event volume the refresh stall could exceed the validator's tick budget.
+
+The trade-off was deliberate: pre-fix the refresher could read stale WAL events, derive stale rolling losses, and overwrite a freshly-applied OutcomeProcessor write. Closing the race the simple way meant accepting the lock-held-across-IO cost.
+
+**When to fix**: Before any deployment whose validator-tick budget is load-bearing AND whose retained WAL grows past a few thousand events.
+
+**Migration**: Two viable approaches:
+- **Generation counter**: snapshot WAL sequence under a short-held lock, derive losses without the lock, re-acquire and write only if no new event was appended since the snapshot. Adds an `_event_sequence_counter` field on StateStore protected by `_wal_lock`.
+- **Delta-only refresh**: refresher ONLY decays losses out of the rolling window (subtracts events that aged out), never re-derives totals. OutcomeProcessor remains the only producer of additions. Eliminates the race-vs-latency conflict by construction at the cost of a per-event timestamp check during decay.
+
+---
+
+## TD-074: `StrategyEvent.outcome_id` empty-string default lets producers silently fall back to legacy v1 codec
+
+**Origin**: PR #55 round-8 review
+**Severity**: Low (only one production producer today, OutcomeProcessor, which always populates)
+**Module**: `nexus/infrastructure/strategy_event.py:39`
+
+`StrategyEvent.outcome_id: str = ''` defaults to empty so legacy v1-decoded events deserialize cleanly. Side effect: any new production producer that constructs a `StrategyEvent` without populating `outcome_id` silently emits a v1-encoded payload (per `serialize_event`'s conditional dispatch), bypassing dedup during recovery. The producer mistake won't fail fast — it will manifest later as duplicate P&L / rolling-loss accounting on Praxis re-deliveries.
+
+Today's only production producer (`OutcomeProcessor._handle_fill` line 184) always sets `outcome_id=outcome.outcome_id`, so the failure mode is dormant. But the risk grows with every new producer added.
+
+**When to fix**: Before adding any second production producer of `StrategyEvent`, OR before any operator-observable double-counting incident traces back to a producer-mistake.
+
+**Migration**: Split the dataclass:
+- `LegacyStrategyEvent` (no `outcome_id` field) — used only by `_decode_event_v1` for legacy WAL replay. No dedup contract.
+- `StrategyEvent` (`outcome_id: str` required, no default) — used by all production producers and `_decode_event_v2`. Producer mistakes fail at construction time.
+- `derive_rolling_losses` accepts both via a small adapter that maps `LegacyStrategyEvent` → `StrategyEvent('')` only for the dedup-skip path.
