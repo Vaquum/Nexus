@@ -2275,3 +2275,127 @@ class TestFinalMajor08RealizedPnlIsNetOfFees:
 
         srs = state.risk.per_strategy['strat_001']
         assert srs.strategy_realized_pnl == Decimal('5')
+
+
+class TestExitFillWalAppendFailureRollback:
+    '''PR #55 round-10 review: if `state_store.append_event` raises
+    inside `_handle_fill`'s critical section (transient I/O / WAL
+    validation failure), the per-strategy and instance-level risk
+    fields must NOT have been mutated. Pre-fix the order was
+    mutate-then-append, leaving in-memory state inconsistent with WAL
+    until restart — `refresh_rolling_losses` only rebuilds rolling-loss
+    windows, NOT `strategy_realized_pnl` / `cumulative_realized_pnl`,
+    so the inconsistency persisted until next boot.
+
+    Post-fix the order is append-then-mutate inside the same
+    `state.risk.lock_cm()` acquisition. Append raise → no in-memory
+    change, caller sees the exception, in-memory + WAL stay in sync.
+    The single lock acquisition still closes the round-7 race because
+    a refresher cannot interleave between the append and the mutation
+    (it would block on the lock).
+    '''
+
+    def test_append_event_raise_leaves_risk_state_unchanged(self) -> None:
+        '''Monkey-patch `StateStore.append_event` to raise on the
+        EXIT FILL. Assert: (a) `process` returns success=False or
+        raises, (b) `strategy_realized_pnl` is still _ZERO,
+        (c) `rolling_loss_*` are still _ZERO,
+        (d) `cumulative_realized_pnl` is still _ZERO.
+        '''
+
+        from unittest.mock import patch
+
+        proc, ctrl, state, store, _tmp = _make_processor()
+
+        _setup_working_order(ctrl, order_id='cmd_enter')
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+        entry_outcome = TradeOutcome(
+            outcome_id='out_enter',
+            command_id='cmd_enter',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+        entry_ctx = OrderContext(
+            command_id='cmd_enter',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.BUY,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            is_entry=True,
+        )
+        proc.process(entry_outcome, entry_ctx)
+
+        srs_pre = state.risk.per_strategy.get('strat_001')
+        pre_realized_pnl = (
+            srs_pre.strategy_realized_pnl if srs_pre is not None else _ZERO
+        )
+        pre_rolling_24h = (
+            srs_pre.rolling_loss_24h if srs_pre is not None else _ZERO
+        )
+        pre_cumulative = state.risk.cumulative_realized_pnl
+
+        exit_outcome = TradeOutcome(
+            outcome_id='out_exit',
+            command_id='cmd_exit',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.002'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('102'),
+            actual_fees=Decimal('1'),
+        )
+        exit_ctx = OrderContext(
+            command_id='cmd_exit',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.002'),
+            order_notional=Decimal('102'),
+            estimated_fees=Decimal('1'),
+            is_entry=False,
+        )
+
+        injected_failure = OSError('disk full')
+        with (
+            patch.object(store, 'append_event', side_effect=injected_failure),
+            pytest.raises(OSError, match='disk full'),
+        ):
+            proc.process(exit_outcome, exit_ctx)
+
+        srs_post = state.risk.per_strategy.get('strat_001')
+        post_realized_pnl = (
+            srs_post.strategy_realized_pnl if srs_post is not None else _ZERO
+        )
+        post_rolling_24h = (
+            srs_post.rolling_loss_24h if srs_post is not None else _ZERO
+        )
+        post_cumulative = state.risk.cumulative_realized_pnl
+
+        assert post_realized_pnl == pre_realized_pnl, (
+            f'PR #55 round-10: WAL append failure must NOT mutate '
+            f'strategy_realized_pnl. pre={pre_realized_pnl} '
+            f'post={post_realized_pnl}'
+        )
+        assert post_rolling_24h == pre_rolling_24h, (
+            f'PR #55 round-10: WAL append failure must NOT mutate '
+            f'rolling_loss_24h. pre={pre_rolling_24h} '
+            f'post={post_rolling_24h}'
+        )
+        assert post_cumulative == pre_cumulative, (
+            f'PR #55 round-10: WAL append failure must NOT mutate '
+            f'cumulative_realized_pnl. pre={pre_cumulative} '
+            f'post={post_cumulative}'
+        )

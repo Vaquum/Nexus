@@ -187,13 +187,29 @@ class OutcomeProcessor:
                 outcome_id=outcome.outcome_id,
             )
             with self._state.risk.lock_cm():
+                # PR #55 round-10 review: WAL append FIRST under the
+                # held risk.lock, then in-memory mutation. Pre-fix the
+                # order was mutate-then-append; if append_event raised
+                # (transient I/O / WAL validation failure), the
+                # per-strategy and cumulative risk fields had already
+                # been mutated but the event was never persisted —
+                # `refresh_rolling_losses` only rebuilds rolling-loss
+                # windows, NOT strategy_realized_pnl /
+                # cumulative_realized_pnl, so the in-memory risk state
+                # would stay inconsistent until restart.
+                # Post-fix: append raises → no in-memory change, caller
+                # sees the exception, in-memory + WAL stay in sync.
+                # The single risk.lock acquisition still closes the
+                # round-7 race (refresher cannot interleave between
+                # append and in-memory mutation because it would block
+                # on the lock).
+                self._store.append_event(event)
                 self._update_strategy_risk_state_locked(
                     context.strategy_id, realized_pnl,
                 )
                 self._state.risk.update_cumulative_realized_pnl(
                     self._state.risk.realized_pnl,
                 )
-                self._store.append_event(event)
 
         return ProcessResult(
             success=True,
