@@ -257,16 +257,23 @@ class StateStore:
         `RuntimeError: dictionary changed size during iteration` and
         be silently swallowed by HealthLoop's catch-all.
 
+        PR #55 round-7: the WAL read + derivation also runs under the
+        same lock. Pre-fix the read happened BEFORE the lock acquisition,
+        so a concurrent OutcomeProcessor write between the WAL read and
+        the lock-protected write produced a stale derivation that
+        overwrote the just-applied fill. Holding the lock across the
+        entire read-derive-write sequence ensures the snapshot we
+        derive from is consistent with the values we then write.
+
         Args:
             state: Instance state whose rolling losses will be updated in place.
         '''
 
-        events = self.read_events()
-
-        recovery_time = datetime.now(tz=timezone.utc)
-        losses = derive_rolling_losses(events, recovery_time) if events else {}
-
         with state.risk.lock_cm():
+            events = self.read_events()
+            recovery_time = datetime.now(tz=timezone.utc)
+            losses = derive_rolling_losses(events, recovery_time) if events else {}
+
             for sid, srs in state.risk.per_strategy.items():
                 if sid in losses:
                     srs.rolling_loss_24h = losses[sid].rolling_loss_24h

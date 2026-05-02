@@ -184,6 +184,18 @@ class ShutdownSequencer:
             )
             raise RuntimeError(msg)
 
+        if positions_lock is not None and capital_controller is None:
+            msg = (
+                'ShutdownSequencer requires `capital_controller` whenever '
+                '`positions_lock` is supplied. `_final_checkpoint` needs the '
+                'controller lock to freeze `state.capital.per_strategy_deployed` '
+                'and the aggregate notional fields during snapshot serialization. '
+                'Without it the capital-side `dictionary changed size during '
+                'iteration` race against a still-alive OutcomeLoop worker '
+                'remains reachable — the lock-cluster fix is only partial.'
+            )
+            raise RuntimeError(msg)
+
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
 

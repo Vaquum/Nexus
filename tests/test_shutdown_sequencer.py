@@ -279,6 +279,7 @@ class TestDispatchShutdown:
             state=state,
             strategy_state_path=_PLACEHOLDER_PATH,
             positions_lock=lock,
+            capital_controller=CapitalController(state.capital),
         )
 
         stop_event = _t.Event()
@@ -2127,7 +2128,8 @@ class TestShutdownSequencerLockIdentityGuard:
 
     def test_init_allows_identity_equal_locks(self, tmp_path: Path) -> None:
         '''positions_lock supplied AND state.risk.lock IS positions_lock
-        → no error. The expected wiring path.
+        AND capital_controller is supplied → no error. The expected
+        wiring path.
         '''
 
         import threading
@@ -2146,4 +2148,35 @@ class TestShutdownSequencerLockIdentityGuard:
             state=state,
             strategy_state_path=tmp_path,
             positions_lock=positions_lock,
+            capital_controller=CapitalController(state.capital),
         )
+
+    def test_init_rejects_positions_lock_when_capital_controller_is_none(
+        self, tmp_path: Path,
+    ) -> None:
+        '''PR #55 round-7: positions_lock supplied AND state.risk.lock
+        wired correctly BUT capital_controller is None → RuntimeError.
+        Pre-fix this slipped through; `_final_checkpoint` would then
+        iterate `state.capital.per_strategy_deployed` without the
+        controller lock and the FINAL-MAJOR-05 capital-side race
+        remains reachable.
+        '''
+
+        import threading
+        from decimal import Decimal
+
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        positions_lock = threading.Lock()
+        state.risk.lock = positions_lock
+
+        with pytest.raises(RuntimeError, match=r'capital_controller'):
+            ShutdownSequencer(
+                runner=_make_mock_runner(),
+                manifest=_make_manifest(),
+                state_store=_make_mock_state_store(),
+                state=state,
+                strategy_state_path=tmp_path,
+                positions_lock=positions_lock,
+            )

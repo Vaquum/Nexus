@@ -179,8 +179,6 @@ class OutcomeProcessor:
         )
 
         if realized_pnl is not None:
-            self._update_strategy_risk_state(context.strategy_id, realized_pnl)
-            self._state.risk.update_cumulative_realized_pnl(self._state.risk.realized_pnl)
             event = StrategyEvent(
                 strategy_id=context.strategy_id,
                 event_type='trade_outcome',
@@ -188,7 +186,14 @@ class OutcomeProcessor:
                 timestamp=outcome.timestamp,
                 outcome_id=outcome.outcome_id,
             )
-            self._store.append_event(event)
+            with self._state.risk.lock_cm():
+                self._update_strategy_risk_state_locked(
+                    context.strategy_id, realized_pnl,
+                )
+                self._state.risk.update_cumulative_realized_pnl(
+                    self._state.risk.realized_pnl,
+                )
+                self._store.append_event(event)
 
         return ProcessResult(
             success=True,
@@ -482,7 +487,38 @@ class OutcomeProcessor:
         strategy_id: str,
         realized_pnl: Decimal,
     ) -> None:
+        '''Lock-acquiring wrapper around `_update_strategy_risk_state_locked`.
+
+        Used by tests and any caller that wants the legacy "this
+        function handles its own locking" contract. The hot path in
+        `_handle_fill` calls `_update_strategy_risk_state_locked`
+        directly under an already-held lock so the WAL append at the
+        end of the same critical section is race-free against
+        `refresh_rolling_losses`.
+
+        Args:
+            strategy_id: Strategy that realized the P&L.
+            realized_pnl: P&L from exit fill (negative for losses).
+        '''
+
+        with self._state.risk.lock_cm():
+            self._update_strategy_risk_state_locked(strategy_id, realized_pnl)
+
+    def _update_strategy_risk_state_locked(
+        self,
+        strategy_id: str,
+        realized_pnl: Decimal,
+    ) -> None:
         '''Update per-strategy risk metrics after an exit fill.
+
+        Caller MUST hold `state.risk.lock` (`threading.Lock` is non-
+        reentrant, so this method does NOT re-acquire it). Per PR #55
+        round-7, callers in `_handle_fill` hold the risk lock across
+        the per-strategy update + `update_cumulative_realized_pnl` +
+        `append_event` so a concurrent `refresh_rolling_losses` cannot
+        observe a window where the WAL is missing the new event but
+        `per_strategy` already reflects it (and write back stale
+        WAL-derived values that overwrite the just-applied loss).
 
         Gets or creates StrategyRiskState for strategy_id, increments
         strategy_realized_pnl, adds to rolling loss counters if loss,
@@ -491,34 +527,23 @@ class OutcomeProcessor:
         Args:
             strategy_id: Strategy that realized the P&L.
             realized_pnl: P&L from exit fill (negative for losses).
-
-        FINAL-MAJOR-02: the entire dict insert + per-field RMW runs
-        under `state.risk.lock` so the validator's
-        `to_risk_check_metrics` (PredictLoop / TimerLoop reader) and
-        HealthLoop's `state_store.refresh_rolling_losses` (daemon
-        timer reader) cannot trip
-        `RuntimeError: dictionary changed size during iteration` on
-        the first-fill-for-a-strategy insert at line 491, and cannot
-        observe torn intermediate values from the `+=` ops on the
-        rolling-loss fields.
         '''
 
-        with self._state.risk.lock_cm():
-            strategy_state = self._state.risk.per_strategy.get(strategy_id)
+        strategy_state = self._state.risk.per_strategy.get(strategy_id)
 
-            if strategy_state is None:
-                strategy_state = StrategyRiskState(strategy_id=strategy_id)
-                self._state.risk.per_strategy[strategy_id] = strategy_state
+        if strategy_state is None:
+            strategy_state = StrategyRiskState(strategy_id=strategy_id)
+            self._state.risk.per_strategy[strategy_id] = strategy_state
 
-            strategy_state.strategy_realized_pnl += realized_pnl
+        strategy_state.strategy_realized_pnl += realized_pnl
 
-            if realized_pnl < _ZERO:
-                loss = abs(realized_pnl)
-                strategy_state.rolling_loss_24h += loss
-                strategy_state.rolling_loss_7d += loss
-                strategy_state.rolling_loss_30d += loss
+        if realized_pnl < _ZERO:
+            loss = abs(realized_pnl)
+            strategy_state.rolling_loss_24h += loss
+            strategy_state.rolling_loss_7d += loss
+            strategy_state.rolling_loss_30d += loss
 
-            strategy_state.high_water_mark = max(
-                strategy_state.high_water_mark,
-                strategy_state.strategy_realized_pnl,
-            )
+        strategy_state.high_water_mark = max(
+            strategy_state.high_water_mark,
+            strategy_state.strategy_realized_pnl,
+        )
