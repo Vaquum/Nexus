@@ -721,9 +721,23 @@ class CapitalController:
 
         Returns:
             LifecycleResult with reason on failure. INVARIANT_BREACH
-            when `cost_basis_released > position_notional` OR when
-            `cost_basis_released > per_strategy_deployed[strategy_id]`
-            (either would drive the corresponding aggregate negative).
+            when `cost_basis_released` overshoots either
+            `position_notional` OR
+            `per_strategy_deployed[strategy_id]` by MORE than
+            `_SUB_ULP_TOLERANCE` (FINAL-MAJOR-06: round-trip
+            `(N/q) * q` at default Decimal precision can overshoot
+            its starting value by sub-ULP, so the strict `>` check
+            was relaxed to `> _SUB_ULP_TOLERANCE` to absorb the
+            rounding noise without weakening the underlying
+            non-negativity invariant).
+
+            On a within-tolerance overshoot the actual decrement is
+            clamped to `min(cost_basis_released, position_notional,
+            strategy_deployed)` (PR #55 round-2 review: a single
+            `min(...)` applied to BOTH aggregates so the attribution
+            invariant `sum(per_strategy_deployed) == total_deployed`
+            stays exact across the boundary). Beyond-tolerance
+            overshoots still hard-fail with INVARIANT_BREACH.
         '''
 
         if not isinstance(cost_basis_released, Decimal) or not cost_basis_released.is_finite():

@@ -87,6 +87,22 @@ class ShutdownSequencer:
             mid-snapshot and abort the shutdown before
             `_persist_strategy_state` / `_final_checkpoint` run. None
             disables the guard (legacy single-threaded shutdown paths).
+            When supplied, the launcher MUST also wire
+            `state.risk.lock = positions_lock` (same object) AND pass
+            `capital_controller` — `__init__` raises `RuntimeError`
+            otherwise so the FINAL-MAJOR-05 lock cluster cannot
+            silently degrade.
+        capital_controller: Optional `CapitalController` whose `_lock`
+            is acquired by `_final_checkpoint` so the snapshot
+            serializer iterations of `state.capital.per_strategy_deployed`
+            and reads of the aggregate notional fields
+            (`in_flight_order_notional`, `working_order_notional`,
+            `position_notional`, `reservation_notional`, `fee_reserve`)
+            cannot race a still-alive OutcomeLoop worker (FINAL-MAJOR-05).
+            Required when `positions_lock` is supplied; `__init__`
+            raises `RuntimeError` if positions_lock is provided
+            without it. None disables the guard (legacy
+            single-threaded shutdown paths).
     '''
 
     def __init__(
