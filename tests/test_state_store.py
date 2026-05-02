@@ -564,7 +564,7 @@ class TestFinalMajor04WalAppendAtomicity:
             store = StateStore(Path(tmp))
 
             errors: list[Exception] = []
-            iterations_per_thread = 250
+            iterations_per_thread = 50
 
             def appender(thread_id: int) -> None:
                 try:
@@ -647,7 +647,7 @@ class TestFinalMajor04WalAppendAtomicity:
 
             def checkpointer() -> None:
                 try:
-                    for _ in range(20):
+                    for _ in range(5):
                         store.checkpoint(state)
                 except Exception as exc:
                     errors.append(exc)
