@@ -492,9 +492,9 @@ def _decode_event_v2(d: dict[str, Any]) -> StrategyEvent:
 
     try:
         outcome_id = d['outcome_id']
-        if not isinstance(outcome_id, str) or not outcome_id:
+        if not isinstance(outcome_id, str) or not outcome_id or not outcome_id.strip():
             msg = (
-                f'v2 event payload requires a non-empty `outcome_id` string; '
+                f'v2 event payload requires a non-blank `outcome_id` string; '
                 f'got {outcome_id!r}'
             )
             raise ValueError(msg)

@@ -349,12 +349,20 @@ class TestRecoverWithEvents:
         assert srs.rolling_loss_7d == Decimal('75')
         assert srs.rolling_loss_30d == Decimal('75')
 
-    def test_events_for_unknown_strategy_ignored(self, tmp_path: Path) -> None:
-        '''Events for strategies not present in the snapshot's
-        per_strategy dict are skipped. The known strategy's rolling
-        losses are decayed against current time (FINAL-MAJOR-10) —
-        with no events for `strat_a`, its windows go to zero
-        regardless of the snapshot value.
+    def test_events_for_unknown_strategy_lazily_inserted(self, tmp_path: Path) -> None:
+        '''PR #55 round-5 review: events for strategies NOT present in
+        the snapshot's per_strategy dict (e.g. a strategy whose first-
+        ever exit happened post-snapshot, before the next STATE_MUTATION
+        could persist its lazily-created StrategyRiskState) are now
+        adopted on recovery. Pre-fix this loop only iterated existing
+        per_strategy entries, so the first realized P&L / rolling-loss
+        delta of any new strategy was permanently dropped on recovery.
+        Post-fix recover() inserts a fresh StrategyRiskState for any
+        sid present in derived losses or derived PnL but missing from
+        the snapshot. The known strategy's rolling losses are still
+        decayed against current time (FINAL-MAJOR-10) — with no events
+        for `strat_a`, its windows go to zero regardless of the
+        snapshot value.
         '''
 
         store = StateStore(tmp_path / 'state')
@@ -371,7 +379,13 @@ class TestRecoverWithEvents:
         store2 = StateStore(tmp_path / 'state')
         recovered = store2.recover()
         assert recovered is not None
-        assert 'strat_unknown' not in recovered.risk.per_strategy
+        assert 'strat_unknown' in recovered.risk.per_strategy, (
+            'PR #55 round-5: post-snapshot strategies must be lazily '
+            'inserted on recovery so first-ever-exit deltas are not lost'
+        )
+        srs_unknown = recovered.risk.per_strategy['strat_unknown']
+        assert srs_unknown.strategy_realized_pnl == Decimal('-100')
+        assert srs_unknown.rolling_loss_24h == Decimal('100')
         assert recovered.risk.per_strategy['strat_a'].rolling_loss_24h == _ZERO
 
     def test_multiple_strategies_recovered(self, tmp_path: Path) -> None:

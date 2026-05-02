@@ -20,6 +20,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.infrastructure.snapshot import load_snapshot, save_snapshot
 from nexus.infrastructure.wal import WriteAheadLog
 from nexus.infrastructure.loss_derivation import (
@@ -190,6 +191,20 @@ class StateStore:
         # instance-level `cumulative_realized_pnl` so drawdown
         # derivatives stay consistent.
         derived_pnl = derive_strategy_realized_pnl(events) if events else {}
+
+        # PR #55 round-5: lazily insert StrategyRiskState for any strategy
+        # that has WAL events but is missing from the snapshot's
+        # `per_strategy` dict. OutcomeProcessor creates `StrategyRiskState`
+        # entries lazily on first exit. A crash between `append_event` and
+        # the next STATE_MUTATION leaves the WAL with a STRATEGY_EVENT for
+        # a strategy whose StrategyRiskState was not yet persisted; without
+        # this, the loop below would skip it and the first realized P&L /
+        # rolling-loss delta would be permanently dropped on recovery.
+        for sid in (set(losses.keys()) | set(derived_pnl.keys())):
+            if sid not in state.risk.per_strategy:
+                state.risk.per_strategy[sid] = StrategyRiskState(
+                    strategy_id=sid,
+                )
 
         for sid, srs in state.risk.per_strategy.items():
             if sid in losses:

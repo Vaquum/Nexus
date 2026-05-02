@@ -166,6 +166,23 @@ class ShutdownSequencer:
         self._positions_lock = positions_lock
         self._capital_controller = capital_controller
 
+        if (
+            positions_lock is not None
+            and getattr(state.risk, 'lock', None) is not None
+            and state.risk.lock is not positions_lock
+        ):
+            msg = (
+                'ShutdownSequencer requires `state.risk.lock is positions_lock` '
+                'so a single acquisition in `_final_checkpoint` covers both '
+                '`state.positions` AND `state.risk.per_strategy` iteration. '
+                'Pre-fix the protection silently degraded if the launcher '
+                'wired a separate lock for risk; new-strategy inserts from a '
+                'still-alive OutcomeLoop would race the snapshot serializer. '
+                f'Got positions_lock={positions_lock!r}, '
+                f'state.risk.lock={state.risk.lock!r}.'
+            )
+            raise RuntimeError(msg)
+
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
 
@@ -861,6 +878,13 @@ class ShutdownSequencer:
         TD-054 transitively). state_store.checkpoint internally
         acquires `_wal_lock` (FINAL-MAJOR-04). Lock-order:
         positions_lock → CapitalController._lock → _wal_lock.
+
+        Requires the launcher to wire `state.risk.lock = positions_lock`
+        (same lock identity) so a single acquisition covers both
+        `state.positions` and `state.risk.per_strategy`. Enforced at
+        construction time by `__init__`; `state.risk.lock_cm()` cannot
+        be added to the chain here because `threading.Lock` is
+        non-reentrant and would deadlock if it IS positions_lock.
         '''
 
         positions_cm = (

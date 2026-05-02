@@ -67,3 +67,11 @@ class StrategyEvent:
         if not isinstance(self.outcome_id, str):
             msg = 'StrategyEvent.outcome_id must be a string'
             raise ValueError(msg)
+
+        if self.outcome_id and not self.outcome_id.strip():
+            msg = (
+                'StrategyEvent.outcome_id must be either empty (legacy v1) '
+                'or non-blank; whitespace-only values would collide in the '
+                'dedup set across distinct outcomes'
+            )
+            raise ValueError(msg)
