@@ -1042,3 +1042,27 @@ Closing this requires the pipeline executor to track granted reservations indepe
 **When to fix**: When the validator stage surface area grows (e.g., a new `OperationalMode` transition or a new platform-limit derivation that has a non-trivial chance of raising), OR when sustained mainnet operation makes the 30s TTL window observable.
 
 **Migration**: Either (a) extend `Pipeline.validate` to return a structured intermediate state on exception (e.g., wrap the propagated exception with the granted reservation context so the caller can release), or (b) reshape `Pipeline.validate` to catch stage exceptions itself, release any granted reservation via an injected `capital_controller` reference, and re-raise — concentrates the rollback contract in one place. Option (b) is the cleaner long-term shape; option (a) is the more conservative migration.
+
+---
+
+## TD-086: `OutcomeProcessor.process` records `outcome_id` only after successful return — a raise mid-`_handle_fill` leaves capital/position mutated AND the dedup set empty
+
+**Origin**: Copilot PR #57 review (post-merge follow-up to round-18 MAJOR-004 part A)
+**Severity**: Low today (currently unreachable — append_event raise + Praxis retry of the exact same outcome_id is narrow); High if MAJOR-004 part B (Praxis boot replay-from-spine) lands without a paired fix here
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:71-149` (`process`); `nexus/infrastructure/praxis_connector/outcome_processor.py:167-252` (`_handle_fill`)
+
+`process()` adds `outcome.outcome_id` to `_processed_outcome_ids` only after the per-outcome handler returns a `success=True` `ProcessResult`. `_handle_fill` mutates capital (`order_fill` / `order_exit`) and position (`_grow_position` / `_reduce_position`) BEFORE calling `state_store.append_event`. If `append_event` raises (transient I/O / WAL validation failure — covered by `TestExitFillWalAppendFailureRollback`), the exception propagates out of `process()`, the `outcome_id` is never recorded, and a retry of the exact same outcome will re-enter `_handle_fill`. The retry-side behavior diverges by direction:
+
+- **EXIT FILL**: `_compute_exit_cost_basis` re-reads `position.avg_cost_basis` and `position.size`. If `_reduce_position` already deleted the position, the helper returns None (no second capital decrement) but `_reduce_position` then raises `RuntimeError('exit fill for missing position')`. If the position is not yet closed, the helper computes a fresh decrement against the now-smaller size and `_reduce_position` reduces the size again — capital and position both double-mutated.
+- **ENTRY FILL**: `order_fill` runs again on the same `command_id` → capital deployed is double-decremented; `_grow_position` runs again → position size grows by 2× the fill_size. No append_event in this path, so the original raise can only come from `order_fill` itself, but the dedup-after-success contract is still broken.
+
+The existing `TestExitFillWalAppendFailureRollback` only verifies that risk state is unmutated; it does NOT cover capital/position rollback or retry safety. The `_dedup_lock` referenced in TD-083 is a separate concurrency concern; this TD is about ordering of side-effects vs. dedup-set commit.
+
+**When to fix**: Before MAJOR-004 part B (Praxis boot replay-from-spine) lands and starts driving `process()` from the boot path while `OutcomeLoop` may also be running — the boot replay greatly increases the probability of a same-`outcome_id` re-entry into `process` (a snapshot crash mid-`_handle_fill` is now reachable through normal recovery, not just disk pathology).
+
+**Migration**: Two complementary changes:
+
+1. **Reorder `_handle_fill` so I/O that can raise happens BEFORE state mutation.** For EXIT FILL: build the `StrategyEvent` and call `state_store.append_event` (under `risk.lock`) BEFORE `order_exit` and `_reduce_position`. The risk-state mutation already happens after the append today — extend the same discipline to capital and position. The per-method assertions about read-modify-write ordering need to be re-checked to ensure no further reads-then-writes hide a race (the existing positions_lock contract should still hold).
+2. **Mark `outcome_id` as in-flight before mutation begins, committed after.** Add a second lock-guarded set `_in_flight_outcome_ids: set[str]`. On entry: if `outcome_id in _processed OR outcome_id in _in_flight` → dedup hit. On entry: add to `_in_flight`. On success: move to `_processed`. On exception: leave in `_in_flight` (forces operator-visible alerting; never silently re-runs the failed-mid-mutation work). Operator-driven recovery would then explicitly re-process by clearing `_in_flight` — manual intervention is the right gate when state has already partially mutated.
+
+Both changes together close the window. Option (1) alone is preferred where feasible because it is purely structural (no new state, no new operator surface).
