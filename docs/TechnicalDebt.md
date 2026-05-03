@@ -1024,3 +1024,21 @@ Only `_final_checkpoint` is wrapped in try/except inside `shutdown()`. Steps 1-9
 **When to fix**: Before sustained multi-day paper-trade or any production run where the per-process registry footprint is observable.
 
 **Migration**: Replace with an `OrderedDict`-backed LRU cache with size cap (mirror `OutcomeTranslator._terminal_command_ids` pattern). Cap at e.g. 100k recent outcomes — large enough to cover any plausible Praxis retry / boot-replay window, small enough to stay bounded. Evict oldest on insertion past the cap; evicted-then-replayed outcomes would re-process (acceptable given dedup is best-effort within the process lifetime; cross-restart safety lives on the Praxis side via `OutcomeAcked`).
+
+---
+
+## TD-085: `submit_actions` validator-exception path can leak a granted reservation
+
+**Origin**: PR #57 review (round-18 post-merge follow-up)
+**Severity**: Low (very low probability — stages are designed to return decisions, not raise)
+**Module**: `nexus/strategy/action_submit.py:175-190`
+
+The `try: validator.validate(ctx) except Exception` branch logs and marks the action `SUBMIT_FAILED` without calling `_release_granted_reservation`. If a stage callable raises (rather than returning a denied `ValidationDecision`) AFTER the CAPITAL stage has already granted a reservation, the reservation parks in `_reservations` until 30s TTL eviction. Same family as round-18 MAJOR-006, but fired through the exception path rather than the REJECTED path.
+
+The pipeline executor at `nexus/core/validator/pipeline_executor.py:42-78` does NOT catch exceptions from stage callables — it propagates them to the `submit_actions` exception handler. The `Pipeline.validate` re-attach behavior at lines 65-72 only triggers when a stage RETURNS a denied decision; an exception bypasses that path entirely, so the granted `Reservation` is never re-attached to a `decision` object — there is no `decision` for the SUBMIT_FAILED branch to release from.
+
+Closing this requires the pipeline executor to track granted reservations independently of the per-stage decision return, OR `submit_actions` to track the partial validator state via instrumentation. Both are bigger than a one-line fix.
+
+**When to fix**: When the validator stage surface area grows (e.g., a new `OperationalMode` transition or a new platform-limit derivation that has a non-trivial chance of raising), OR when sustained mainnet operation makes the 30s TTL window observable.
+
+**Migration**: Either (a) extend `Pipeline.validate` to return a structured intermediate state on exception (e.g., wrap the propagated exception with the granted reservation context so the caller can release), or (b) reshape `Pipeline.validate` to catch stage exceptions itself, release any granted reservation via an injected `capital_controller` reference, and re-raise — concentrates the rollback contract in one place. Option (b) is the cleaner long-term shape; option (a) is the more conservative migration.
