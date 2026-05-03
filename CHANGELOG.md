@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.38.0 on 3rd of May, 2026
+
+### Add
+
+- Add `_processed_outcome_ids` set + `_dedup_lock` to [`OutcomeProcessor`](nexus/infrastructure/praxis_connector/outcome_processor.py); `process(outcome, context)` returns success no-op on a repeated `outcome.outcome_id` so Praxis's planned delivery retry / boot replay-from-spine paths cannot double-mutate capital or position state. In-memory dedup; cross-restart safety lives on the Praxis side via `OutcomeAcked` filtering at boot (round-18 MAJOR-004)
+- Add 2 deferred-finding entries (TD-083, TD-084) to [`docs/TechnicalDebt.md`](docs/TechnicalDebt.md) covering the `OutcomeProcessor` dedup lock TOCTOU contract and the unbounded `_processed_outcome_ids` set growth surfaced during pre-PR review
+- Add 7 round-18 audit deferred-finding entries (TD-076..TD-082) to [`docs/TechnicalDebt.md`](docs/TechnicalDebt.md) covering: missing end-to-end rolling-loss enforcement test (TD-076); persisted HALTED mode overwritten by HealthLoop after restart (TD-077); boot reconciliation keeps stale `avg_cost_basis` (TD-078); no architectural guard against direct `PraxisOutbound.send_command` callers (TD-079); shutdown does not guarantee `_final_checkpoint` if an earlier step raises (TD-080); `_persist_strategy_state` and `_final_checkpoint` block on disk fsync without timeout (TD-081); validator's `platform_limits_stage` lacks Binance symbol-filter checks (TD-082)
+- Add new test classes covering the round-18 fixes: `TestOutcomeIdIdempotency` (round-18 MAJOR-004 part A — dedup happy path, double-mutation guard, failed-attempt does not poison dedup, dedup is per-outcome_id not per-command_id); 2 new tests appended to `TestRecoverOrphanedOrder` (round-18 MAJOR-003 — explicit double-call idempotency, capital restored for new reservation after orphan release); `TestReleaseReservationOnLateValidatorDeny` (round-18 MAJOR-006 — HEALTH/PLATFORM_LIMITS deny after CAPITAL grant releases reservation, pre-CAPITAL deny does not call release, ABORT bypasses validator)
+
+### Fix
+
+- Fix [`submit_actions`](nexus/strategy/action_submit.py) REJECTED branch leaking the granted `Reservation` when a post-CAPITAL validator stage (HEALTH or PLATFORM_LIMITS) denies the action. Validator stage order is `INTAKE → RISK → PRICE → CAPITAL → HEALTH → PLATFORM_LIMITS`; `Pipeline.validate` re-attaches the granted reservation to the denied decision so the caller can release. Pre-fix the REJECTED branch returned without calling `_release_granted_reservation`, leaving the reservation parked in `_reservations` until 30s TTL eviction. Repeated late-stage denies (e.g., spread limit on a degraded venue, headroom failure during sustained rate-limit pressure) starved available capital. Helper docstring expanded to document the third call site alongside the existing translate / send_command exception sites (round-18 MAJOR-006)
+
 ## v0.37.0 on 1st of May, 2026
 
 ### Add

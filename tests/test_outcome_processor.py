@@ -2497,7 +2497,6 @@ class TestOutcomeIdIdempotency:
             outcome_type=TradeOutcomeType.ACK,
             timestamp=_now(),
         )
-        # Mismatched context (command_id) → process returns success=False.
         bad_ctx = OrderContext(
             command_id='cmd_other',
             strategy_id='strat_001',
@@ -2512,7 +2511,6 @@ class TestOutcomeIdIdempotency:
         first = proc.process(outcome, bad_ctx)
         assert first.success is False
 
-        # Retry with correct context must run normally and succeed.
         second = proc.process(outcome, _entry_context())
 
         assert second.success is True

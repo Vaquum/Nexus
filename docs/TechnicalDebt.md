@@ -996,3 +996,31 @@ Only `_final_checkpoint` is wrapped in try/except inside `shutdown()`. Steps 1-9
 
 **When to fix**: Alongside MAJOR-007 (filter ValueError orphan) — both fixes need to coordinate on where symbol-filter compliance is enforced. OR before adding a non-Binance venue adapter.
 **Migration**: Add a new validator stage (e.g., `VENUE_FILTERS`) or extend `PlatformLimitsStageLimits` with a venue-filter dataclass populated at boot from `BinanceAdapter._filters`. Enforces violations BEFORE capital reservation, freeing the validator to reject without leaking capital and without consuming venue rate budget.
+
+---
+
+## TD-083: `OutcomeProcessor` dedup `_dedup_lock` is performative under concurrent callers
+
+**Origin**: Greybeard / Copilot pre-PR review of round-18 MAJOR-004 part A
+**Severity**: Low (single-thread OutcomeLoop makes this unreachable today); Major if a future cross-thread caller (e.g., Praxis-driven retry path bypassing OutcomeLoop) appears
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:107-149`
+
+`process(outcome, context)` acquires `_dedup_lock` to read `_processed_outcome_ids`, releases it, runs the work (capital + position + WAL append + risk update), then re-acquires the lock to add the `outcome_id`. Two concurrent `process()` calls for the same `outcome_id` would both pass the membership check (set still empty), both run the work, and both add — double-mutation. Currently unreachable because the launcher's per-Nexus `OutcomeLoop` is the sole caller and runs single-threaded; the runtime invariant that protects against this is implicit, not asserted.
+
+**When to fix**: Before adding any cross-thread caller of `OutcomeProcessor.process` (e.g., Praxis-driven runtime retry from a different thread), OR before MAJOR-004 part B's planned boot replay path lands and starts driving `process` from `Trading.start` while `OutcomeLoop` may also be running.
+
+**Migration**: Either (a) hold `_dedup_lock` for the entire `process` call so the check-and-add is atomic with the work — straightforward but slow if multiple per-account processors share contention (current per-account isolation makes this fine); or (b) add an explicit `assert threading.get_ident() == self._caller_thread_id` (or equivalent single-thread guard) that fails loud if the invariant is ever broken; document the contract in the `process` docstring either way.
+
+---
+
+## TD-084: `OutcomeProcessor._processed_outcome_ids` set grows unbounded for the process lifetime
+
+**Origin**: Greybeard pre-PR review of round-18 MAJOR-004 part A
+**Severity**: Low (paper-trade rates ~300 outcomes/day → ~100k entries/year; bounded but unbounded in principle)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:71`
+
+`_processed_outcome_ids: set[str]` accumulates one entry per successful `process()` call and is never pruned. Same family as TD-020 (`command_strategy_ids`), TD-023 (`_accepted_commands` / `_command_trade_ids`), TD-033 (Praxis ExecutionManager registries), TD-048 (translator state). At MMVP testnet rates the long-run footprint is negligible (~1 MB/year); over multi-day paper-trade or production runs it warrants pruning.
+
+**When to fix**: Before sustained multi-day paper-trade or any production run where the per-process registry footprint is observable.
+
+**Migration**: Replace with an `OrderedDict`-backed LRU cache with size cap (mirror `OutcomeTranslator._terminal_command_ids` pattern). Cap at e.g. 100k recent outcomes — large enough to cover any plausible Praxis retry / boot-replay window, small enough to stay bounded. Evict oldest on insertion past the cap; evicted-then-replayed outcomes would re-process (acceptable given dedup is best-effort within the process lifetime; cross-restart safety lives on the Praxis side via `OutcomeAcked`).

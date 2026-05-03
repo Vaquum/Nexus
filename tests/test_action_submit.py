@@ -945,7 +945,6 @@ class TestReleaseReservationOnLateValidatorDeny:
             strategy_budget=Decimal('5000'),
         )
         assert res.reservation is not None
-        # Sanity: capital is parked.
         assert controller._state.reservation_notional == Decimal('101')
         denial = ValidationDecision(
             allowed=False,
