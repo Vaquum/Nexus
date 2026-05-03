@@ -905,3 +905,164 @@ Failure-mode propagation:
 - Extract `_compute_position_mutation(outcome, context) → PositionMutation` (pure, no side effects) returning the new size / entry_price / avg_cost_basis values + the realized_pnl for exit fills.
 - Extract `_compute_capital_delta(outcome, context) → CapitalDelta` (pure) returning the aggregate adjustments.
 - Order: build StrategyEvent with the computed `realized_pnl`, acquire `state.risk.lock_cm()`, `append_event(event)` first (raises bubble up with no mutation), then apply `CapitalDelta` (under capital lock, brief), then apply `PositionMutation` (under positions lock, brief — same lock as risk.lock by FINAL-MAJOR-02 wiring), then apply risk update. All three in-memory mutations are pure dict / Decimal ops that cannot raise; if they do, that's a programmer error, not a recoverable I/O failure.
+
+---
+
+## TD-076: No end-to-end test composes EXIT fill loss → rolling-loss update → submit_actions → RISK-stage rejection
+
+**Origin**: Round-18 codex-supervised audit (Pass 5)
+**Severity**: Low (component tests cover each step; integration gap only)
+**Module**: tests (no existing end-to-end rolling-loss test); production paths verified clean in audit
+
+Component tests cover (a) loss recording on EXIT fill, (b) `derive_rolling_losses` from WAL events, (c) validator RISK stage threshold checks. No integration test composes the full chain: EXIT fill loss → `_update_strategy_risk_state_locked` → `state_store.append_event` → `refresh_rolling_losses` → `submit_actions(ENTER)` → `validate_risk_stage` rejection with correct reason code. A future refactor that breaks any link could pass CI while breaking the rolling-loss enforcement contract.
+
+**When to fix**: Before any refactor of the rolling-loss derivation path, OR before relying on rolling-loss caps as a primary risk control in production.
+**Migration**: Add a single integration test that drives an EXIT FILL outcome through `OutcomeProcessor`, ticks `HealthLoop.refresh_rolling_losses`, and asserts the next `submit_actions(ENTER)` for that strategy is rejected with `RISK_ROLLING_LOSS_*` reason code. Pre-fix the test should pass; the assertion is regression-only.
+
+---
+
+## TD-077: Persisted/manual HALTED mode is not sticky across restart because HealthLoop can overwrite it
+
+**Origin**: Round-18 codex-supervised audit (Pass 5)
+**Severity**: Low (validator risk-stage enforcement is independent of mode; mode is operator-facing only)
+**Module**: `nexus/core/health_loop.py` (HealthLoop overrides `state.mode` from snapshot); `nexus/startup/sequencer.py:710-745` (`_determine_mode` at boot)
+
+Distinct from TD-058 (which covers the shutdown-time race on `_halt_state_mode` write). This TD is about post-restart behavior: a manual or persisted HALTED mode in the snapshot is overwritten by HealthLoop's first tick if `HealthSnapshot` evaluates healthy. The validator's risk-stage rejection of breached strategies is independent of `state.mode`, so trading safety is preserved; but operator-mode workflows (e.g., "I HALTED this account by hand, expect it to stay HALTED across restart") will surprise.
+
+**When to fix**: When operator-mode workflows are formalized, OR when manual HALTED is used as a deployment guard that must survive restart.
+**Migration**: Persist a `mode_lock` flag alongside `state.mode` in the snapshot. HealthLoop checks the flag and refuses to demote/promote when set. Operator clears the flag explicitly via runbook step or admin endpoint.
+
+---
+
+## TD-078: Boot reconciliation keeps existing Nexus `avg_cost_basis` even when Praxis has fresher position truth
+
+**Origin**: Round-18 codex-supervised audit (Pass 4)
+**Severity**: Low (size/existence reconciled; cost basis used only for PnL attribution and EXIT cost-basis-released math)
+**Module**: `nexus/startup/sequencer.py:358-484` (`_reconcile_capital`)
+
+Distinct from TD-024 (which covers Praxis-only-position imports). This TD is about positions present in BOTH repos with diverging cost basis: `_reconcile_capital` rebuilds size/existence from Praxis truth but does NOT overwrite `avg_cost_basis` for already-present Nexus positions. After a missed fill (e.g., MAJOR-004 outcome dropped), the position exists in both repos but the Nexus `avg_cost_basis` is stale. Strategy decisions and PnL attribution drift; `_compute_exit_cost_basis` decrements the wrong notional on the next EXIT.
+
+**When to fix**: Alongside MAJOR-004 (outcome delivery best-effort) — once outcome delivery is reliable, this TD's exposure shrinks. Otherwise before any deployment where PnL attribution accuracy matters across restarts.
+**Migration**: During reconcile, compare Praxis `avg_entry_price` against Nexus `avg_cost_basis`; on disagreement either (a) overwrite Nexus to Praxis truth (simpler, accepts Praxis as the source of truth), or (b) re-derive from spine FillReceived events for that trade_id (more precise but heavier).
+
+---
+
+## TD-079: No architectural guard against future direct `PraxisOutbound.send_command` callers
+
+**Origin**: Round-18 codex-supervised audit (Pass 7)
+**Severity**: Low (current callers are correct; surface area is small)
+**Module**: `nexus/strategy/action_submit.py:236` and `nexus/startup/shutdown_sequencer.py:435` are the only production callers
+
+The validator chain has exactly two production entry points to `praxis_outbound.send_command`: `submit_actions` (validator-gated) and `ShutdownSequencer._submit_exit` (intentional bypass). Code review is the only barrier to a third caller appearing. No import-restriction lint, no architectural test asserting these are the only references.
+
+**When to fix**: Before any expansion of the validator-bypass surface, OR alongside any refactor that exposes `PraxisOutbound` more broadly.
+**Migration**: Add a lightweight architectural test (`tests/test_no_direct_send_command.py`) that uses `ast.parse` (or `tldr impact`) on `nexus/` to assert only `nexus/strategy/action_submit.py` and `nexus/startup/shutdown_sequencer.py` reference `PraxisOutbound.send_command`. Failure points to a regression that needs review.
+
+---
+
+## TD-080: `ShutdownSequencer.shutdown()` does not guarantee `_final_checkpoint` if an earlier step raises
+
+**Origin**: Round-18 codex-supervised audit (Pass 9)
+**Severity**: Low (no current bug; defense-in-depth gap)
+**Module**: `nexus/startup/shutdown_sequencer.py:215-236`
+
+Only `_final_checkpoint` is wrapped in try/except inside `shutdown()`. Steps 1-9 (`_halt_state_mode` through `_persist_strategy_state`) propagate uncaught exceptions. A regression in any of those steps (e.g., a refactor introducing AttributeError in `_dispatch_save`, or a per-strategy file write failure in `_persist_strategy_state` outside its per-blob try/except) skips `_final_checkpoint`. Recovery loads the previous snapshot, losing every since-then risk-state mutation. The launcher's outer try/except in `_run_nexus_instance` catches the exception but does not invoke `_final_checkpoint` on the way out.
+
+**When to fix**: Before the next `shutdown_sequencer` refactor, OR alongside any change that adds a new step to `shutdown()`.
+**Migration**: Wrap steps 1-9 in `try: ... finally: try: _final_checkpoint() except: log; _deregister()`. Add a regression test that injects a raise in `_persist_strategy_state` and asserts `state_store.checkpoint` is called once.
+
+---
+
+## TD-081: `_persist_strategy_state` and `_final_checkpoint` block on disk fsync without timeout
+
+**Origin**: Round-18 codex-supervised audit (Pass 9)
+**Severity**: Low (requires disk pathology; container orchestrators typically force-kill after grace period)
+**Module**: `nexus/startup/shutdown_sequencer.py:835-940`; `nexus/infrastructure/snapshot.py:33-53`
+
+`_persist_strategy_state` writes per-strategy blobs with `os.fsync(fd)` and parent dir fsync; no timeout. `_final_checkpoint` calls `state_store.checkpoint` → `save_snapshot` → tmp.write_bytes + fsync + tmp.replace + fsync_directory + wal.truncate_keeping_events. No timeout anywhere. A degraded or unresponsive disk (NFS hang, hardware fault) blocks shutdown indefinitely. Container orchestrators (Render, k8s) typically issue SIGTERM then SIGKILL after a grace period; if the grace period is shorter than the fsync hang, the process is force-killed mid-fsync — same as a SIGKILL crash. WAL torn-tail handling recovers cleanly, so this is not data loss, but produces user-visible "stuck shutdown" behavior.
+
+**When to fix**: When the deployment's grace period is tightened past observed fsync latency, OR when shutdown observability becomes load-bearing.
+**Migration**: Light TD or runbook. Document the grace-period requirement (snapshot fsync can take O(state size) time on slow storage). Add an alert if shutdown exceeds N seconds. A more invasive fix would run fsync in a background thread with a parent-side timeout, but fsync semantics make timeout-and-abandon risky.
+
+---
+
+## TD-082: Validator's `platform_limits_stage` does not include Binance symbol-filter checks
+
+**Origin**: Round-18 codex-supervised audit (Pass 10)
+**Severity**: Low (BinanceAdapter `_validate_order` covers compliance after capital reservation)
+**Module**: `nexus/core/validator/platform_limits_stage.py`; cross-repo: `praxis/infrastructure/binance_adapter.py:944-983`
+
+`PlatformLimitsStageLimits` has no fields for Binance LOT_SIZE, MIN_NOTIONAL, or PRICE_FILTER; `validate_platform_limits_stage` has no codes for venue-filter violations. Symbol-filter compliance is delegated entirely to `BinanceAdapter._validate_order`, which runs AFTER capital reservation, AFTER spine append, AFTER TradingState mutation. A future Praxis variant or a new venue adapter without `_validate_order` would silently submit invalid orders. Cross-cutting venue-filter compliance is not enforced at the validator boundary.
+
+**When to fix**: Alongside MAJOR-007 (filter ValueError orphan) — both fixes need to coordinate on where symbol-filter compliance is enforced. OR before adding a non-Binance venue adapter.
+**Migration**: Add a new validator stage (e.g., `VENUE_FILTERS`) or extend `PlatformLimitsStageLimits` with a venue-filter dataclass populated at boot from `BinanceAdapter._filters`. Enforces violations BEFORE capital reservation, freeing the validator to reject without leaking capital and without consuming venue rate budget.
+
+---
+
+## TD-083: `OutcomeProcessor` dedup `_dedup_lock` is performative under concurrent callers
+
+**Origin**: Greybeard / Copilot pre-PR review of round-18 MAJOR-004 part A
+**Severity**: Low (single-thread OutcomeLoop makes this unreachable today); Major if a future cross-thread caller (e.g., Praxis-driven retry path bypassing OutcomeLoop) appears
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:107-149`
+
+`process(outcome, context)` acquires `_dedup_lock` to read `_processed_outcome_ids`, releases it, runs the work (capital + position + WAL append + risk update), then re-acquires the lock to add the `outcome_id`. Two concurrent `process()` calls for the same `outcome_id` would both pass the membership check (set still empty), both run the work, and both add — double-mutation. Currently unreachable because the launcher's per-Nexus `OutcomeLoop` is the sole caller and runs single-threaded; the runtime invariant that protects against this is implicit, not asserted.
+
+**When to fix**: Before adding any cross-thread caller of `OutcomeProcessor.process` (e.g., Praxis-driven runtime retry from a different thread), OR before MAJOR-004 part B's planned boot replay path lands and starts driving `process` from `Trading.start` while `OutcomeLoop` may also be running.
+
+**Migration**: Either (a) hold `_dedup_lock` for the entire `process` call so the check-and-add is atomic with the work — straightforward but slow if multiple per-account processors share contention (current per-account isolation makes this fine); or (b) add an explicit `assert threading.get_ident() == self._caller_thread_id` (or equivalent single-thread guard) that fails loud if the invariant is ever broken; document the contract in the `process` docstring either way.
+
+---
+
+## TD-084: `OutcomeProcessor._processed_outcome_ids` set grows unbounded for the process lifetime
+
+**Origin**: Greybeard pre-PR review of round-18 MAJOR-004 part A
+**Severity**: Low (paper-trade rates ~300 outcomes/day → ~100k entries/year; bounded but unbounded in principle)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:71`
+
+`_processed_outcome_ids: set[str]` accumulates one entry per successful `process()` call and is never pruned. Same family as TD-020 (`command_strategy_ids`), TD-023 (`_accepted_commands` / `_command_trade_ids`), TD-033 (Praxis ExecutionManager registries), TD-048 (translator state). At MMVP testnet rates the long-run footprint is negligible (~1 MB/year); over multi-day paper-trade or production runs it warrants pruning.
+
+**When to fix**: Before sustained multi-day paper-trade or any production run where the per-process registry footprint is observable.
+
+**Migration**: Replace the `set[str]` with an `OrderedDict[str, None]`-backed LRU cap (use `OrderedDict.move_to_end` on hit, `popitem(last=False)` to evict on insert past the cap). Cap at e.g. 100k recent outcomes — large enough to cover any plausible Praxis retry / boot-replay window, small enough to stay bounded. Evicted-then-replayed outcomes would re-process (acceptable given dedup is best-effort within the process lifetime; cross-restart safety lives on the Praxis side via `OutcomeAcked`).
+
+---
+
+## TD-085: `submit_actions` validator-exception path can leak a granted reservation
+
+**Origin**: PR #57 review (round-18 post-merge follow-up)
+**Severity**: Low (very low probability — stages are designed to return decisions, not raise)
+**Module**: `nexus/strategy/action_submit.py:175-190`
+
+The `try: validator.validate(ctx) except Exception` branch logs and marks the action `SUBMIT_FAILED` without calling `_release_granted_reservation`. If a stage callable raises (rather than returning a denied `ValidationDecision`) AFTER the CAPITAL stage has already granted a reservation, the reservation parks in `_reservations` until 30s TTL eviction. Same family as round-18 MAJOR-006, but fired through the exception path rather than the REJECTED path.
+
+The pipeline executor at `nexus/core/validator/pipeline_executor.py:42-78` does NOT catch exceptions from stage callables — it propagates them to the `submit_actions` exception handler. The `Pipeline.validate` re-attach behavior at lines 65-72 only triggers when a stage RETURNS a denied decision; an exception bypasses that path entirely, so the granted `Reservation` is never re-attached to a `decision` object — there is no `decision` for the SUBMIT_FAILED branch to release from.
+
+Closing this requires the pipeline executor to track granted reservations independently of the per-stage decision return, OR `submit_actions` to track the partial validator state via instrumentation. Both are bigger than a one-line fix.
+
+**When to fix**: When the validator stage surface area grows (e.g., a new `OperationalMode` transition or a new platform-limit derivation that has a non-trivial chance of raising), OR when sustained mainnet operation makes the 30s TTL window observable.
+
+**Migration**: Either (a) extend `Pipeline.validate` to return a structured intermediate state on exception (e.g., wrap the propagated exception with the granted reservation context so the caller can release), or (b) reshape `Pipeline.validate` to catch stage exceptions itself, release any granted reservation via an injected `capital_controller` reference, and re-raise — concentrates the rollback contract in one place. Option (b) is the cleaner long-term shape; option (a) is the more conservative migration.
+
+---
+
+## TD-086: `OutcomeProcessor.process` records `outcome_id` only after successful return — a raise mid-`_handle_fill` leaves capital/position mutated AND the dedup set empty
+
+**Origin**: Copilot PR #57 review (post-merge follow-up to round-18 MAJOR-004 part A)
+**Severity**: Low today (currently unreachable — append_event raise + Praxis retry of the exact same outcome_id is narrow); High if MAJOR-004 part B (Praxis boot replay-from-spine) lands without a paired fix here
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:71-149` (`process`); `nexus/infrastructure/praxis_connector/outcome_processor.py:167-252` (`_handle_fill`)
+
+`process()` adds `outcome.outcome_id` to `_processed_outcome_ids` only after the per-outcome handler returns a `success=True` `ProcessResult`. `_handle_fill` mutates capital (`order_fill` / `order_exit`) and position (`_grow_position` / `_reduce_position`) BEFORE calling `state_store.append_event`. If `append_event` raises (transient I/O / WAL validation failure — covered by `TestExitFillWalAppendFailureRollback`), the exception propagates out of `process()`, the `outcome_id` is never recorded, and a retry of the exact same outcome will re-enter `_handle_fill`. The retry-side behavior diverges by direction:
+
+- **EXIT FILL**: `_compute_exit_cost_basis` re-reads `position.avg_cost_basis` and `position.size`. If `_reduce_position` already deleted the position, the helper returns None (no second capital decrement) but `_reduce_position` then raises `RuntimeError('exit fill for missing position')`. If the position is not yet closed, the helper computes a fresh decrement against the now-smaller size and `_reduce_position` reduces the size again — capital and position both double-mutated.
+- **ENTRY FILL**: `order_fill` runs again on the same `command_id` → capital deployed is double-decremented; `_grow_position` runs again → position size grows by 2× the fill_size. No append_event in this path, so the original raise can only come from `order_fill` itself, but the dedup-after-success contract is still broken.
+
+The existing `TestExitFillWalAppendFailureRollback` only verifies that risk state is unmutated; it does NOT cover capital/position rollback or retry safety. The `_dedup_lock` referenced in TD-083 is a separate concurrency concern; this TD is about ordering of side-effects vs. dedup-set commit.
+
+**When to fix**: Before MAJOR-004 part B (Praxis boot replay-from-spine) lands and starts driving `process()` from the boot path while `OutcomeLoop` may also be running — the boot replay greatly increases the probability of a same-`outcome_id` re-entry into `process` (a snapshot crash mid-`_handle_fill` is now reachable through normal recovery, not just disk pathology).
+
+**Migration**: Two complementary changes:
+
+1. **Reorder `_handle_fill` so I/O that can raise happens BEFORE state mutation.** For EXIT FILL: build the `StrategyEvent` and call `state_store.append_event` (under `risk.lock`) BEFORE `order_exit` and `_reduce_position`. The risk-state mutation already happens after the append today — extend the same discipline to capital and position. The per-method assertions about read-modify-write ordering need to be re-checked to ensure no further reads-then-writes hide a race (the existing positions_lock contract should still hold).
+2. **Mark `outcome_id` as in-flight before mutation begins, committed after.** Add a second lock-guarded set `_in_flight_outcome_ids: set[str]`. On entry: if `outcome_id in _processed OR outcome_id in _in_flight` → dedup hit. On entry: add to `_in_flight`. On success: move to `_processed`. On exception: leave in `_in_flight` (forces operator-visible alerting; never silently re-runs the failed-mid-mutation work). Operator-driven recovery would then explicitly re-process by clearing `_in_flight` — manual intervention is the right gate when state has already partially mutated.
+
+Both changes together close the window. Option (1) alone is preferred where feasible because it is purely structural (no new state, no new operator surface).
