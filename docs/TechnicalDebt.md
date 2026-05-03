@@ -1023,7 +1023,7 @@ Only `_final_checkpoint` is wrapped in try/except inside `shutdown()`. Steps 1-9
 
 **When to fix**: Before sustained multi-day paper-trade or any production run where the per-process registry footprint is observable.
 
-**Migration**: Replace with an `OrderedDict`-backed LRU cache with size cap (mirror `OutcomeTranslator._terminal_command_ids` pattern). Cap at e.g. 100k recent outcomes — large enough to cover any plausible Praxis retry / boot-replay window, small enough to stay bounded. Evict oldest on insertion past the cap; evicted-then-replayed outcomes would re-process (acceptable given dedup is best-effort within the process lifetime; cross-restart safety lives on the Praxis side via `OutcomeAcked`).
+**Migration**: Replace the `set[str]` with an `OrderedDict[str, None]`-backed LRU cap (use `OrderedDict.move_to_end` on hit, `popitem(last=False)` to evict on insert past the cap). Cap at e.g. 100k recent outcomes — large enough to cover any plausible Praxis retry / boot-replay window, small enough to stay bounded. Evicted-then-replayed outcomes would re-process (acceptable given dedup is best-effort within the process lifetime; cross-restart safety lives on the Praxis side via `OutcomeAcked`).
 
 ---
 
