@@ -101,7 +101,7 @@ class Strategy(Strategy):
 
         Returns no action when `_reference_price` cannot derive a price
         from the signal payload (capital sizing requires a price up
-        front; the validator's poller-fallback path is not exercised).
+        front; the launcher's poller-fallback path is not exercised).
         '''
 
         reference_price = self._reference_price(signal)
