@@ -133,25 +133,36 @@ class Strategy(Strategy):
         ]
 
     def _exit(self, context: StrategyContext) -> list[Action]:
-        '''Exit the open position with a single SELL.'''
+        '''Exit every open position with `remaining > 0` via a SELL each.
 
-        position = context.positions[0]
-        remaining = position.size - position.pending_exit
+        The strategy enforces a single concurrent position by gating ENTER
+        on `not context.positions`, so the steady-state path produces
+        exactly one EXIT action. Iterating defends against any unexpected
+        multi-position state (crash-recovery residue, manifest config
+        drift, future code changes) without introducing scope.
+        '''
 
-        if remaining <= 0:
-            return []
+        actions: list[Action] = []
 
-        return [
-            Action(
-                action_type=ActionType.EXIT,
-                direction=OrderSide.SELL,
-                size=remaining,
-                execution_mode=ExecutionMode.SINGLE_SHOT,
-                order_type=OrderType.MARKET,
-                deadline=_EXECUTION_DEADLINE_SECONDS,
-                trade_id=position.trade_id,
-            ),
-        ]
+        for position in context.positions:
+            remaining = position.size - position.pending_exit
+
+            if remaining <= 0:
+                continue
+
+            actions.append(
+                Action(
+                    action_type=ActionType.EXIT,
+                    direction=OrderSide.SELL,
+                    size=remaining,
+                    execution_mode=ExecutionMode.SINGLE_SHOT,
+                    order_type=OrderType.MARKET,
+                    deadline=_EXECUTION_DEADLINE_SECONDS,
+                    trade_id=position.trade_id,
+                ),
+            )
+
+        return actions
 
     def _reference_price(self, signal: Signal) -> Decimal | None:
         '''Read `close` from the signal payload; returns None if absent or unparseable.
