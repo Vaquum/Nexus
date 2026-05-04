@@ -1,0 +1,11 @@
+account_id: example_acct
+allocated_capital: 10000
+capital_pool: 10000
+strategies:
+  - id: logreg_binary_evsfd
+    file: strategies/logreg_binary_evsfd.py
+    sensors:
+      - experiment: /path/to/your/limen/experiments/logreg-binary-evsfd
+        permutation_ids: [21]
+        interval_seconds: 7200
+    capital_pct: 100
