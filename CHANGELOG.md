@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.39.0 on 4th of May, 2026
+
+### Add
+
+- Add [`examples/strategies/logreg_binary_evsfd.py`](examples/strategies/logreg_binary_evsfd.py) — primitive long-only `Strategy` driven by a binary classifier signal: ENTER on `_preds == 1`, EXIT on `_preds == 0`, single concurrent position. MARKET orders via `ExecutionMode.SINGLE_SHOT`, 10% capital fraction per ENTER, 60s execution deadline. All other lifecycle hooks are no-ops. Reference price is read from `signal.get('close')`; the strategy returns no action when the signal payload lacks a price. A non-int `_preds` payload is logged at WARNING and the signal is skipped (issue #33)
+- Add [`examples/manifests/logreg_binary_evsfd.yaml`](examples/manifests/logreg_binary_evsfd.yaml) — operator-deployable manifest pinning a single sensor at `permutation_ids: [21]` from a `BtcLogRegEVSFD` 5000-permutation Limen run with `interval_seconds: 7200` and `capital_pct: 100`. Placeholder `account_id`, `allocated_capital`, `capital_pool`, and `sensors[].experiment` path for operator substitution at deploy time
+- Add [`examples/README.md`](examples/README.md) — deploy guide for the example bundle: prerequisites for the upstream Limen experiment directory (`metadata.json`, `round_data.jsonl`, `results.csv`), the `experiment_dir=` + `search_strategy=` constructor requirement on `UniversalExperimentLoop`, the importable-SFD-module requirement (`metadata.json[sfd_module]` is reloaded by `Trainer` via `importlib.import_module()` so the SFD class must not live in `__main__`), and the 3-step deploy procedure for the launcher's `MANIFESTS_DIR` and `STRATEGIES_BASE_PATH`
+
 ## v0.38.0 on 3rd of May, 2026
 
 ### Add
