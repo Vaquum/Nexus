@@ -1066,3 +1066,9 @@ The existing `TestExitFillWalAppendFailureRollback` only verifies that risk stat
 2. **Mark `outcome_id` as in-flight before mutation begins, committed after.** Add a second lock-guarded set `_in_flight_outcome_ids: set[str]`. On entry: if `outcome_id in _processed OR outcome_id in _in_flight` → dedup hit. On entry: add to `_in_flight`. On success: move to `_processed`. On exception: leave in `_in_flight` (forces operator-visible alerting; never silently re-runs the failed-mid-mutation work). Operator-driven recovery would then explicitly re-process by clearing `_in_flight` — manual intervention is the right gate when state has already partially mutated.
 
 Both changes together close the window. Option (1) alone is preferred where feasible because it is purely structural (no new state, no new operator surface).
+
+**Acceptance addendum (codex-supervised audit re-run, 2026-05-04)**:
+- Coverage must include ENTRY FILL replay idempotency, not only EXIT `append_event` failure. ENTRY is the most frequent outcome shape and has no built-in WAL-event guard.
+- Coverage must include `append_mutation` failure followed by later `_final_checkpoint` (clean-shutdown variant where in-memory mutation is persisted to snapshot even though `OutcomeAcked` was withheld).
+- Whichever migration option is chosen (persisted dedup ids in Nexus WAL OR `_handle_fill` compute-append-mutate reorder), it must produce a durable signal observable from `recover()` so the Praxis-side replay consumer can dedup post-restart.
+- TD-086 must NOT be deferred past the landing of Praxis TD-052 (paired implementation boundary): TD-052 boot replay-from-spine cannot safely run while `OutcomeProcessor.process` retains the dedup-after-success contract.
