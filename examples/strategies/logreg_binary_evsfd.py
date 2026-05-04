@@ -55,21 +55,20 @@ class Strategy(Strategy):
         if prediction is None:
             return []
 
-        try:
-            value = int(prediction)
-        except (TypeError, ValueError):
+        if isinstance(prediction, bool) or not isinstance(prediction, int) or prediction not in (0, 1):
             _log.warning(
-                'logreg_binary_evsfd: non-int _preds payload (%r); '
-                'skipping signal — strategy will not trade until the '
-                'signal source is fixed',
+                'logreg_binary_evsfd: invalid _preds payload (%r, type=%s); '
+                'expected int 0 or 1; skipping signal — strategy will not '
+                'trade until the signal source is fixed',
                 prediction,
+                type(prediction).__name__,
             )
             return []
 
-        if value == 1 and not context.positions:
+        if prediction == 1 and not context.positions:
             return self._enter(signal, context)
 
-        if value == 0 and context.positions:
+        if prediction == 0 and context.positions:
             return self._exit(context)
 
         return []
@@ -110,6 +109,14 @@ class Strategy(Strategy):
         if reference_price is None or context.capital_available <= 0:
             return []
 
+        if not reference_price.is_finite() or reference_price <= 0:
+            _log.warning(
+                'logreg_binary_evsfd: non-positive or non-finite reference_price (%s); '
+                'skipping ENTER',
+                reference_price,
+            )
+            return []
+
         notional = context.capital_available * _ENTER_CAPITAL_FRACTION
         size = notional / reference_price
 
@@ -147,13 +154,10 @@ class Strategy(Strategy):
         ]
 
     def _reference_price(self, signal: Signal) -> Decimal | None:
-        '''Best-effort reference price from the signal payload.
+        '''Read `close` from the signal payload; returns None if absent or unparseable.
 
-        Limen `logreg_binary` predict output does not carry the input
-        price; the launcher's fallback price provider supplies the
-        last poller close when `reference_price` is `None`. Returning
-        the latter is correct for MMVP — the validator will skip the
-        action with a logged warning if the poller has no data yet.
+        `_enter` short-circuits to no action when this returns None, so
+        the launcher's poller-fallback path is not exercised.
         '''
 
         candidate = signal.get('close')

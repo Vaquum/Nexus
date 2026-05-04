@@ -14,8 +14,18 @@ position per strategy.
 
 | Path | Purpose |
 |------|---------|
-| `manifests/logreg_binary_evsfd.yaml`   | Operator-deployable manifest |
-| `strategies/logreg_binary_evsfd.py`    | Strategy file referenced by the manifest |
+| `logreg_binary_evsfd.yaml`           | Operator-deployable manifest |
+| `strategies/logreg_binary_evsfd.py`  | Strategy file referenced by the manifest |
+
+Manifest and strategy file live under the same parent (`examples/`); the
+manifest's `file:` field is `strategies/logreg_binary_evsfd.py` (relative
+to the manifest's directory). `nexus.infrastructure.manifest.load_manifest`
+validates the strategy file path under the manifest's parent directory and
+forbids `..` escapes, so the manifest and strategy must remain colocated
+under a single base path. At deploy time, copy `examples/` (or the
+manifest + `strategies/` subdir) into a directory served as both
+`MANIFESTS_DIR` and `STRATEGIES_BASE_PATH` (or two paths pointing at the
+same on-disk tree).
 
 ### Prerequisites
 
@@ -34,8 +44,7 @@ produce experiments itself (RFC-3001 §X.1.2).
 > path writes only `<experiment_name>.csv` to the working directory
 > and never emits `metadata.json` or `round_data.jsonl`. Trainer then
 > raises `FileNotFoundError` on `<experiment_dir>/metadata.json` at
-> startup. The example permutation `62404` was produced by a UEL run
-> configured as
+> startup. A `metadata.json`-emitting run is configured as
 > `UniversalExperimentLoop(experiment_dir='...', search_strategy=GridStrategy(), ...)`.
 
 > **The SFD class must live in a real importable Python module.**
@@ -61,13 +70,17 @@ when reusing the example for a different experiment.
 
 ### Deploy
 
-1. Edit `manifests/logreg_binary_evsfd.yaml`:
+1. Edit `logreg_binary_evsfd.yaml`:
    - Set `account_id` to the target Praxis account.
    - Set `allocated_capital` and `capital_pool` to the operational
      ceiling and operational allocation respectively.
    - Replace `sensors[].experiment` with the absolute path to your
      persisted Limen experiment directory.
-2. Copy the manifest into the launcher's `MANIFESTS_DIR` mount and
-   `strategies/logreg_binary_evsfd.py` into `STRATEGIES_BASE_PATH`.
+2. Copy `logreg_binary_evsfd.yaml` and the `strategies/` subdir into
+   the launcher's `MANIFESTS_DIR` mount (which must also be served
+   as `STRATEGIES_BASE_PATH`, or `STRATEGIES_BASE_PATH` must point at
+   the same on-disk tree). The manifest's `file:` is resolved relative
+   to the manifest's parent directory, so the `strategies/` subdir
+   must remain a sibling of the manifest.
 3. The strategy itself is symbol-agnostic; the launcher's
    `_DEFAULT_SYMBOL` (`BTCUSDT`) drives execution.
