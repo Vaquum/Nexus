@@ -475,9 +475,10 @@
 
 ### Add
 
-- Add [`tests/test_limen_trainer_contract.py`](tests/test_limen_trainer_contract.py) — 5 tests pinning the Limen `Trainer` integration contract Nexus depends on (`Trainer.__init__` parameter names + `experiment_dir` required + `data` defaults to None; `Trainer.train` parameter names + `list[Sensor]` return annotation). A future `vaquum_limen` bump that reshapes either signature now fails CI loudly instead of breaking at deploy time
+- Add [`tests/test_limen_trainer_contract.py`](tests/test_limen_trainer_contract.py) — 10 tests pinning the Limen `Trainer` integration contract Nexus depends on. `TestTrainerInitContract`: parameter names, `experiment_dir` is required + accepts positional, `data` defaults to None + accepts keyword. `TestTrainerTrainContract`: parameter names, `permutation_ids` accepts positional, return type via `typing.get_type_hints` (robust to `from __future__ import annotations`). `TestTrainerPrivateAttributeContract`: `Trainer.__init__` source contains `self._data` and `self._manifest` assignments — pins the private-attribute reads at `nexus/startup/sequencer.py:634, 655`. A future `vaquum_limen` bump that reshapes any of these now fails CI loudly instead of breaking at deploy time
 
 ### Update
 
 - Bump `vaquum_limen` git+https pin from `v2.4.3` to `v3.0.1`. Limen v3 introduced a Manifest API rename (RFC-1004) and a class-based `limen.targets` module replacing the v2 function-based target builders; Nexus production code only imports `from limen.experiment.trainer.trainer import Trainer` (`nexus/startup/sequencer.py:15`), and the `Trainer.__init__(experiment_dir, data=None)` + `Trainer.train(permutation_ids: list[int])` signatures are unchanged in v3.0.1, so no Nexus code change is required. SFD modules feeding the Trainer (e.g. the `BtcLogRegEVSFD` example) must be re-trained against v3 limen via `experiment_runner` before deploy; the bundle re-train is upstream and decoupled from this pin bump
+- Update `vaquum_limen 2.4.3` → `vaquum_limen 3.0.1` in two `nexus/startup/sequencer.py` comments (lines 631, 651) flagging private-attribute reads (`cached_trainer._data`, `trainer._manifest`); both private attributes still exist on the Limen v3.0.1 `Trainer` class (verified via `inspect.getsource(Trainer.__init__)`) so the re-validate-on-upgrade contract is satisfied
 
