@@ -27,6 +27,7 @@ fail loudly in CI instead of at deploy time.
 from __future__ import annotations
 
 import inspect
+import re
 import typing
 
 from limen.experiment.trainer.sensor import Sensor
@@ -77,8 +78,8 @@ class TestTrainerPrivateAttributeContract:
 
     def test_init_assigns_data_attribute(self) -> None:
         src = inspect.getsource(Trainer.__init__)
-        assert 'self._data =' in src or 'self._data:' in src
+        assert re.search(r'self\._data\s*[:=]', src) is not None
 
     def test_init_assigns_manifest_attribute(self) -> None:
         src = inspect.getsource(Trainer.__init__)
-        assert 'self._manifest =' in src or 'self._manifest:' in src
+        assert re.search(r'self\._manifest\s*[:=]', src) is not None
