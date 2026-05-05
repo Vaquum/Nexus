@@ -15,9 +15,13 @@ Trainer` in `nexus/startup/sequencer.py:15` and depends on:
   `signal_producer.py` (`.with_params_override`, `.prepare_data`) and
   `predict_loop.py` (`.data_source_config`)
 
-Pinning these via `inspect.signature`, `typing.get_type_hints`, and
-`hasattr` makes a future Limen version bump that reshapes any of the
-above fail loudly in CI instead of at deploy time.
+Pinning these via `inspect.signature` (parameter names, kinds,
+defaults), `typing.get_type_hints` (return type, robust to
+`from __future__ import annotations`), and `inspect.getsource`
+string-presence checks (private attributes set inside `__init__`,
+which `hasattr(Trainer, ...)` cannot see without instantiation)
+makes a future Limen version bump that reshapes any of the above
+fail loudly in CI instead of at deploy time.
 '''
 
 from __future__ import annotations
