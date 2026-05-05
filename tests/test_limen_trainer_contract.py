@@ -68,15 +68,17 @@ class TestTrainerTrainContract:
 
     def test_train_returns_list_of_sensor(self) -> None:
         hints = typing.get_type_hints(Trainer.train)
-        assert hints['return'] == list[Sensor]
+        return_hint = hints['return']
+        assert typing.get_origin(return_hint) is list
+        assert typing.get_args(return_hint) == (Sensor,)
 
 
 class TestTrainerPrivateAttributeContract:
 
     def test_init_assigns_data_attribute(self) -> None:
         src = inspect.getsource(Trainer.__init__)
-        assert 'self._data' in src
+        assert 'self._data =' in src or 'self._data:' in src
 
     def test_init_assigns_manifest_attribute(self) -> None:
         src = inspect.getsource(Trainer.__init__)
-        assert 'self._manifest' in src
+        assert 'self._manifest =' in src or 'self._manifest:' in src
