@@ -16,22 +16,53 @@ Trainer` in `nexus/startup/sequencer.py:15` and depends on:
   `predict_loop.py` (`.data_source_config`)
 
 Pinning these via `inspect.signature` (parameter names, kinds,
-defaults), `typing.get_type_hints` (return type, robust to
-`from __future__ import annotations`), and `inspect.getsource`
-string-presence checks (private attributes set inside `__init__`,
-which `hasattr(Trainer, ...)` cannot see without instantiation)
-makes a future Limen version bump that reshapes any of the above
-fail loudly in CI instead of at deploy time.
+defaults — kind checks use explicit allow-lists so a switch to
+`*args` / `**kwargs` is rejected, not silently accepted),
+`typing.get_type_hints` + `typing.get_origin` / `get_args` (return
+type, robust to `from __future__ import annotations` and to
+equivalent annotation spellings such as `typing.List[Sensor]`), and
+AST-walked `ast.Assign` / `ast.AnnAssign` checks of the dedented
+`__init__` source (private attributes set inside `__init__`, which
+`hasattr(Trainer, ...)` cannot see without instantiation) makes a
+future Limen version bump that reshapes any of the above fail loudly
+in CI instead of at deploy time.
 '''
 
 from __future__ import annotations
 
+import ast
 import inspect
-import re
+import textwrap
 import typing
 
 from limen.experiment.trainer.sensor import Sensor
 from limen.experiment.trainer.trainer import Trainer
+
+
+def _init_assigns_self_attribute(attr_name: str) -> bool:
+    src = textwrap.dedent(inspect.getsource(Trainer.__init__))
+    init_node = ast.parse(src).body[0]
+    for node in ast.walk(init_node):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == 'self'
+                    and target.attr == attr_name
+                ):
+                    return True
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if (
+                node.value is not None
+                and isinstance(target, ast.Attribute)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == 'self'
+                and target.attr == attr_name
+            ):
+                return True
+    return False
 
 
 class TestTrainerInitContract:
@@ -46,7 +77,10 @@ class TestTrainerInitContract:
 
     def test_experiment_dir_accepts_positional(self) -> None:
         params = inspect.signature(Trainer.__init__).parameters
-        assert params['experiment_dir'].kind != inspect.Parameter.KEYWORD_ONLY
+        assert params['experiment_dir'].kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
 
     def test_data_defaults_to_none(self) -> None:
         params = inspect.signature(Trainer.__init__).parameters
@@ -54,7 +88,11 @@ class TestTrainerInitContract:
 
     def test_data_accepts_keyword(self) -> None:
         params = inspect.signature(Trainer.__init__).parameters
-        assert params['data'].kind != inspect.Parameter.POSITIONAL_ONLY
+        assert params['data'].kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.VAR_KEYWORD,
+        )
 
 
 class TestTrainerTrainContract:
@@ -65,7 +103,10 @@ class TestTrainerTrainContract:
 
     def test_permutation_ids_accepts_positional(self) -> None:
         params = inspect.signature(Trainer.train).parameters
-        assert params['permutation_ids'].kind != inspect.Parameter.KEYWORD_ONLY
+        assert params['permutation_ids'].kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
 
     def test_train_returns_list_of_sensor(self) -> None:
         hints = typing.get_type_hints(Trainer.train)
@@ -77,9 +118,7 @@ class TestTrainerTrainContract:
 class TestTrainerPrivateAttributeContract:
 
     def test_init_assigns_data_attribute(self) -> None:
-        src = inspect.getsource(Trainer.__init__)
-        assert re.search(r'self\._data\s*[:=]', src) is not None
+        assert _init_assigns_self_attribute('_data')
 
     def test_init_assigns_manifest_attribute(self) -> None:
-        src = inspect.getsource(Trainer.__init__)
-        assert re.search(r'self\._manifest\s*[:=]', src) is not None
+        assert _init_assigns_self_attribute('_manifest')
