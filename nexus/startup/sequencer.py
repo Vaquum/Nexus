@@ -628,7 +628,7 @@ class StartupSequencer:
                     else:
                         # NOTE: cached_trainer._data is a private attribute on
                         # Limen Trainer. No public accessor exists as of
-                        # vaquum_limen 3.0.1; re-validate on Limen upgrades.
+                        # vaquum_limen 3.0.3; re-validate on Limen upgrades.
                         trainer = Trainer(
                             resolved_dir,
                             data=cached_trainer._data,
@@ -648,7 +648,7 @@ class StartupSequencer:
                 for sensor in sensors:
                     sensor_id = f'{path_hash}:{sensor.permutation_id}'
                     # NOTE: trainer._manifest is a private attribute on Limen Trainer.
-                    # No public accessor exists as of vaquum_limen 3.0.1.
+                    # No public accessor exists as of vaquum_limen 3.0.3.
                     wired = WiredSensor(
                         sensor_id=sensor_id,
                         sensor=sensor,
