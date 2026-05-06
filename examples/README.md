@@ -47,16 +47,32 @@ produce experiments itself (RFC-3001 §X.1.2).
 > startup. A `metadata.json`-emitting run is configured as
 > `UniversalExperimentLoop(experiment_dir='...', search_strategy=GridStrategy(), ...)`.
 
-> **The SFD class must live in a real importable Python module.**
+> **The SFD must be loadable by name at sensor-load time.**
 > Limen records `sfd_module = sfd.__class__.__module__` into
-> `metadata.json` at training time, and Trainer reloads the SFD via
-> `importlib.import_module(sfd_module)` at sensor-load time. If the
-> SFD subclass is defined inline in a one-off training script it
-> resolves to `__main__`, which is not importable from the Praxis
-> launcher process — Trainer will raise `ModuleNotFoundError` when
-> the launcher boots. Define the SFD in a regular module on
-> PYTHONPATH (e.g. `my_sfds/round3_sfd.py`) and import it from the
-> training script.
+> `metadata.json` at training time. From `vaquum_limen` v3.0.3 (Nexus
+> 0.42.0+) Trainer resolves the recorded name in two stages: it first
+> looks for a `<sfd_module>.py` file inside `experiment_dir` and loads
+> it via `importlib.util.spec_from_file_location` + `module_from_spec`
+> (no `sys.path` mutation), and only falls back to
+> `importlib.import_module` against the running interpreter's
+> `sys.path` when no such file is present. Two deploy shapes both work:
+>
+> 1. **Self-contained experiment_dir (preferred for paper-trade
+>    bundles).** Place the SFD `.py` next to `metadata.json` /
+>    `round_data.jsonl` inside the staged `experiment_dir`. The
+>    launcher needs no `PYTHONPATH` wiring; the local-file branch
+>    loads the module hermetically. This is the path produced by
+>    Praxis's `trainer_prep.py` for `BtcLogRegEVSFD`-style bundles.
+> 2. **PYTHONPATH-importable module (legacy, still supported).**
+>    Define the SFD in a regular module reachable on the launcher's
+>    `sys.path` (e.g. `my_sfds/round3_sfd.py`) and import it from the
+>    training script. The fallback branch resolves it via
+>    `importlib.import_module`.
+>
+> If the SFD subclass is defined inline in a one-off training script
+> it resolves to `__main__`, which neither branch can reach — Trainer
+> will raise `ModuleNotFoundError` at sensor-wiring. Use one of the
+> two shapes above instead.
 
 The example pins `permutation_ids: [21]`, the best permutation by
 `backtest_total_return_net_pct` from a 5000-permutation
