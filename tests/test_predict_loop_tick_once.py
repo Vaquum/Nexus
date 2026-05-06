@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
@@ -354,6 +354,72 @@ class TestPredictLoopTickOnce:
                 f'{method.__name__} chain order is {ordered_markers}; '
                 f'expected {canonical_order}'
             )
+
+    def test_chain_invoked_in_same_order_as_tick(self) -> None:
+        '''Real runtime parity: drive both `_tick` and `tick_once` with
+        identical setup and assert the recorded sequence of chain side
+        effects is identical.
+
+        `_tick` is driven directly with `_running` set to True (bypassing
+        `start()`) and `_schedule_locked` no-op'd so the call does not
+        spawn a follow-up Timer. The recorded event list must match the
+        one from `tick_once` byte-for-byte. A future edit that changes
+        the chain in only one of the two methods produces divergent
+        event lists and fails this test.
+        '''
+
+        action = Action(
+            action_type=ActionType.ENTER,
+            direction=OrderSide.BUY,
+            size=Decimal('0.01'),
+            execution_mode=ExecutionMode.SINGLE_SHOT,
+            order_type=OrderType.MARKET,
+            deadline=300,
+        )
+
+        def make_loop() -> tuple[PredictLoop, WiredSensor, list[str]]:
+            events: list[str] = []
+            runner = MagicMock(spec=StrategyRunner)
+
+            def market_provider(kline_size: int) -> pl.DataFrame:
+                events.append(f'market_data:{kline_size}')
+                return _mock_market_data_provider(kline_size)
+
+            def context_provider(strategy_id: str) -> StrategyContext:
+                events.append(f'context:{strategy_id}')
+                return _mock_context_provider(strategy_id)
+
+            def dispatch(*_args: object, **_kwargs: object) -> list[Action]:
+                events.append('dispatch')
+                return [action]
+
+            runner.dispatch_signal.side_effect = dispatch
+
+            def submitter(actions: list[Action], strategy_id: str) -> None:
+                events.append(f'submit:{strategy_id}:{len(actions)}')
+
+            wired = _make_wired(strategy_id='strat_a')
+            loop = PredictLoop(
+                runner=runner,
+                wired_sensors=[wired],
+                market_data_provider=market_provider,
+                context_provider=context_provider,
+                action_submit=submitter,
+            )
+            return loop, wired, events
+
+        loop_a, wired_a, events_a = make_loop()
+        loop_a.tick_once(wired_a)
+
+        loop_b, wired_b, events_b = make_loop()
+        loop_b._running = True
+        with patch.object(loop_b, '_schedule_locked', lambda *_args, **_kwargs: None):
+            try:
+                loop_b._tick(wired_b)
+            finally:
+                loop_b._running = False
+
+        assert events_a == events_b
 
     def test_chain_invoked_in_order_at_runtime(self) -> None:
         '''Runtime call-order check for `tick_once`: the four chain steps

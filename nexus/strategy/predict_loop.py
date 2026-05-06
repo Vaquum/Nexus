@@ -104,13 +104,18 @@ class PredictLoop:
             wired: The wired sensor to fire one predict tick on.
 
         Raises:
-            RuntimeError: When called while the Timer-driven loop is
-                running.
+            RuntimeError: When the Timer-driven loop is running at the
+                moment of entry. The guard takes `_lock` for the check
+                so it is atomic with `start()` and `stop()`, but the
+                chain body runs without the lock; callers therefore
+                must not invoke `start()` while a `tick_once` chain
+                is in flight.
         '''
 
-        if self._running:
-            msg = 'tick_once must not be called while the Timer-driven loop is running'
-            raise RuntimeError(msg)
+        with self._lock:
+            if self._running:
+                msg = 'tick_once must not be called while the Timer-driven loop is running'
+                raise RuntimeError(msg)
 
         kline_size = _extract_kline_size(wired)
         market_data = self._market_data_provider(kline_size)
