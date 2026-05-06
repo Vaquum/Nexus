@@ -104,12 +104,24 @@ class PredictLoop:
             wired: The wired sensor to fire one predict tick on.
 
         Raises:
-            RuntimeError: When the Timer-driven loop is running at the
-                moment of entry. The guard takes `_lock` for the check
-                so it is atomic with `start()` and `stop()`, but the
-                chain body runs without the lock; callers therefore
-                must not invoke `start()` while a `tick_once` chain
-                is in flight.
+            RuntimeError: When `_running` is `True` at the moment of
+                entry. The check takes `_lock` so it is atomic with
+                `start()`/`stop()`, but it is a fail-fast guard against
+                deliberate misuse, not a hard interleave barrier:
+
+                - The chain body runs without the lock, so callers
+                  must not invoke `start()` while a `tick_once` chain
+                  is in flight.
+                - `stop()` flips `_running` to `False` under the lock
+                  but does not wait for an in-flight `_tick` to finish
+                  (`threading.Timer.cancel` only prevents future
+                  fires), so callers must ensure any in-flight `_tick`
+                  has returned before invoking `tick_once`.
+
+                Schedule-driven callers (the intended use case) call
+                `tick_once` from a single thread that never touches the
+                Timer-driven loop, so neither concern applies in
+                practice.
         '''
 
         with self._lock:
