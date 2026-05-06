@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -315,25 +316,79 @@ class TestPredictLoopTickOnce:
         assert runner.dispatch_signal.call_count == 2
         assert loop._active_timers == {}
 
-    def test_chain_call_order_matches_timer_tick(self) -> None:
-        '''Parity guard: tick_once invokes the same chain in the same order
-        as Timer-driven `_tick`. Catches drift if `_tick` is edited later
-        without updating the duplicated chain in `tick_once`.
+    def test_chain_markers_present_and_ordered_in_both_paths(self) -> None:
+        '''Static-source drift sentinel: both `_tick` and `tick_once` must
+        invoke the same chain steps in the same order.
+
+        `tick_once` deliberately duplicates the chain `_tick` runs (rather
+        than extracting a shared helper) to keep `_tick` byte-identical for
+        production Timer callers. Duplication invites silent drift — this
+        test inspects the source of both methods and asserts the chain
+        markers appear in the canonical order in each. A future edit that
+        adds, removes, or reorders a step in only one path fails CI here.
         '''
 
-        runner = MagicMock(spec=StrategyRunner)
-        runner.dispatch_signal.return_value = []
+        canonical_order = [
+            '_extract_kline_size',
+            '_market_data_provider',
+            'produce_signal',
+            '_context_provider',
+            'dispatch_signal',
+            '_action_submit',
+        ]
 
-        market_data_calls: list[int] = []
-        context_calls: list[str] = []
+        for method in (PredictLoop._tick, PredictLoop.tick_once):
+            source = inspect.getsource(method)
+            positions: list[tuple[str, int]] = []
+
+            for marker in canonical_order:
+                idx = source.find(marker)
+                assert idx != -1, (
+                    f'{method.__name__} does not invoke {marker!r}; '
+                    f'chain duplication has drifted'
+                )
+                positions.append((marker, idx))
+
+            ordered_markers = [m for m, _ in sorted(positions, key=lambda mp: mp[1])]
+            assert ordered_markers == canonical_order, (
+                f'{method.__name__} chain order is {ordered_markers}; '
+                f'expected {canonical_order}'
+            )
+
+    def test_chain_invoked_in_order_at_runtime(self) -> None:
+        '''Runtime call-order check for `tick_once`: the four chain steps
+        with observable side effects (market_data_provider, context_provider,
+        runner.dispatch_signal, action_submit) fire exactly once each in the
+        canonical order for a single tick that produces actions.
+        '''
+
+        action = Action(
+            action_type=ActionType.ENTER,
+            direction=OrderSide.BUY,
+            size=Decimal('0.01'),
+            execution_mode=ExecutionMode.SINGLE_SHOT,
+            order_type=OrderType.MARKET,
+            deadline=300,
+        )
+        runner = MagicMock(spec=StrategyRunner)
+        events: list[str] = []
 
         def tracking_market_data_provider(kline_size: int) -> pl.DataFrame:
-            market_data_calls.append(kline_size)
+            events.append(f'market_data:{kline_size}')
             return _mock_market_data_provider(kline_size)
 
         def tracking_context_provider(strategy_id: str) -> StrategyContext:
-            context_calls.append(strategy_id)
+            events.append(f'context:{strategy_id}')
             return _mock_context_provider(strategy_id)
+
+        def tracking_dispatch(*_args: object, **_kwargs: object) -> list[Action]:
+            events.append('dispatch')
+            return [action]
+
+        runner.dispatch_signal.side_effect = tracking_dispatch
+
+        def tracking_submitter(actions: list[Action], strategy_id: str) -> None:
+            events.append(f'submit:{strategy_id}:{len(actions)}')
 
         wired = _make_wired(strategy_id='strat_a')
         loop = PredictLoop(
@@ -341,13 +396,17 @@ class TestPredictLoopTickOnce:
             wired_sensors=[wired],
             market_data_provider=tracking_market_data_provider,
             context_provider=tracking_context_provider,
+            action_submit=tracking_submitter,
         )
 
         loop.tick_once(wired)
 
-        assert market_data_calls == [3600]
-        assert context_calls == ['strat_a']
-        assert runner.dispatch_signal.call_count == 1
+        assert events == [
+            'market_data:3600',
+            'context:strat_a',
+            'dispatch',
+            'submit:strat_a:1',
+        ]
         dispatch_args = runner.dispatch_signal.call_args
         assert dispatch_args[0][0] == 'strat_a'
         assert isinstance(dispatch_args[0][1], Signal)
