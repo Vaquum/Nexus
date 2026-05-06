@@ -92,6 +92,66 @@ class PredictLoop:
 
             self._active_timers.clear()
 
+    def tick_once(self, wired: WiredSensor) -> None:
+        '''Run one synchronous predict cycle for a wired sensor.
+
+        Single-shot entry point for schedule-driven callers (e.g. a
+        deterministic backtest replay). Does not require `start()`,
+        does not schedule a follow-up `threading.Timer`, and propagates
+        exceptions instead of swallowing them as `_tick` does.
+
+        Args:
+            wired: The wired sensor to fire one predict tick on.
+
+        Raises:
+            RuntimeError: When `_running` is `True` at the moment of
+                entry. The check takes `_lock` so it is atomic with
+                `start()`/`stop()`, but it is a fail-fast guard against
+                deliberate misuse, not a hard interleave barrier:
+
+                - The chain body runs without the lock, so callers
+                  must not invoke `start()` while a `tick_once` chain
+                  is in flight.
+                - `stop()` flips `_running` to `False` under the lock
+                  but does not wait for an in-flight `_tick` to finish
+                  (`threading.Timer.cancel` only prevents future
+                  fires), so callers must ensure any in-flight `_tick`
+                  has returned before invoking `tick_once`.
+
+                Schedule-driven callers (the intended use case) call
+                `tick_once` from a single thread that never touches the
+                Timer-driven loop, so neither concern applies in
+                practice.
+        '''
+
+        with self._lock:
+            if self._running:
+                msg = 'tick_once must not be called while the Timer-driven loop is running'
+                raise RuntimeError(msg)
+
+        kline_size = _extract_kline_size(wired)
+        market_data = self._market_data_provider(kline_size)
+
+        if market_data.is_empty():
+            _log.warning(
+                'no market data for sensor %s, skipping',
+                wired.sensor_id,
+            )
+            return
+
+        signal = produce_signal(wired, market_data)
+        context = self._context_provider(wired.strategy_id)
+
+        actions = self._runner.dispatch_signal(
+            wired.strategy_id,
+            signal,
+            StrategyParams(raw={}),
+            context,
+        )
+
+        if self._action_submit is not None and actions:
+            self._action_submit(actions, wired.strategy_id)
+
     def _schedule_locked(self, wired: WiredSensor) -> None:
         '''Schedule next timer for a sensor. Must be called with lock held.'''
 
