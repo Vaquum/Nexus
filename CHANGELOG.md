@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.41.0 on 6th of May, 2026
+
+### Add
+
+- Add [`PredictLoop.tick_once(wired)`](nexus/strategy/predict_loop.py) — synchronous single-shot entry point for schedule-driven callers (e.g. a deterministic backtest replay). Runs one predict cycle (market_data fetch → `produce_signal` → `dispatch_signal` → optional `action_submit`) without requiring `start()` and without scheduling a follow-up `threading.Timer`. Raises `RuntimeError` when called while the Timer-driven loop is running so the two paths cannot interleave. Propagates exceptions from the chain to the caller instead of swallowing them as `_tick` does — schedule drivers decide how to handle failures rather than relying on a worker log. Mirrors the `tick_once()` shape already exposed by [`OutcomeLoop`](nexus/core/outcome_loop.py) and [`HealthLoop`](nexus/core/health_loop.py). Pure addition: no existing line in `predict_loop.py` was modified, all 9 existing `test_predict_loop.py` tests still pass, and Timer-driven production callers (Praxis runtime) see no behaviour change
+- Add [`tests/test_predict_loop_tick_once.py`](tests/test_predict_loop_tick_once.py) — 12 tests covering: synchronous dispatch without `start()`, no follow-up Timer scheduling, `RuntimeError` guard against concurrent Timer-loop use, empty-market-data short-circuit, action_submit forwarding (called/not-called/exception-propagated branches), exception propagation from market_data_provider and dispatch_signal, repeated independent calls, and a parity guard that pins the chain call order so future edits to `_tick` cannot drift the duplicated `tick_once` body silently
+
 ## v0.1.0 on 16th of March, 2026
 
 - Add CI pipeline mirroring Praxis: Ruff, Mypy strict, pytest, CodeQL workflows
