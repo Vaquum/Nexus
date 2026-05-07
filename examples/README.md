@@ -49,13 +49,19 @@ produce experiments itself (RFC-3001 §X.1.2).
 
 > **The SFD must be loadable by name at sensor-load time.**
 > Limen records `sfd_module = sfd.__class__.__module__` into
-> `metadata.json` at training time. From `vaquum_limen` v3.0.3 (Nexus
-> 0.42.0+) Trainer resolves the recorded name in two stages: it first
+> `metadata.json` at training time. From `vaquum_limen` v3.0.5 (Nexus
+> 0.43.0+) Trainer resolves the recorded name in two stages: it first
 > looks for a `<sfd_module>.py` file inside `experiment_dir` and loads
 > it via `importlib.util.spec_from_file_location` + `module_from_spec`
-> (no `sys.path` mutation), and only falls back to
-> `importlib.import_module` against the running interpreter's
-> `sys.path` when no such file is present. Two deploy shapes both work:
+> (no `sys.path` mutation, with the loaded module registered in
+> `sys.modules` so downstream `_resolve_model_class` can find it),
+> and only falls back to `importlib.import_module` against the running
+> interpreter's `sys.path` when no such file is present. Two deploy
+> shapes both work end-to-end (the v3.0.3-v3.0.4 era's local-file
+> branch reached `Trainer.__init__` cleanly but failed at
+> `train()` → `_resolve_model_class` with `ModuleNotFoundError` when
+> the architecture function was defined inside the SFD file; v3.0.5
+> closed that gap):
 >
 > 1. **Self-contained experiment_dir (preferred for paper-trade
 >    bundles).** Place the SFD `.py` next to `metadata.json` /
