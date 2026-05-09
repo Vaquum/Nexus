@@ -250,6 +250,74 @@ class TestLookback:
 
         assert captured['x_test_shape'][0] == 10
 
+    def test_predict_receives_polars_dataframe_preserving_column_names(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''signal_producer must pass `x_test` as a polars DataFrame so SFDs can select features by name.
+
+        Previously `x_train.tail(lookback).to_numpy()` discarded column names.
+        SFDs that filter `_model_columns` from the live frame (e.g. the
+        `BtcLogRegEVSFD` bundle, which records `self.model_cols` at fit time
+        and calls `frame.select(self.model_cols)` in `_raw_probs`) then fell
+        into a brittle index-based fallback that crashed when the predict-time
+        frame had extra columns the training-time frame did not (e.g. binancial
+        trade-aggregation produces `median`/`iqr` that the HF dataset does not).
+
+        Pinning the type contract here defends the fix against regression.
+        '''
+
+        wired, market_data = _make_wired_sensor(tmp_path)
+
+        # Compute the expected column list once, BEFORE patching predict, so the
+        # test setup's `prepare_data` call is clearly separated from the call
+        # under test inside `produce_signal`. Both invocations are deterministic
+        # for the same inputs, so this becomes the reference for the assertion
+        # below without conflating setup with verification.
+        manifest_full = wired.limen_manifest.with_params_override(split_config=(1, 0, 0))
+        expected_cols = manifest_full.prepare_data(
+            market_data, wired.round_params,
+        )['x_train'].columns
+
+        captured: dict[str, Any] = {}
+        original_predict = wired.sensor.predict
+
+        def _capturing_predict(data: dict[str, Any]) -> dict[str, Any]:
+            captured['x_test_type'] = type(data['x_test'])
+            captured['x_test_columns'] = (
+                list(data['x_test'].columns)
+                if isinstance(data['x_test'], pl.DataFrame)
+                else None
+            )
+            return original_predict(data)
+
+        wired.sensor.predict = _capturing_predict  # type: ignore[method-assign]
+        try:
+            produce_signal(wired, market_data)
+        finally:
+            wired.sensor.predict = original_predict  # type: ignore[method-assign]
+
+        assert captured['x_test_type'] is pl.DataFrame
+        assert captured['x_test_columns'] is not None
+        assert len(captured['x_test_columns']) > 0
+        # Defend against a regression like `pl.DataFrame(x_train.tail(...).to_numpy())` —
+        # that would still pass the type+count checks above but silently replace the
+        # original feature names with polars' default `column_<i>` labels, which would
+        # defeat SFD `frame.select(self.model_cols)` name-based selection just as the
+        # original `.to_numpy()` did. Pin the contract: column names must be the real
+        # feature names, never the default placeholders.
+        default_named = [
+            c for c in captured['x_test_columns'] if c.startswith('column_')
+        ]
+        assert not default_named, (
+            f'x_test arrived with polars default column names {default_named!r}, '
+            'meaning real feature names were stripped — equivalent in effect to '
+            'the original `.to_numpy()` regression.'
+        )
+        # Cross-check against the captured frame's real column list — must match
+        # what `prepare_data` produced for the live `x_train` (sanity that we are
+        # capturing the actual frame, not a recreated one).
+        assert captured['x_test_columns'] == expected_cols
+
     def test_lookback_signal_carries_last_row(
         self, tmp_path: Path, _limen_cwd: None,
     ) -> None:

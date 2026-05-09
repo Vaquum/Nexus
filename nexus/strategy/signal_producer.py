@@ -58,9 +58,9 @@ def produce_signal(
         msg = f'prepare_data returned no x_train for sensor {wired.sensor_id}'
         raise ValueError(msg)
 
-    tail_rows = x_train.tail(lookback).to_numpy()
+    tail_frame = x_train.tail(lookback)
 
-    result = wired.sensor.predict({'x_test': tail_rows})
+    result = wired.sensor.predict({'x_test': tail_frame})
 
     values = _extract_values(result)
 
