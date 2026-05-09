@@ -289,6 +289,26 @@ class TestLookback:
         assert captured['x_test_type'] is pl.DataFrame
         assert captured['x_test_columns'] is not None
         assert len(captured['x_test_columns']) > 0
+        # Defend against a regression like `pl.DataFrame(x_train.tail(...).to_numpy())` —
+        # that would still pass the type+count checks above but silently replace the
+        # original feature names with polars' default `column_<i>` labels, which would
+        # defeat SFD `frame.select(self.model_cols)` name-based selection just as the
+        # original `.to_numpy()` did. Pin the contract: column names must be the real
+        # feature names, never the default placeholders.
+        default_named = [
+            c for c in captured['x_test_columns'] if c.startswith('column_')
+        ]
+        assert not default_named, (
+            f'x_test arrived with polars default column names {default_named!r}, '
+            'meaning real feature names were stripped — equivalent in effect to '
+            'the original `.to_numpy()` regression.'
+        )
+        # Cross-check against the captured frame's real column list — must match
+        # what `prepare_data` produced for the live `x_train` (sanity that we are
+        # capturing the actual frame, not a recreated one).
+        manifest_full = wired.limen_manifest.with_params_override(split_config=(1, 0, 0))
+        expected_cols = manifest_full.prepare_data(market_data, wired.round_params)['x_train'].columns
+        assert captured['x_test_columns'] == expected_cols
 
     def test_lookback_signal_carries_last_row(
         self, tmp_path: Path, _limen_cwd: None,
