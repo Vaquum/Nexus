@@ -268,6 +268,16 @@ class TestLookback:
 
         wired, market_data = _make_wired_sensor(tmp_path)
 
+        # Compute the expected column list once, BEFORE patching predict, so the
+        # test setup's `prepare_data` call is clearly separated from the call
+        # under test inside `produce_signal`. Both invocations are deterministic
+        # for the same inputs, so this becomes the reference for the assertion
+        # below without conflating setup with verification.
+        manifest_full = wired.limen_manifest.with_params_override(split_config=(1, 0, 0))
+        expected_cols = manifest_full.prepare_data(
+            market_data, wired.round_params,
+        )['x_train'].columns
+
         captured: dict[str, Any] = {}
         original_predict = wired.sensor.predict
 
@@ -306,8 +316,6 @@ class TestLookback:
         # Cross-check against the captured frame's real column list — must match
         # what `prepare_data` produced for the live `x_train` (sanity that we are
         # capturing the actual frame, not a recreated one).
-        manifest_full = wired.limen_manifest.with_params_override(split_config=(1, 0, 0))
-        expected_cols = manifest_full.prepare_data(market_data, wired.round_params)['x_train'].columns
         assert captured['x_test_columns'] == expected_cols
 
     def test_lookback_signal_carries_last_row(
