@@ -250,6 +250,46 @@ class TestLookback:
 
         assert captured['x_test_shape'][0] == 10
 
+    def test_predict_receives_polars_dataframe_preserving_column_names(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''signal_producer must pass `x_test` as a polars DataFrame so SFDs can select features by name.
+
+        Previously `x_train.tail(lookback).to_numpy()` discarded column names.
+        SFDs that filter `_model_columns` from the live frame (e.g. the
+        `BtcLogRegEVSFD` bundle, which records `self.model_cols` at fit time
+        and calls `frame.select(self.model_cols)` in `_raw_probs`) then fell
+        into a brittle index-based fallback that crashed when the predict-time
+        frame had extra columns the training-time frame did not (e.g. binancial
+        trade-aggregation produces `median`/`iqr` that the HF dataset does not).
+
+        Pinning the type contract here defends the fix against regression.
+        '''
+
+        wired, market_data = _make_wired_sensor(tmp_path)
+
+        captured: dict[str, Any] = {}
+        original_predict = wired.sensor.predict
+
+        def _capturing_predict(data: dict[str, Any]) -> dict[str, Any]:
+            captured['x_test_type'] = type(data['x_test'])
+            captured['x_test_columns'] = (
+                list(data['x_test'].columns)
+                if isinstance(data['x_test'], pl.DataFrame)
+                else None
+            )
+            return original_predict(data)
+
+        wired.sensor.predict = _capturing_predict  # type: ignore[method-assign]
+        try:
+            produce_signal(wired, market_data)
+        finally:
+            wired.sensor.predict = original_predict  # type: ignore[method-assign]
+
+        assert captured['x_test_type'] is pl.DataFrame
+        assert captured['x_test_columns'] is not None
+        assert len(captured['x_test_columns']) > 0
+
     def test_lookback_signal_carries_last_row(
         self, tmp_path: Path, _limen_cwd: None,
     ) -> None:
