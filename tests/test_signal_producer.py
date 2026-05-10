@@ -88,6 +88,46 @@ def _make_wired_sensor(tmp_path: Path) -> tuple[WiredSensor, pl.DataFrame]:
     return wired, trainer._data
 
 
+def _make_wired_rule_based_sensor(tmp_path: Path) -> tuple[WiredSensor, pl.DataFrame]:
+    '''Create a WiredSensor from a Limen rule-based foundational SFD.'''
+
+    exp_dir = tmp_path / 'experiment'
+    exp_dir.mkdir()
+
+    metadata = {
+        'sfd_module': 'limen.sfd.foundational_sfd.rule_based',
+        'limen_version': '3.0.6',
+        'created_at': '2026-01-01T00:00:00+00:00',
+    }
+    (exp_dir / 'metadata.json').write_text(json.dumps(metadata))
+
+    round_params = {
+        'rsi_period': 14,
+        'rsi_threshold': 30,
+        'ema_period': 100,
+        'sharpe_std_threshold': 0.5,
+        'sharpe_degradation_threshold': 0.3,
+    }
+    (exp_dir / 'round_data.jsonl').write_text(
+        json.dumps({'round_id': 1, 'round_params': round_params}) + '\n'
+    )
+
+    trainer = Trainer(exp_dir)
+    sensors = trainer.train([1])
+    sensor = sensors[0]
+
+    wired = WiredSensor(
+        sensor_id='experiment_rule:1',
+        sensor=sensor,
+        limen_manifest=trainer._manifest,
+        round_params=sensor.round_params,
+        strategy_id='test_rule_strat',
+        interval_seconds=60,
+    )
+
+    return wired, trainer._data
+
+
 @_needs_limen
 class TestProduceSignal:
 
@@ -317,6 +357,54 @@ class TestLookback:
         # what `prepare_data` produced for the live `x_train` (sanity that we are
         # capturing the actual frame, not a recreated one).
         assert captured['x_test_columns'] == expected_cols
+
+    def test_predict_called_with_test_key_for_rule_based_manifest(
+        self, tmp_path: Path, _limen_cwd: None,
+    ) -> None:
+        '''signal_producer must use 'test' key (not 'x_test') for RuleBasedManifest.
+
+        `RuleBasedManifest.prepare_data` returns `{'train', 'val', 'test',
+        '_alignment', 'strategy'}` — there is no `x_train` / `x_test` key.
+        Pre-fix, signal_producer hard-coded `data_dict.get('x_train')` and
+        `wired.sensor.predict({'x_test': ...})`, which raised
+        `ValueError: prepare_data returned no x_train` on every rule-based
+        sensor tick at the deployed BtcLogRegEVSFD-alongside-stub-strats
+        manifest. Post-fix, the path branches on `isinstance(manifest,
+        RuleBasedManifest)` and uses `train` / `test` for that case.
+
+        Pin both halves of the contract:
+        1. Pull the train frame from `data_dict['train']` (would otherwise
+           be None and trigger the ValueError on the empty-train check).
+        2. Pass it to `sensor.predict` keyed as `test`, so rule-based
+           reference architectures can find it where they expect it.
+        '''
+
+        wired, market_data = _make_wired_rule_based_sensor(tmp_path)
+
+        captured: dict[str, Any] = {}
+        original_predict = wired.sensor.predict
+
+        def _capturing_predict(data: dict[str, Any]) -> dict[str, Any]:
+            captured['data_keys'] = sorted(data.keys())
+            captured['has_test'] = 'test' in data
+            captured['has_x_test'] = 'x_test' in data
+            return original_predict(data)
+
+        wired.sensor.predict = _capturing_predict  # type: ignore[method-assign]
+        try:
+            produce_signal(wired, market_data)
+        finally:
+            wired.sensor.predict = original_predict  # type: ignore[method-assign]
+
+        assert captured['has_test'], (
+            f'Expected predict to be called with key "test" for RuleBasedManifest, '
+            f'got keys {captured["data_keys"]!r}'
+        )
+        assert not captured['has_x_test'], (
+            f'Expected predict NOT to receive "x_test" for RuleBasedManifest '
+            f'(would silently mask the regression that hard-coded the ML key), '
+            f'got keys {captured["data_keys"]!r}'
+        )
 
     def test_lookback_signal_carries_last_row(
         self, tmp_path: Path, _limen_cwd: None,

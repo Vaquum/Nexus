@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import polars as pl
 
+from limen.experiment import RuleBasedManifest
+
 from nexus.startup.sequencer import WiredSensor
 from nexus.strategy.signal import Signal
 
@@ -22,6 +24,10 @@ def produce_signal(
 ) -> Signal:
     '''Run feature preparation and predict to produce a Signal.
 
+    Supports both `MLManifest` and `RuleBasedManifest` SFDs by branching
+    on the manifest type to pick the right `prepare_data` output keys
+    (`x_train`/`x_test` for ML, `train`/`test` for rule-based).
+
     Args:
         wired: Trained Sensor with limen_manifest and round_params.
         market_data: Rolling DataFrame of market bars.
@@ -32,7 +38,8 @@ def produce_signal(
 
     Raises:
         TypeError: If lookback is not int.
-        ValueError: If market_data is empty, x_train is missing, or lookback < 1.
+        ValueError: If market_data is empty, the train frame is missing,
+            or lookback < 1.
         Exception: Arbitrary exceptions from Limen prepare_data or predict.
     '''
 
@@ -47,20 +54,27 @@ def produce_signal(
         msg = f'market_data is empty for sensor {wired.sensor_id}'
         raise ValueError(msg)
 
+    is_rule_based = isinstance(wired.limen_manifest, RuleBasedManifest)
+    train_key = 'train' if is_rule_based else 'x_train'
+    test_key = 'test' if is_rule_based else 'x_test'
+
     manifest_full = wired.limen_manifest.with_params_override(
         split_config=(1, 0, 0),
     )
     data_dict = manifest_full.prepare_data(market_data, wired.round_params)
 
-    x_train = data_dict.get('x_train')
+    train_frame = data_dict.get(train_key)
 
-    if x_train is None or x_train.is_empty():
-        msg = f'prepare_data returned no x_train for sensor {wired.sensor_id}'
+    if train_frame is None or train_frame.is_empty():
+        msg = (
+            f'prepare_data returned no {train_key!r} for sensor '
+            f'{wired.sensor_id}'
+        )
         raise ValueError(msg)
 
-    tail_frame = x_train.tail(lookback)
+    tail_frame = train_frame.tail(lookback)
 
-    result = wired.sensor.predict({'x_test': tail_frame})
+    result = wired.sensor.predict({test_key: tail_frame})
 
     values = _extract_values(result)
 
