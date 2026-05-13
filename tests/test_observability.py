@@ -11,6 +11,7 @@ import structlog
 
 from nexus.infrastructure.observability import (
     bind_context,
+    bound_context,
     clear_context,
     configure_logging,
     get_logger,
@@ -170,3 +171,82 @@ def test_stdlib_integration() -> None:
     assert result['event'] == 'connection reset'
     assert result['level'] == 'warning'
     assert 'timestamp' in result
+
+
+def test_stdlib_extras_appear_in_json() -> None:
+    '''Stdlib `_log.info('msg', extra={...})` extras must merge into JSON output.
+
+    Pre-fix `configure_logging`'s `ProcessorFormatter` had no
+    `structlog.stdlib.ExtraAdder` in its `foreign_pre_chain`. Every
+    `_log.info('msg', extra={'strategy_id': X, ...})` call from a
+    stdlib logger silently dropped its extras — only `event`, `level`,
+    `timestamp` made it to JSON. This affected every Nexus emit site
+    using `_log = logging.getLogger(__name__)` (action_submit.py,
+    outcome_processor.py, capital_controller.py, validator stages).
+
+    The pin: emit a stdlib log with structured extras and assert the
+    merged JSON contains them as top-level fields. Pre-fix this test
+    fails with `KeyError: 'strategy_id'` because extras are missing.
+    '''
+
+    result = _capture_stdlib(
+        lambda: logging.getLogger('nexus.test').info(
+            'action rejected by validator',
+            extra={
+                'strategy_id': 'stub_always_one',
+                'action_type': 'enter',
+                'failed_stage': 'capital',
+                'reason_code': 'CAPITAL_BUDGET_EXCEEDED',
+            },
+        )
+    )
+    assert result['event'] == 'action rejected by validator'
+    assert result['level'] == 'info'
+    assert result['strategy_id'] == 'stub_always_one'
+    assert result['action_type'] == 'enter'
+    assert result['failed_stage'] == 'capital'
+    assert result['reason_code'] == 'CAPITAL_BUDGET_EXCEEDED'
+
+
+def test_bound_context_binds_and_unbinds() -> None:
+    '''bound_context binds kwargs for the with-block and resets on exit.'''
+
+    clear_context()
+    bind_context(account_id='acc_outer')
+
+    with bound_context(strategy_id='strat_inner', action_type='enter'):
+        result_inner = _capture_structlog(
+            lambda: structlog.get_logger().info('inside')
+        )
+        assert result_inner['account_id'] == 'acc_outer'
+        assert result_inner['strategy_id'] == 'strat_inner'
+        assert result_inner['action_type'] == 'enter'
+
+    result_outer = _capture_structlog(
+        lambda: structlog.get_logger().info('outside')
+    )
+    assert result_outer['account_id'] == 'acc_outer'
+    assert 'strategy_id' not in result_outer
+    assert 'action_type' not in result_outer
+
+    clear_context()
+
+
+def test_bound_context_resets_on_exception() -> None:
+    '''bound_context unbinds even when the with-block raises.'''
+
+    clear_context()
+
+    class _SentinelError(Exception):
+        pass
+
+    try:
+        with bound_context(strategy_id='strat_inner'):
+            raise _SentinelError
+    except _SentinelError:
+        pass
+
+    result = _capture_structlog(lambda: structlog.get_logger().info('after'))
+    assert 'strategy_id' not in result
+
+    clear_context()

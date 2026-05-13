@@ -1174,3 +1174,156 @@ class TestFinalMajor03PendingExitLockCoverage:
         )
 
         assert state.positions['t1'].pending_exit == Decimal('0.5')
+
+
+class TestPerActionBoundContext:
+    '''Per-action structlog contextvars bind during the iteration body.
+
+    `submit_actions` wraps the per-action body in
+    `bound_context(strategy_id=..., action_type=..., trade_id=...,
+    command_id=...)` so any downstream emit (validator stage,
+    capital_controller, praxis_outbound) carries the action's
+    correlation fields without each emit site threading them through
+    `extra={...}`. The pin: validator.validate sees the contextvars
+    bound mid-iteration; after `submit_actions` returns the
+    contextvars are unbound (so the caller's outer context is not
+    polluted by the per-action keys).
+    '''
+
+    def test_validator_sees_bound_strategy_and_action_type(self) -> None:
+        '''The validator runs *inside* the per-action with-block.'''
+
+        from structlog.contextvars import get_contextvars  # local import to keep top of file lean
+
+        from nexus.infrastructure.observability import clear_context
+
+        clear_context()
+        captured: dict[str, object] = {}
+
+        def _capture_validate(_ctx: ValidationRequestContext) -> ValidationDecision:
+            captured.update(get_contextvars())
+            return _allow_decision()
+
+        validator = MagicMock()
+        validator.validate.side_effect = _capture_validate
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_btc'
+
+        submit_actions(
+            [_enter_action()],
+            strategy_id='strat_btc_logreg',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+        )
+
+        assert captured.get('strategy_id') == 'strat_btc_logreg'
+        assert captured.get('action_type') == 'enter'
+
+        clear_context()
+
+    def test_contextvars_unbound_after_submit_returns(self) -> None:
+        '''Per-action keys do not leak past the submit_actions call.'''
+
+        from structlog.contextvars import get_contextvars
+
+        from nexus.infrastructure.observability import clear_context
+
+        clear_context()
+
+        validator = MagicMock()
+        validator.validate.return_value = _allow_decision()
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_ok'
+
+        submit_actions(
+            [_enter_action()],
+            strategy_id='strat_btc_logreg',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+        )
+
+        leaked = get_contextvars()
+        assert 'strategy_id' not in leaked
+        assert 'action_type' not in leaked
+        assert 'trade_id' not in leaked
+        assert 'command_id' not in leaked
+
+        clear_context()
+
+    def test_exit_action_binds_trade_id(self) -> None:
+        '''An EXIT action with a trade_id binds trade_id for the iteration.'''
+
+        from structlog.contextvars import get_contextvars
+
+        from nexus.infrastructure.observability import clear_context
+
+        clear_context()
+        captured: dict[str, object] = {}
+
+        def _capture_validate(_ctx: ValidationRequestContext) -> ValidationDecision:
+            captured.update(get_contextvars())
+            return _allow_decision()
+
+        validator = MagicMock()
+        validator.validate.side_effect = _capture_validate
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_exit'
+
+        submit_actions(
+            [_exit_action(trade_id='t_xyz')],
+            strategy_id='strat_btc_logreg',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _exit_context(
+                _state_with_position('t_xyz'),
+                trade_id='t_xyz',
+            ),
+            now=_now,
+        )
+
+        assert captured.get('strategy_id') == 'strat_btc_logreg'
+        assert captured.get('action_type') == 'exit'
+        assert captured.get('trade_id') == 't_xyz'
+
+        clear_context()
+
+    def test_abort_action_binds_command_id(self) -> None:
+        '''An ABORT action with command_id binds command_id for the iteration.'''
+
+        from structlog.contextvars import get_contextvars
+
+        from nexus.infrastructure.observability import clear_context
+
+        clear_context()
+        captured: dict[str, object] = {}
+
+        outbound = MagicMock()
+
+        def _capture_send_abort(**_kw: object) -> None:
+            captured.update(get_contextvars())
+
+        outbound.send_abort.side_effect = _capture_send_abort
+        validator = MagicMock()
+
+        submit_actions(
+            [_abort_action(command_id='cmd_abort_777')],
+            strategy_id='strat_btc_logreg',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _enter_context(),
+            now=_now,
+        )
+
+        assert captured.get('strategy_id') == 'strat_btc_logreg'
+        assert captured.get('action_type') == 'abort'
+        assert captured.get('command_id') == 'cmd_abort_777'
+
+        clear_context()

@@ -530,3 +530,10 @@
 ### Add
 
 - Add [`tests/test_signal_producer.py::test_predict_called_with_test_key_for_rule_based_manifest`](tests/test_signal_producer.py) and the `_make_wired_rule_based_sensor` fixture that drives the foundational `limen.sfd.foundational_sfd.rule_based` SFD through `Trainer.train([1])` to produce a `WiredSensor` whose `limen_manifest` is a real `RuleBasedManifest`. The test wraps `wired.sensor.predict` with a key-capturing shim, runs `produce_signal`, and asserts (1) the captured `data` dict contains key `'test'` (the rule-based contract) and (2) does NOT contain `'x_test'` — the negative assertion guards against a regression that would silently fall back to the ML key and crash inside the rule-based reference architecture's `predict(data)` which reads `data['test']`. Pinning both halves keeps the manifest-type branching honest
+
+## v0.47.0 on 13th of May, 2026
+
+- Fix [`configure_logging`](nexus/infrastructure/observability.py) to add `structlog.stdlib.ExtraAdder()` to `ProcessorFormatter.foreign_pre_chain` so stdlib `_log.info('msg', extra={...})` payloads survive into JSON output instead of being silently dropped (mirrors [Vaquum/Praxis#105](https://github.com/Vaquum/Praxis/pull/105))
+- Add `bound_context(**kwargs)` context manager to [`nexus/infrastructure/observability.py`](nexus/infrastructure/observability.py) wrapping `structlog.contextvars.bound_contextvars`
+- Wrap [`submit_actions`](nexus/strategy/action_submit.py) per-iteration body in `with bound_context(strategy_id, action_type, trade_id?, command_id?)` so downstream emits carry per-action correlation via contextvars
+- Add `test_stdlib_extras_appear_in_json`, `test_bound_context_binds_and_unbinds`, `test_bound_context_resets_on_exception` in [`tests/test_observability.py`](tests/test_observability.py); add `TestPerActionBoundContext` (4 cases) in [`tests/test_action_submit.py`](tests/test_action_submit.py)
