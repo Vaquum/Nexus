@@ -31,6 +31,7 @@ from nexus.core.validator.pipeline_models import (
     ValidationDecision,
     ValidationRequestContext,
 )
+from nexus.infrastructure.observability import bound_context
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.infrastructure.praxis_connector.translate import (
     translate_to_trade_command,
@@ -130,153 +131,163 @@ def submit_actions(
     results: list[tuple[Action, SubmissionOutcome]] = []
 
     for action in actions:
-        if action.action_type == ActionType.ABORT:
-            results.append((action, _submit_abort(action, config, praxis_outbound, now())))
-            continue
+        bind_kwargs: dict[str, str] = {
+            'strategy_id': strategy_id,
+            'action_type': action.action_type.value,
+        }
+        if action.trade_id is not None:
+            bind_kwargs['trade_id'] = action.trade_id
+        if action.command_id is not None:
+            bind_kwargs['command_id'] = action.command_id
 
-        try:
-            ctx = build_context(action, strategy_id)
-        except Exception as e:  # noqa: BLE001 - context builder must not abort the tick
-            _log.exception(
-                'build_context raised',
-                extra={
-                    'strategy_id': strategy_id,
-                    'action_type': action.action_type.value,
-                },
-            )
-            results.append((
-                action,
-                SubmissionOutcome(
-                    status=SubmissionStatus.SUBMIT_FAILED,
-                    error=f'build_context: {e}',
-                ),
-            ))
-            continue
+        with bound_context(**bind_kwargs):
+            if action.action_type == ActionType.ABORT:
+                results.append((action, _submit_abort(action, config, praxis_outbound, now())))
+                continue
 
-        if ctx is None:
-            _log.warning(
-                'context unavailable, skipping action',
-                extra={
-                    'strategy_id': strategy_id,
-                    'action_type': action.action_type.value,
-                },
-            )
-            results.append((
-                action,
-                SubmissionOutcome(
-                    status=SubmissionStatus.INVALID,
-                    error='context unavailable',
-                ),
-            ))
-            continue
-
-        try:
-            decision = validator.validate(ctx)
-        except Exception as e:  # noqa: BLE001 - validator must not abort the tick
-            _log.exception(
-                'validator raised',
-                extra={
-                    'strategy_id': strategy_id,
-                    'action_type': action.action_type.value,
-                },
-            )
-            results.append((
-                action,
-                SubmissionOutcome(
-                    status=SubmissionStatus.SUBMIT_FAILED,
-                    error=f'validator: {e}',
-                ),
-            ))
-            continue
-
-        if not decision.allowed:
-            _log.info(
-                'action rejected by validator',
-                extra={
-                    'strategy_id': strategy_id,
-                    'action_type': action.action_type.value,
-                    'failed_stage': (
-                        decision.failed_stage.value
-                        if decision.failed_stage is not None else None
+            try:
+                ctx = build_context(action, strategy_id)
+            except Exception as e:  # noqa: BLE001 - context builder must not abort the tick
+                _log.exception(
+                    'build_context raised',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                    },
+                )
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.SUBMIT_FAILED,
+                        error=f'build_context: {e}',
                     ),
-                    'reason_code': decision.reason_code,
-                },
-            )
-            _release_granted_reservation(capital_controller, decision)
-            results.append((
-                action,
-                SubmissionOutcome(
-                    status=SubmissionStatus.REJECTED,
-                    decision=decision,
-                ),
-            ))
-            continue
+                ))
+                continue
 
-        try:
-            cmd = translate_to_trade_command(action, ctx, decision, config, now())
-        except Exception as e:  # noqa: BLE001 - translator must not abort the tick
-            _log.exception(
-                'translate_to_trade_command raised',
+            if ctx is None:
+                _log.warning(
+                    'context unavailable, skipping action',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                    },
+                )
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.INVALID,
+                        error='context unavailable',
+                    ),
+                ))
+                continue
+
+            try:
+                decision = validator.validate(ctx)
+            except Exception as e:  # noqa: BLE001 - validator must not abort the tick
+                _log.exception(
+                    'validator raised',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                    },
+                )
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.SUBMIT_FAILED,
+                        error=f'validator: {e}',
+                    ),
+                ))
+                continue
+
+            if not decision.allowed:
+                _log.info(
+                    'action rejected by validator',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                        'failed_stage': (
+                            decision.failed_stage.value
+                            if decision.failed_stage is not None else None
+                        ),
+                        'reason_code': decision.reason_code,
+                    },
+                )
+                _release_granted_reservation(capital_controller, decision)
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.REJECTED,
+                        decision=decision,
+                    ),
+                ))
+                continue
+
+            try:
+                cmd = translate_to_trade_command(action, ctx, decision, config, now())
+            except Exception as e:  # noqa: BLE001 - translator must not abort the tick
+                _log.exception(
+                    'translate_to_trade_command raised',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                    },
+                )
+                _release_granted_reservation(capital_controller, decision)
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.SUBMIT_FAILED,
+                        decision=decision,
+                        error=f'translate: {e}',
+                    ),
+                ))
+                continue
+
+            try:
+                command_id = praxis_outbound.send_command(cmd)
+            except Exception as e:  # noqa: BLE001 - per-action submit failure is local
+                _log.exception(
+                    'send_command failed',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                    },
+                )
+                _release_granted_reservation(capital_controller, decision)
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.SUBMIT_FAILED,
+                        decision=decision,
+                        error=str(e),
+                    ),
+                ))
+                continue
+
+            if action.action_type == ActionType.EXIT and action.trade_id is not None:
+                lock_cm = positions_lock if positions_lock is not None else nullcontext()
+                with lock_cm:
+                    position = ctx.state.positions.get(action.trade_id)
+                    if position is not None and ctx.order_size is not None:
+                        position.pending_exit += ctx.order_size
+
+            _log.info(
+                'action submitted',
                 extra={
                     'strategy_id': strategy_id,
                     'action_type': action.action_type.value,
+                    'command_id': command_id,
                 },
             )
-            _release_granted_reservation(capital_controller, decision)
             results.append((
                 action,
                 SubmissionOutcome(
-                    status=SubmissionStatus.SUBMIT_FAILED,
+                    status=SubmissionStatus.SUBMITTED,
+                    command_id=command_id,
                     decision=decision,
-                    error=f'translate: {e}',
                 ),
             ))
-            continue
-
-        try:
-            command_id = praxis_outbound.send_command(cmd)
-        except Exception as e:  # noqa: BLE001 - per-action submit failure is local
-            _log.exception(
-                'send_command failed',
-                extra={
-                    'strategy_id': strategy_id,
-                    'action_type': action.action_type.value,
-                },
-            )
-            _release_granted_reservation(capital_controller, decision)
-            results.append((
-                action,
-                SubmissionOutcome(
-                    status=SubmissionStatus.SUBMIT_FAILED,
-                    decision=decision,
-                    error=str(e),
-                ),
-            ))
-            continue
-
-        if action.action_type == ActionType.EXIT and action.trade_id is not None:
-            lock_cm = positions_lock if positions_lock is not None else nullcontext()
-            with lock_cm:
-                position = ctx.state.positions.get(action.trade_id)
-                if position is not None and ctx.order_size is not None:
-                    position.pending_exit += ctx.order_size
-
-        _log.info(
-            'action submitted',
-            extra={
-                'strategy_id': strategy_id,
-                'action_type': action.action_type.value,
-                'command_id': command_id,
-            },
-        )
-        results.append((
-            action,
-            SubmissionOutcome(
-                status=SubmissionStatus.SUBMITTED,
-                command_id=command_id,
-                decision=decision,
-            ),
-        ))
 
     return results
 

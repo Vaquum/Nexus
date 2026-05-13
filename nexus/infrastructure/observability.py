@@ -9,12 +9,20 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import orjson
 import structlog
 
-__all__ = ['bind_context', 'clear_context', 'configure_logging', 'get_logger']
+__all__ = [
+    'bind_context',
+    'bound_context',
+    'clear_context',
+    'configure_logging',
+    'get_logger',
+]
 
 
 def _orjson_dumps_str(*args: Any, **kwargs: Any) -> str:
@@ -60,7 +68,25 @@ def configure_logging(log_level: str = 'INFO') -> None:
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.processors.JSONRenderer(serializer=_orjson_dumps_str),
         ],
-        foreign_pre_chain=shared_processors,
+        # `ExtraAdder` extracts `extra={...}` fields from the stdlib
+        # `LogRecord` and merges them into the structlog event dict
+        # BEFORE `JSONRenderer` serializes it. Without this, every
+        # `_log.info('msg', extra={'strategy_id': X, ...})` call from
+        # a stdlib logger silently drops its `extra` payload — only
+        # `event` / `level` / `timestamp` make it to JSON. Pre-fix
+        # this affected every Nexus log emit site that used
+        # `_log = logging.getLogger(__name__)` (action_submit.py,
+        # outcome_processor.py, capital_controller.py, validator
+        # stages, etc.) — every per-action diagnostic field
+        # (strategy_id, action_type, failed_stage, reason_code,
+        # command_id) was on the floor in the JSON sink. The native
+        # structlog API (`structlog.get_logger(...)`,
+        # `_log.info('msg', strategy_id=X)`) bypasses the stdlib
+        # bridge entirely so it was unaffected.
+        foreign_pre_chain=[
+            structlog.stdlib.ExtraAdder(),
+            *shared_processors,
+        ],
     )
 
     handler = logging.StreamHandler(sys.stdout)
@@ -86,6 +112,29 @@ def clear_context() -> None:
     '''Clear all bound context variables.'''
 
     structlog.contextvars.clear_contextvars()
+
+
+@contextmanager
+def bound_context(**kwargs: Any) -> Iterator[None]:
+    '''Bind kwargs to the structlog context for the lifetime of the with-block.
+
+    Wraps `structlog.contextvars.bound_contextvars` so callers do not
+    need to import structlog directly and so the per-iteration scope
+    is leak-proof: keys bound on entry are reset on exit (including
+    the exception path), restoring whatever the caller's context was
+    before the bind. Use this around per-action loop iterations so
+    every downstream emit carries the action's correlation fields
+    without each emit site having to thread them through `extra={...}`.
+
+    Args:
+        **kwargs: Context fields to bind for the with-block lifetime.
+
+    Yields:
+        None.
+    '''
+
+    with structlog.contextvars.bound_contextvars(**kwargs):
+        yield
 
 
 def get_logger(name: str) -> Any:
