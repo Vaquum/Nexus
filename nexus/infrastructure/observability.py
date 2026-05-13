@@ -68,21 +68,6 @@ def configure_logging(log_level: str = 'INFO') -> None:
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
             structlog.processors.JSONRenderer(serializer=_orjson_dumps_str),
         ],
-        # `ExtraAdder` extracts `extra={...}` fields from the stdlib
-        # `LogRecord` and merges them into the structlog event dict
-        # BEFORE `JSONRenderer` serializes it. Without this, every
-        # `_log.info('msg', extra={'strategy_id': X, ...})` call from
-        # a stdlib logger silently drops its `extra` payload — only
-        # `event` / `level` / `timestamp` make it to JSON. Pre-fix
-        # this affected every Nexus log emit site that used
-        # `_log = logging.getLogger(__name__)` (action_submit.py,
-        # outcome_processor.py, capital_controller.py, validator
-        # stages, etc.) — every per-action diagnostic field
-        # (strategy_id, action_type, failed_stage, reason_code,
-        # command_id) was on the floor in the JSON sink. The native
-        # structlog API (`structlog.get_logger(...)`,
-        # `_log.info('msg', strategy_id=X)`) bypasses the stdlib
-        # bridge entirely so it was unaffected.
         foreign_pre_chain=[
             structlog.stdlib.ExtraAdder(),
             *shared_processors,
