@@ -61,8 +61,12 @@ def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
     * `Decimal` → `str` (preserves precision; orjson rejects Decimal
       by default and `Signal.values` post-init explicitly allows it)
     * `numpy.generic` (np.float64 / np.int64 / etc.) → `.item()` to
-      native Python type (orjson handles SOME numpy scalars depending
-      on version; coercing here removes the dependency)
+      native Python type, then recursively coerced. The recursion
+      matters because `.item()` of `np.complex128` returns a Python
+      `complex` and `.item()` of `np.bytes_` returns `bytes`; both
+      are JSON-unsafe and would otherwise reach the renderer and
+      drop the log line. The recursion sends them through the final
+      JSON-native gate and onto `repr(val)`.
     * `numpy.ndarray` / `polars.Series` → recursively coerce each
       element if size ≤ `_MAX_LOGGED_SEQUENCE_LEN`, else a summary
       string `<sequence type=X size=N>`
@@ -71,7 +75,10 @@ def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
       inside the container is still made safe), else summary
     * `dict` → recursively coerce each value AND stringify non-string
       keys (orjson rejects dicts with non-string keys) if length ≤
-      threshold, else summary
+      threshold, else summary. If stringification produces a key
+      collision (e.g. `{1: 'a', '1': 'b'}` both become `'1'`), the
+      whole dict is replaced with a `dict-key-collision` summary
+      rather than silently dropping one entry
     * Any other object with `__len__` longer than the threshold →
       summary string
     * Any remaining value that is NOT a JSON-native scalar
@@ -107,7 +114,7 @@ def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced ty
     if isinstance(val, Decimal):
         return str(val)
     if isinstance(val, np.generic):
-        return val.item()
+        return _coerce_value(val.item())
     if isinstance(val, np.ndarray):
         size = int(val.size)
         if size > _MAX_LOGGED_SEQUENCE_LEN:
@@ -121,7 +128,10 @@ def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced ty
     if isinstance(val, dict):
         if len(val) > _MAX_LOGGED_SEQUENCE_LEN:
             return f'<sequence type=dict len={len(val)}>'
-        return {str(k): _coerce_value(v) for k, v in val.items()}
+        coerced = {str(k): _coerce_value(v) for k, v in val.items()}
+        if len(coerced) != len(val):
+            return f'<sequence type=dict-key-collision len={len(val)}>'
+        return coerced
     if isinstance(val, (list, tuple)):
         if len(val) > _MAX_LOGGED_SEQUENCE_LEN:
             return f'<sequence type={type(val).__name__} len={len(val)}>'

@@ -730,6 +730,62 @@ class TestPredictLoopSignalLogging:
         assert 'type=dict' in result['long_dict']
         assert f'len={len(long_dict)}' in result['long_dict']
 
+    def test_values_for_log_coerces_all_numpy_scalar_types_safely(self) -> None:
+        '''Pin: every `np.generic` subtype must coerce to a
+        JSON-safe form. `.item()` of `np.float64` / `np.int64` /
+        `np.bool_` returns native primitives (JSON-safe), but
+        `.item()` of `np.complex128` returns Python `complex` and
+        `.item()` of `np.bytes_` returns `bytes` — both rejected
+        by orjson. The recursion through `_coerce_value` sends
+        these through the final JSON-native scalar gate, which
+        falls through to `repr(val)`.
+        '''
+
+        import orjson
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        coerced = _values_for_log({
+            'np_float': np.float64(0.42),
+            'np_int': np.int64(7),
+            'np_bool': np.bool_(True),
+            'np_complex': np.complex128(1 + 2j),
+            'np_bytes': np.bytes_(b'hi'),
+            'np_str': np.str_('hello'),
+        })
+
+        assert coerced['np_float'] == 0.42
+        assert coerced['np_int'] == 7
+        assert coerced['np_bool'] is True
+        assert isinstance(coerced['np_complex'], str)
+        assert '1' in coerced['np_complex'] and '2j' in coerced['np_complex']
+        assert isinstance(coerced['np_bytes'], str)
+        assert coerced['np_str'] == 'hello'
+
+        # The actual contract: must survive orjson round-trip.
+        orjson.dumps(coerced)
+
+    def test_values_for_log_detects_dict_key_collisions(self) -> None:
+        '''Pin: stringifying dict keys can collide silently
+        (`str(1) == str("1") == "1"`). Without the collision check,
+        one entry would be dropped from the log. The collision
+        guard replaces the whole dict with a `dict-key-collision`
+        summary so the operator sees that something is wrong rather
+        than seeing a misleadingly-incomplete logged dict.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'collides_int_str': {1: 'first', '1': 'second'},
+            'collides_bool_str': {True: 'first', 'True': 'second'},
+        })
+
+        assert isinstance(result['collides_int_str'], str)
+        assert 'dict-key-collision' in result['collides_int_str']
+        assert isinstance(result['collides_bool_str'], str)
+        assert 'dict-key-collision' in result['collides_bool_str']
+
     def test_values_for_log_repr_fallback_for_unknown_types(self) -> None:
         '''Final defensive branch: any object that is neither a
         JSON-native primitive (int / float / bool / None / list /
