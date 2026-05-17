@@ -483,13 +483,26 @@ class TestPredictLoopSignalLogging:
     def test_logs_signal_before_dispatch(self, caplog: pytest.LogCaptureFixture) -> None:
         '''Every tick logs the produced Signal at INFO with
         strategy_id, sensor_id, predictor_fn_id, and values BEFORE
-        the strategy runner is dispatched. Without this a HOLD-only
-        strategy is indistinguishable from a broken predict path
-        because the strategy itself logs nothing on HOLD.
+        the strategy runner is dispatched. Ordering is pinned by
+        capturing caplog state inside `dispatch_signal`'s side
+        effect: if the log record is already present when dispatch
+        runs, the log came first.
+
+        Without this a HOLD-only strategy is indistinguishable from
+        a broken predict path because the strategy itself logs
+        nothing on HOLD.
         '''
 
         runner = MagicMock(spec=StrategyRunner)
-        runner.dispatch_signal.return_value = []
+        log_records_at_dispatch_time: list[str] = []
+
+        def capture_dispatch(*_args: object, **_kwargs: object) -> list[Action]:
+            log_records_at_dispatch_time.extend(
+                r.message for r in caplog.records
+            )
+            return []
+
+        runner.dispatch_signal.side_effect = capture_dispatch
         wired = _make_wired(strategy_id='strat_a', sensor_id='exp:1')
 
         loop = PredictLoop(
@@ -509,6 +522,9 @@ class TestPredictLoopSignalLogging:
         assert record.sensor_id == 'exp:1'
         assert record.predictor_fn_id
         assert isinstance(record.values, dict)
+        assert 'signal produced' in log_records_at_dispatch_time, (
+            'log record was emitted AFTER dispatch_signal — ordering broken'
+        )
 
     def test_values_for_log_passes_scalars_through(self) -> None:
         '''Scalars (int / float / Decimal / str / bool) pass through

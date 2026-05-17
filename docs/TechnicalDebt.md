@@ -1072,3 +1072,26 @@ Both changes together close the window. Option (1) alone is preferred where feas
 - Coverage must include `append_mutation` failure followed by later `_final_checkpoint` (clean-shutdown variant where in-memory mutation is persisted to snapshot even though `OutcomeAcked` was withheld).
 - Neither of the two migration options listed above (reorder I/O before mutation; in-memory `_in_flight_outcome_ids` set) currently produces a `recover()`-observable signal that an outcome was applied. For the cross-restart paired-boundary use with Praxis TD-052, the migration must additionally include a durable applied-outcome marker — either by extending option (2) so the `_processed_outcome_ids` set is persisted to the WAL on the success-side commit (not just held in memory after the in-flight handoff), OR by adding a third migration step that writes an outcome-applied record to the snapshot/WAL on `append_mutation`. Whichever shape is chosen, `StateStore.recover()` (Nexus-side) must reconstruct the applied-outcome marker into a `_processed_outcome_ids`-equivalent set on the rebuilt `OutcomeProcessor`. The dedup happens server-side inside Nexus when Praxis TD-052 replay re-delivers a `TradeOutcome` (which arrives at `OutcomeProcessor.process` carrying its Nexus-derived `outcome_id`) that is already in the recovered set — Praxis itself does not read Nexus state.
 - TD-086 must NOT be deferred past the landing of Praxis TD-052 (paired implementation boundary): TD-052 boot replay-from-spine cannot safely run while `OutcomeProcessor.process` retains the dedup-after-success contract.
+
+
+## TD-087: `_values_for_log` size guard uses `len()` on top-level only — multi-dim ndarrays with small first-axis bypass truncation
+
+**Origin**: Greybeard pre-PR review (feat/signal-logging, 2026-05-17)
+**Severity**: Low (currently unreachable — `signal_producer._extract_values` collapses every ndarray to a scalar before the value reaches `Signal.values`, so no multi-dim array ever hits `_values_for_log` today)
+**Module**: `nexus/strategy/predict_loop.py:64-66`
+
+`_values_for_log` calls `len(val)` to decide whether to truncate. For 1D sequences this is the element count, which is what the guard intends. For multi-dim ndarrays (e.g. a 100x100 array), `len()` returns the FIRST-AXIS length (100), which is well below `_MAX_LOGGED_SEQUENCE_LEN` (16) so the guard treats the array as a small scalar-ish value and lets the full 10,000-element representation hit the structured log line.
+
+The guard ships defensively against future predictors that might return non-scalar values (current predictors all collapse via `_extract_values`). If/when such a predictor lands AND it returns a multi-dim ndarray, the log line bloats.
+
+**When to fix**: When a future predictor is introduced that emits multi-dim ndarrays into `Signal.values`. Until then this is a deferred concern.
+
+**Migration**: Replace `len(val)` with a more thorough check — for ndarrays use `val.size`; for nested sequences walk shape. Simplest cross-type form:
+
+```python
+size = getattr(val, 'size', None) or len(val)
+if size > _MAX_LOGGED_SEQUENCE_LEN:
+    out[key] = f'<sequence type={type(val).__name__} size={size}>'
+```
+
+`getattr(..., 'size', None)` picks up numpy's `.size` attribute (total element count); falls back to `len()` for plain sequences.
