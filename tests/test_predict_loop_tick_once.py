@@ -526,9 +526,12 @@ class TestPredictLoopSignalLogging:
             'log record was emitted AFTER dispatch_signal — ordering broken'
         )
 
-    def test_values_for_log_passes_scalars_through(self) -> None:
-        '''Scalars (int / float / Decimal / str / bool) pass through
-        unchanged.
+    def test_values_for_log_passes_native_primitives_through(self) -> None:
+        '''Native JSON primitives (int / float / str / bool) pass
+        through unchanged. `Decimal` does NOT pass through — it is
+        coerced to `str` to preserve precision and survive the
+        orjson renderer; that case is covered in
+        `test_values_for_log_coerces_json_unsafe_types`.
         '''
 
         from nexus.strategy.predict_loop import _values_for_log
@@ -536,14 +539,12 @@ class TestPredictLoopSignalLogging:
         result = _values_for_log({
             'a': 1,
             'b': 0.42,
-            'c': Decimal('3.14'),
             'd': 'hello',
             'e': True,
         })
         assert result == {
             'a': 1,
             'b': 0.42,
-            'c': Decimal('3.14'),
             'd': 'hello',
             'e': True,
         }
@@ -576,6 +577,104 @@ class TestPredictLoopSignalLogging:
         assert isinstance(result['long'], str)
         assert f'len={len(long_)}' in result['long']
         assert isinstance(result['big'], str)
-        assert 'len=10000' in result['big']
+        assert 'size=10000' in result['big']
         assert 'type=ndarray' in result['big']
         assert result['scalar'] == 0.42
+
+    def test_values_for_log_coerces_json_unsafe_types(self) -> None:
+        '''The configured orjson renderer in observability.py has no
+        `default=` callback and no `OPT_SERIALIZE_NUMPY` flag, so any
+        non-native value reaching the structured log raises and the
+        record is dropped via `logging.handler.handleError`. The
+        helper must coerce known JSON-unsafe types regardless of
+        length:
+
+        * `Decimal` -> `str` (preserves precision; allowed by
+          `Signal.values` post_init)
+        * `numpy` scalars (`np.float64`, `np.int64`) -> Python
+          primitive via `.item()`
+        * short `numpy.ndarray` -> list of primitives
+        * short `polars.Series` -> list of primitives
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        short_ndarray = np.array([1, 2, 3])
+        short_series = pl.Series('x', [4, 5, 6])
+
+        result = _values_for_log({
+            'decimal': Decimal('3.14'),
+            'np_float': np.float64(0.42),
+            'np_int': np.int64(7),
+            'ndarray': short_ndarray,
+            'series': short_series,
+        })
+
+        assert result['decimal'] == '3.14'
+        assert isinstance(result['decimal'], str)
+        assert result['np_float'] == 0.42
+        assert isinstance(result['np_float'], float)
+        assert result['np_int'] == 7
+        assert isinstance(result['np_int'], int)
+        assert result['ndarray'] == [1, 2, 3]
+        assert all(isinstance(x, int) for x in result['ndarray'])
+        assert result['series'] == [4, 5, 6]
+        assert all(isinstance(x, int) for x in result['series'])
+
+    def test_values_for_log_summarizes_long_series_and_ndarrays(self) -> None:
+        '''Long sequence-typed values are summarized by SIZE (total
+        element count via .size / .len()), not first-axis length.
+        This catches multi-dim ndarrays that the round-1 len()-based
+        guard missed (round-1 TD-087).
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        big_2d = np.zeros((100, 100))
+        big_series = pl.Series('x', list(range(1000)))
+
+        result = _values_for_log({
+            'big_2d': big_2d,
+            'big_series': big_series,
+        })
+
+        assert isinstance(result['big_2d'], str)
+        assert 'size=10000' in result['big_2d']
+        assert 'type=ndarray' in result['big_2d']
+        assert isinstance(result['big_series'], str)
+        assert 'size=1000' in result['big_series']
+        assert 'type=Series' in result['big_series']
+
+    def test_values_for_log_output_is_orjson_serializable(self) -> None:
+        '''End-to-end safety: every coerced value MUST round-trip
+        through orjson (the configured renderer) without raising.
+        This is the actual contract the helper's name claims.
+        '''
+
+        import orjson
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        coerced = _values_for_log({
+            'decimal': Decimal('3.14'),
+            'np_float': np.float64(0.42),
+            'np_int': np.int64(7),
+            'ndarray_short': np.array([1.0, 2.0, 3.0]),
+            'ndarray_long': np.zeros(100),
+            'series_short': pl.Series('x', [1, 2, 3]),
+            'series_long': pl.Series('x', list(range(100))),
+            'plain_int': 1,
+            'plain_float': 0.42,
+            'plain_str': 'hello',
+            'plain_bool': True,
+        })
+
+        encoded = orjson.dumps(coerced)
+        decoded = orjson.loads(encoded)
+        assert decoded['decimal'] == '3.14'
+        assert decoded['np_float'] == 0.42
+        assert decoded['np_int'] == 7
+        assert decoded['ndarray_short'] == [1.0, 2.0, 3.0]
+        assert 'size=100' in decoded['ndarray_long']
+        assert decoded['series_short'] == [1, 2, 3]
+        assert 'size=100' in decoded['series_long']

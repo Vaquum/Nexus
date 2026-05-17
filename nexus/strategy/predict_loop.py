@@ -21,8 +21,10 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable, Mapping
+from decimal import Decimal
 from typing import Any
 
+import numpy as np
 import polars as pl
 
 from nexus.startup.sequencer import WiredSensor
@@ -45,10 +47,29 @@ _MAX_LOGGED_SEQUENCE_LEN = 16
 def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
     '''Render a Signal.values mapping safe for structured logging.
 
-    Scalars pass through unchanged. Sequences (lists, tuples, ndarrays)
-    longer than `_MAX_LOGGED_SEQUENCE_LEN` are replaced with a length
-    summary so a predictor that returns a 10k-element vector doesn't
-    blow up the log line.
+    Coerces every entry to a JSON-serializable primitive (or short
+    summary string) so the configured orjson renderer
+    (`observability.configure_logging` → `JSONRenderer(serializer=orjson.dumps)`
+    with no `default=` callback and no `OPT_SERIALIZE_NUMPY` flag)
+    cannot crash on a non-native type and drop the log line.
+
+    Type-based normalization (the LENGTH check is a secondary guard
+    after the type coercion — short sequences still get coerced to
+    primitives, not passed through as ndarrays/Series):
+
+    * `str` → unchanged
+    * `Decimal` → `str` (preserves precision; orjson rejects Decimal
+      by default and `Signal.values` post-init explicitly allows it)
+    * `numpy.generic` (np.float64 / np.int64 / etc.) → `.item()` to
+      native Python type (orjson handles SOME numpy scalars depending
+      on version; coercing here removes the dependency)
+    * `numpy.ndarray` / `polars.Series` / `pandas.Series` →
+      `.tolist()` of primitives if size ≤ `_MAX_LOGGED_SEQUENCE_LEN`,
+      else a summary string `<sequence type=X size=N>`
+    * Any other object with `__len__` longer than the threshold →
+      summary string
+    * Everything else → unchanged (final fallback; can't enumerate
+      every type, the orjson error path is the last line of defense)
 
     Args:
         values: A `Signal.values` mapping (typically `{key: scalar}`
@@ -61,19 +82,39 @@ def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for key, val in values.items():
-        if isinstance(val, str):
-            out[key] = val
-            continue
-        try:
-            length = len(val)
-        except TypeError:
-            out[key] = val
-            continue
-        if length > _MAX_LOGGED_SEQUENCE_LEN:
-            out[key] = f'<sequence type={type(val).__name__} len={length}>'
-        else:
-            out[key] = val
+        out[key] = _coerce_value(val)
     return out
+
+
+def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced type, keeping flat
+    '''Coerce a single value to a JSON-serializable form for logging.
+
+    See `_values_for_log` for the full normalization table.
+    '''
+
+    if isinstance(val, str):
+        return val
+    if isinstance(val, Decimal):
+        return str(val)
+    if isinstance(val, np.generic):
+        return val.item()
+    if isinstance(val, np.ndarray):
+        size = int(val.size)
+        if size > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=ndarray size={size}>'
+        return [_coerce_value(x) for x in val.tolist()]
+    if isinstance(val, pl.Series):
+        size = val.len()
+        if size > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=Series size={size}>'
+        return [_coerce_value(x) for x in val.to_list()]
+    try:
+        length = len(val)
+    except TypeError:
+        return val
+    if length > _MAX_LOGGED_SEQUENCE_LEN:
+        return f'<sequence type={type(val).__name__} len={length}>'
+    return val
 
 
 def _log_signal(wired: WiredSensor, signal: Signal) -> None:
