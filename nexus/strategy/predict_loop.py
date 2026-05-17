@@ -6,13 +6,22 @@ list[Action] returned from each dispatch and forwards it to an
 injected `action_submit` callback (typically `submit_actions`
 from `nexus.strategy.action_submit`, curried with validator,
 config, state, and PraxisOutbound by the launcher).
+
+Logs every signal at INFO immediately after `produce_signal()`
+returns, BEFORE the strategy's dispatch handler is called. This
+gives operators full visibility into predictor output regardless
+of whether the strategy chose to emit an action — without this,
+a HOLD-only strategy (every prediction maps to no-action) is
+indistinguishable from a broken predict path because the
+strategy itself logs nothing on HOLD.
 '''
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 import polars as pl
 
@@ -21,6 +30,7 @@ from nexus.strategy.action import Action
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
+from nexus.strategy.signal import Signal
 from nexus.strategy.signal_producer import produce_signal
 
 __all__ = ['ActionSubmitter', 'PredictLoop']
@@ -28,6 +38,61 @@ __all__ = ['ActionSubmitter', 'PredictLoop']
 _log = logging.getLogger(__name__)
 
 ActionSubmitter = Callable[[list[Action], str], None]
+
+_MAX_LOGGED_SEQUENCE_LEN = 16
+
+
+def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
+    '''Render a Signal.values mapping safe for structured logging.
+
+    Scalars pass through unchanged. Sequences (lists, tuples, ndarrays)
+    longer than `_MAX_LOGGED_SEQUENCE_LEN` are replaced with a length
+    summary so a predictor that returns a 10k-element vector doesn't
+    blow up the log line.
+
+    Args:
+        values: A `Signal.values` mapping (typically `{key: scalar}`
+            for binary classifiers, but tolerant of any predictor
+            output shape).
+
+    Returns:
+        A plain dict suitable for `extra=` on a `logging` call.
+    '''
+
+    out: dict[str, Any] = {}
+    for key, val in values.items():
+        if isinstance(val, str):
+            out[key] = val
+            continue
+        try:
+            length = len(val)
+        except TypeError:
+            out[key] = val
+            continue
+        if length > _MAX_LOGGED_SEQUENCE_LEN:
+            out[key] = f'<sequence type={type(val).__name__} len={length}>'
+        else:
+            out[key] = val
+    return out
+
+
+def _log_signal(wired: WiredSensor, signal: Signal) -> None:
+    '''Log a produced Signal at INFO before strategy dispatch.
+
+    Captures the predictor's actual output on every tick so a
+    silent HOLD path is distinguishable from a broken predict
+    path (see module docstring).
+    '''
+
+    _log.info(
+        'signal produced',
+        extra={
+            'strategy_id': wired.strategy_id,
+            'sensor_id': wired.sensor_id,
+            'predictor_fn_id': signal.predictor_fn_id,
+            'values': _values_for_log(signal.values),
+        },
+    )
 
 
 class PredictLoop:
@@ -140,6 +205,7 @@ class PredictLoop:
             return
 
         signal = produce_signal(wired, market_data)
+        _log_signal(wired, signal)
         context = self._context_provider(wired.strategy_id)
 
         actions = self._runner.dispatch_signal(
@@ -191,6 +257,7 @@ class PredictLoop:
                     return
 
             signal = produce_signal(wired, market_data)
+            _log_signal(wired, signal)
             context = self._context_provider(wired.strategy_id)
 
             actions = self._runner.dispatch_signal(

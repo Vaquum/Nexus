@@ -476,3 +476,90 @@ class TestPredictLoopTickOnce:
         dispatch_args = runner.dispatch_signal.call_args
         assert dispatch_args[0][0] == 'strat_a'
         assert isinstance(dispatch_args[0][1], Signal)
+
+
+class TestPredictLoopSignalLogging:
+
+    def test_logs_signal_before_dispatch(self, caplog: pytest.LogCaptureFixture) -> None:
+        '''Every tick logs the produced Signal at INFO with
+        strategy_id, sensor_id, predictor_fn_id, and values BEFORE
+        the strategy runner is dispatched. Without this a HOLD-only
+        strategy is indistinguishable from a broken predict path
+        because the strategy itself logs nothing on HOLD.
+        '''
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        wired = _make_wired(strategy_id='strat_a', sensor_id='exp:1')
+
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+
+        with caplog.at_level('INFO', logger='nexus.strategy.predict_loop'):
+            loop.tick_once(wired)
+
+        signal_records = [r for r in caplog.records if r.message == 'signal produced']
+        assert len(signal_records) == 1
+        record = signal_records[0]
+        assert record.strategy_id == 'strat_a'
+        assert record.sensor_id == 'exp:1'
+        assert record.predictor_fn_id
+        assert isinstance(record.values, dict)
+
+    def test_values_for_log_passes_scalars_through(self) -> None:
+        '''Scalars (int / float / Decimal / str / bool) pass through
+        unchanged.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'a': 1,
+            'b': 0.42,
+            'c': Decimal('3.14'),
+            'd': 'hello',
+            'e': True,
+        })
+        assert result == {
+            'a': 1,
+            'b': 0.42,
+            'c': Decimal('3.14'),
+            'd': 'hello',
+            'e': True,
+        }
+
+    def test_values_for_log_truncates_long_sequences(self) -> None:
+        '''A long sequence value is replaced with a length-summary
+        so structured logs stay bounded. Short sequences (<= the
+        threshold) pass through. `signal_producer._extract_values`
+        already collapses numpy arrays to scalars before they reach
+        the log so this guard is defensive — for any future
+        predictor that returns a long vector instead of a scalar.
+        '''
+
+        from nexus.strategy.predict_loop import (
+            _MAX_LOGGED_SEQUENCE_LEN,
+            _values_for_log,
+        )
+
+        short = list(range(_MAX_LOGGED_SEQUENCE_LEN))
+        long_ = list(range(_MAX_LOGGED_SEQUENCE_LEN + 1))
+        big_array = np.zeros(10000)
+
+        result = _values_for_log({
+            'short': short,
+            'long': long_,
+            'big': big_array,
+            'scalar': 0.42,
+        })
+        assert result['short'] == short
+        assert isinstance(result['long'], str)
+        assert f'len={len(long_)}' in result['long']
+        assert isinstance(result['big'], str)
+        assert 'len=10000' in result['big']
+        assert 'type=ndarray' in result['big']
+        assert result['scalar'] == 0.42
