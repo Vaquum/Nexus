@@ -63,17 +63,23 @@ def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
     * `numpy.generic` (np.float64 / np.int64 / etc.) → `.item()` to
       native Python type (orjson handles SOME numpy scalars depending
       on version; coercing here removes the dependency)
-    * `numpy.ndarray` / `polars.Series` → `.tolist()` of primitives
-      if size ≤ `_MAX_LOGGED_SEQUENCE_LEN`, else a summary string
-      `<sequence type=X size=N>`
+    * `numpy.ndarray` / `polars.Series` → recursively coerce each
+      element if size ≤ `_MAX_LOGGED_SEQUENCE_LEN`, else a summary
+      string `<sequence type=X size=N>`
+    * `list` / `tuple` → recursively coerce each element if length
+      ≤ threshold (so a nested `np.float64` / `Decimal` / `pl.Series`
+      inside the container is still made safe), else summary
+    * `dict` → recursively coerce each value AND stringify non-string
+      keys (orjson rejects dicts with non-string keys) if length ≤
+      threshold, else summary
     * Any other object with `__len__` longer than the threshold →
       summary string
-    * Any remaining value that is NOT a JSON-native primitive
-      (`int` / `float` / `bool` / `None` / `list` / `dict` / `str`)
-      → `repr(val)`. This makes the orjson safety contract true:
-      the helper guarantees the renderer cannot crash on a returned
-      value, because the only types it returns are types orjson
-      accepts.
+    * Any remaining value that is NOT a JSON-native scalar
+      (`int` / `float` / `bool` / `None` / `str`) → `repr(val)`.
+      This makes the orjson safety contract true: the helper
+      guarantees the renderer cannot crash on a returned value,
+      because every leaf is one of the types orjson accepts AND
+      every container has been recursively coerced.
 
     Args:
         values: A `Signal.values` mapping (typically `{key: scalar}`
@@ -112,13 +118,21 @@ def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced ty
         if size > _MAX_LOGGED_SEQUENCE_LEN:
             return f'<sequence type=Series size={size}>'
         return [_coerce_value(x) for x in val.to_list()]
+    if isinstance(val, dict):
+        if len(val) > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=dict len={len(val)}>'
+        return {str(k): _coerce_value(v) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        if len(val) > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type={type(val).__name__} len={len(val)}>'
+        return [_coerce_value(x) for x in val]
     try:
         length = len(val)
     except TypeError:
         length = None
     if length is not None and length > _MAX_LOGGED_SEQUENCE_LEN:
         return f'<sequence type={type(val).__name__} len={length}>'
-    if isinstance(val, (int, float, bool, type(None), list, dict)):
+    if isinstance(val, (int, float, bool, type(None))):
         return val
     return repr(val)
 

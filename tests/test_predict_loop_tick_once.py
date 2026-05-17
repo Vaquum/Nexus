@@ -646,6 +646,90 @@ class TestPredictLoopSignalLogging:
         assert 'size=1000' in result['big_series']
         assert 'type=Series' in result['big_series']
 
+    def test_values_for_log_recursively_coerces_list_contents(self) -> None:
+        '''Pin: a `list` short enough to pass the length threshold is
+        NOT passed through unchanged — its elements are recursively
+        coerced. A `list[np.float64]` or `list[Decimal]` would
+        otherwise reach the orjson renderer with JSON-unsafe leaves
+        and drop the log record.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'nested_floats': [np.float64(1.0), np.float64(2.0)],
+            'nested_decimals': [Decimal('0.1'), Decimal('0.2')],
+            'mixed': [1, np.int64(2), Decimal('3'), 'hello'],
+        })
+
+        assert result['nested_floats'] == [1.0, 2.0]
+        assert all(isinstance(x, float) for x in result['nested_floats'])
+        assert result['nested_decimals'] == ['0.1', '0.2']
+        assert all(isinstance(x, str) for x in result['nested_decimals'])
+        assert result['mixed'] == [1, 2, '3', 'hello']
+
+    def test_values_for_log_recursively_coerces_tuple_contents(self) -> None:
+        '''Tuples coerce to lists (orjson serializes both as arrays);
+        contents are recursively coerced like lists.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'pair': (np.float64(1.0), Decimal('2.0')),
+        })
+        assert result['pair'] == [1.0, '2.0']
+        assert isinstance(result['pair'], list)
+
+    def test_values_for_log_recursively_coerces_dict_values(self) -> None:
+        '''Pin: a `dict` short enough to pass the length threshold has
+        its VALUES recursively coerced and its KEYS stringified
+        (orjson rejects dicts with non-string keys).
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'config': {
+                'lr': np.float64(0.001),
+                'threshold': Decimal('0.5'),
+                'name': 'logreg',
+            },
+            'int_keys': {1: 'one', 2: 'two'},
+        })
+
+        assert result['config'] == {
+            'lr': 0.001,
+            'threshold': '0.5',
+            'name': 'logreg',
+        }
+        assert result['int_keys'] == {'1': 'one', '2': 'two'}
+
+    def test_values_for_log_summarizes_long_list_and_dict(self) -> None:
+        '''Long list/dict are summarized rather than walked, so
+        recursion cost is bounded.
+        '''
+
+        from nexus.strategy.predict_loop import (
+            _MAX_LOGGED_SEQUENCE_LEN,
+            _values_for_log,
+        )
+
+        long_list = list(range(_MAX_LOGGED_SEQUENCE_LEN + 1))
+        long_dict = {str(i): i for i in range(_MAX_LOGGED_SEQUENCE_LEN + 1)}
+
+        result = _values_for_log({
+            'long_list': long_list,
+            'long_dict': long_dict,
+        })
+
+        assert isinstance(result['long_list'], str)
+        assert 'type=list' in result['long_list']
+        assert f'len={len(long_list)}' in result['long_list']
+        assert isinstance(result['long_dict'], str)
+        assert 'type=dict' in result['long_dict']
+        assert f'len={len(long_dict)}' in result['long_dict']
+
     def test_values_for_log_repr_fallback_for_unknown_types(self) -> None:
         '''Final defensive branch: any object that is neither a
         JSON-native primitive (int / float / bool / None / list /
@@ -695,6 +779,8 @@ class TestPredictLoopSignalLogging:
             'plain_str': 'hello',
             'plain_bool': True,
             'unknown': _UnknownNoLen(),
+            'nested_list': [np.float64(1.0), Decimal('2.0')],
+            'nested_dict': {1: np.int64(2), 'k': Decimal('3.0')},
         })
 
         encoded = orjson.dumps(coerced)
@@ -707,3 +793,5 @@ class TestPredictLoopSignalLogging:
         assert decoded['series_short'] == [1, 2, 3]
         assert 'size=100' in decoded['series_long']
         assert decoded['unknown'] == 'UnknownNoLen()'
+        assert decoded['nested_list'] == [1.0, '2.0']
+        assert decoded['nested_dict'] == {'1': 2, 'k': '3.0'}
