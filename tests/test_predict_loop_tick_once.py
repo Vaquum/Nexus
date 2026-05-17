@@ -332,6 +332,7 @@ class TestPredictLoopTickOnce:
             '_extract_kline_size',
             '_market_data_provider',
             'produce_signal',
+            '_log_signal',
             '_context_provider',
             'dispatch_signal',
             '_action_submit',
@@ -645,6 +646,28 @@ class TestPredictLoopSignalLogging:
         assert 'size=1000' in result['big_series']
         assert 'type=Series' in result['big_series']
 
+    def test_values_for_log_repr_fallback_for_unknown_types(self) -> None:
+        '''Final defensive branch: any object that is neither a
+        JSON-native primitive (int / float / bool / None / list /
+        dict / str) nor one of the explicitly-handled types
+        (Decimal / numpy.generic / ndarray / pl.Series) falls
+        through to `repr(val)`. This makes the orjson safety
+        contract true — the helper guarantees the renderer cannot
+        crash on a returned value.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        class _UnknownNoLen:
+            def __repr__(self) -> str:
+                return 'UnknownNoLen()'
+
+        result = _values_for_log({
+            'unknown': _UnknownNoLen(),
+        })
+        assert result['unknown'] == 'UnknownNoLen()'
+        assert isinstance(result['unknown'], str)
+
     def test_values_for_log_output_is_orjson_serializable(self) -> None:
         '''End-to-end safety: every coerced value MUST round-trip
         through orjson (the configured renderer) without raising.
@@ -654,6 +677,10 @@ class TestPredictLoopSignalLogging:
         import orjson
 
         from nexus.strategy.predict_loop import _values_for_log
+
+        class _UnknownNoLen:
+            def __repr__(self) -> str:
+                return 'UnknownNoLen()'
 
         coerced = _values_for_log({
             'decimal': Decimal('3.14'),
@@ -667,6 +694,7 @@ class TestPredictLoopSignalLogging:
             'plain_float': 0.42,
             'plain_str': 'hello',
             'plain_bool': True,
+            'unknown': _UnknownNoLen(),
         })
 
         encoded = orjson.dumps(coerced)
@@ -678,3 +706,4 @@ class TestPredictLoopSignalLogging:
         assert 'size=100' in decoded['ndarray_long']
         assert decoded['series_short'] == [1, 2, 3]
         assert 'size=100' in decoded['series_long']
+        assert decoded['unknown'] == 'UnknownNoLen()'
