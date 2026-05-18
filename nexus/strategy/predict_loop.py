@@ -103,6 +103,22 @@ def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _safe_len(val: Any) -> int | None:
+    '''Return `len(val)` if it succeeds, else `None`.
+
+    Catches `Exception` rather than just `TypeError`: a custom
+    `__len__` is free to raise `ValueError` or anything else, and
+    the "logging never raises" contract requires every code path
+    in `_coerce_value` to absorb those failures rather than let
+    them bubble out and break the calling sensor tick.
+    '''
+
+    try:
+        return len(val)
+    except Exception:  # noqa: BLE001 - logging must not raise from a misbehaving __len__
+        return None
+
+
 def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced type, keeping flat
     '''Coerce a single value to a JSON-serializable form for logging.
 
@@ -126,20 +142,23 @@ def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced ty
             return f'<sequence type=Series size={size}>'
         return [_coerce_value(x) for x in val.to_list()]
     if isinstance(val, dict):
-        if len(val) > _MAX_LOGGED_SEQUENCE_LEN:
-            return f'<sequence type=dict len={len(val)}>'
+        dict_len = _safe_len(val)
+        if dict_len is None:
+            return repr(val)
+        if dict_len > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=dict len={dict_len}>'
         coerced = {str(k): _coerce_value(v) for k, v in val.items()}
-        if len(coerced) != len(val):
-            return f'<sequence type=dict-key-collision len={len(val)}>'
+        if len(coerced) != dict_len:
+            return f'<sequence type=dict-key-collision len={dict_len}>'
         return coerced
     if isinstance(val, (list, tuple)):
-        if len(val) > _MAX_LOGGED_SEQUENCE_LEN:
-            return f'<sequence type={type(val).__name__} len={len(val)}>'
+        seq_len = _safe_len(val)
+        if seq_len is None:
+            return repr(val)
+        if seq_len > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type={type(val).__name__} len={seq_len}>'
         return [_coerce_value(x) for x in val]
-    try:
-        length = len(val)
-    except TypeError:
-        length = None
+    length = _safe_len(val)
     if length is not None and length > _MAX_LOGGED_SEQUENCE_LEN:
         return f'<sequence type={type(val).__name__} len={length}>'
     if isinstance(val, (int, float, bool, type(None))):

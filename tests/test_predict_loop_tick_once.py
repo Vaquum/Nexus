@@ -786,6 +786,52 @@ class TestPredictLoopSignalLogging:
         assert isinstance(result['collides_bool_str'], str)
         assert 'dict-key-collision' in result['collides_bool_str']
 
+    def test_values_for_log_survives_raising_len(self) -> None:
+        '''Pin: a custom `__len__` that raises any `Exception` (not
+        just `TypeError`) must not propagate out of the helper. The
+        "logging never raises" contract requires every path to
+        absorb misbehaving containers.
+        '''
+
+        import orjson
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        class _RaisingLen:
+            def __len__(self) -> int:
+                msg = 'misbehaving __len__ raises ValueError'
+                raise ValueError(msg)
+
+            def __repr__(self) -> str:
+                return 'RaisingLen()'
+
+        class _RaisingLenList(list):  # type: ignore[type-arg]
+            def __len__(self) -> int:
+                msg = 'list subclass __len__ raises'
+                raise RuntimeError(msg)
+
+            def __repr__(self) -> str:
+                return 'RaisingLenList()'
+
+        class _RaisingLenDict(dict):  # type: ignore[type-arg]
+            def __len__(self) -> int:
+                msg = 'dict subclass __len__ raises'
+                raise RuntimeError(msg)
+
+            def __repr__(self) -> str:
+                return 'RaisingLenDict()'
+
+        result = _values_for_log({
+            'plain': _RaisingLen(),
+            'list_sub': _RaisingLenList(),
+            'dict_sub': _RaisingLenDict(),
+        })
+
+        assert result['plain'] == 'RaisingLen()'
+        assert result['list_sub'] == 'RaisingLenList()'
+        assert result['dict_sub'] == 'RaisingLenDict()'
+        orjson.dumps(result)
+
     def test_values_for_log_repr_fallback_for_unknown_types(self) -> None:
         '''Final defensive branch: any object that is neither a
         JSON-native primitive (int / float / bool / None / list /
