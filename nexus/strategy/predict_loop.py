@@ -6,14 +6,25 @@ list[Action] returned from each dispatch and forwards it to an
 injected `action_submit` callback (typically `submit_actions`
 from `nexus.strategy.action_submit`, curried with validator,
 config, state, and PraxisOutbound by the launcher).
+
+Logs every signal at INFO immediately after `produce_signal()`
+returns, BEFORE the strategy's dispatch handler is called. This
+gives operators full visibility into predictor output regardless
+of whether the strategy chose to emit an action — without this,
+a HOLD-only strategy (every prediction maps to no-action) is
+indistinguishable from a broken predict path because the
+strategy itself logs nothing on HOLD.
 '''
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from decimal import Decimal
+from typing import Any
 
+import numpy as np
 import polars as pl
 
 from nexus.startup.sequencer import WiredSensor
@@ -21,6 +32,7 @@ from nexus.strategy.action import Action
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
 from nexus.strategy.runner import StrategyRunner
+from nexus.strategy.signal import Signal
 from nexus.strategy.signal_producer import produce_signal
 
 __all__ = ['ActionSubmitter', 'PredictLoop']
@@ -28,6 +40,149 @@ __all__ = ['ActionSubmitter', 'PredictLoop']
 _log = logging.getLogger(__name__)
 
 ActionSubmitter = Callable[[list[Action], str], None]
+
+_MAX_LOGGED_SEQUENCE_LEN = 16
+
+
+def _values_for_log(values: Mapping[str, Any]) -> dict[str, Any]:
+    '''Render a Signal.values mapping safe for structured logging.
+
+    Coerces every entry to a JSON-serializable primitive (or short
+    summary string) so the configured orjson renderer
+    (`observability.configure_logging` → `JSONRenderer(serializer=orjson.dumps)`
+    with no `default=` callback and no `OPT_SERIALIZE_NUMPY` flag)
+    cannot crash on a non-native type and drop the log line.
+
+    Type-based normalization (the LENGTH check is a secondary guard
+    after the type coercion — short sequences still get coerced to
+    primitives, not passed through as ndarrays/Series):
+
+    * `str` → unchanged
+    * `Decimal` → `str` (preserves precision; orjson rejects Decimal
+      by default and `Signal.values` post-init explicitly allows it)
+    * `numpy.generic` (np.float64 / np.int64 / etc.) → `.item()` to
+      native Python type, then recursively coerced. The recursion
+      matters because `.item()` of `np.complex128` returns a Python
+      `complex` and `.item()` of `np.bytes_` returns `bytes`; both
+      are JSON-unsafe and would otherwise reach the renderer and
+      drop the log line. The recursion sends them through the final
+      JSON-native gate and onto `repr(val)`.
+    * `numpy.ndarray` / `polars.Series` → recursively coerce each
+      element if size ≤ `_MAX_LOGGED_SEQUENCE_LEN`, else a summary
+      string `<sequence type=X size=N>`
+    * `list` / `tuple` → recursively coerce each element if length
+      ≤ threshold (so a nested `np.float64` / `Decimal` / `pl.Series`
+      inside the container is still made safe), else summary
+    * `dict` → recursively coerce each value AND stringify non-string
+      keys (orjson rejects dicts with non-string keys) if length ≤
+      threshold, else summary. If stringification produces a key
+      collision (e.g. `{1: 'a', '1': 'b'}` both become `'1'`), the
+      whole dict is replaced with a `dict-key-collision` summary
+      rather than silently dropping one entry
+    * Any other object with `__len__` longer than the threshold →
+      summary string
+    * Any remaining value that is NOT a JSON-native scalar
+      (`int` / `float` / `bool` / `None` / `str`) → `repr(val)`.
+      This makes the orjson safety contract true: the helper
+      guarantees the renderer cannot crash on a returned value,
+      because every leaf is one of the types orjson accepts AND
+      every container has been recursively coerced.
+
+    Args:
+        values: A `Signal.values` mapping (typically `{key: scalar}`
+            for binary classifiers, but tolerant of any predictor
+            output shape).
+
+    Returns:
+        A plain dict suitable for `extra=` on a `logging` call.
+    '''
+
+    out: dict[str, Any] = {}
+    for key, val in values.items():
+        out[key] = _coerce_value(val)
+    return out
+
+
+def _safe_len(val: Any) -> int | None:
+    '''Return `len(val)` if it succeeds, else `None`.
+
+    Catches `Exception` rather than just `TypeError`: a custom
+    `__len__` is free to raise `ValueError` or anything else, and
+    the "logging never raises" contract requires every code path
+    in `_coerce_value` to absorb those failures rather than let
+    them bubble out and break the calling sensor tick.
+    '''
+
+    try:
+        return len(val)
+    except Exception:  # noqa: BLE001 - logging must not raise from a misbehaving __len__
+        return None
+
+
+def _coerce_value(val: Any) -> Any:  # noqa: PLR0911 - one branch per coerced type, keeping flat
+    '''Coerce a single value to a JSON-serializable form for logging.
+
+    See `_values_for_log` for the full normalization table.
+    '''
+
+    if isinstance(val, str):
+        return val
+    if isinstance(val, Decimal):
+        return str(val)
+    if isinstance(val, np.generic):
+        return _coerce_value(val.item())
+    if isinstance(val, np.ndarray):
+        size = int(val.size)
+        if size > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=ndarray size={size}>'
+        return [_coerce_value(x) for x in val.tolist()]
+    if isinstance(val, pl.Series):
+        size = val.len()
+        if size > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=Series size={size}>'
+        return [_coerce_value(x) for x in val.to_list()]
+    if isinstance(val, dict):
+        dict_len = _safe_len(val)
+        if dict_len is None:
+            return repr(val)
+        if dict_len > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type=dict len={dict_len}>'
+        coerced = {str(k): _coerce_value(v) for k, v in val.items()}
+        if len(coerced) != dict_len:
+            return f'<sequence type=dict-key-collision len={dict_len}>'
+        return coerced
+    if isinstance(val, (list, tuple)):
+        seq_len = _safe_len(val)
+        if seq_len is None:
+            return repr(val)
+        if seq_len > _MAX_LOGGED_SEQUENCE_LEN:
+            return f'<sequence type={type(val).__name__} len={seq_len}>'
+        return [_coerce_value(x) for x in val]
+    length = _safe_len(val)
+    if length is not None and length > _MAX_LOGGED_SEQUENCE_LEN:
+        return f'<sequence type={type(val).__name__} len={length}>'
+    if isinstance(val, (int, float, bool, type(None))):
+        return val
+    return repr(val)
+
+
+def _log_signal(wired: WiredSensor, signal: Signal) -> None:
+    '''Log a produced Signal at INFO before strategy dispatch.
+
+    Captures the predictor's actual output on every tick so a
+    silent HOLD path is distinguishable from a broken predict
+    path (see module docstring).
+    '''
+
+    _log.info(
+        'signal produced',
+        extra={
+            'strategy_id': wired.strategy_id,
+            'sensor_id': wired.sensor_id,
+            'predictor_fn_id': signal.predictor_fn_id,
+            'values': _values_for_log(signal.values),
+        },
+    )
 
 
 class PredictLoop:
@@ -140,6 +295,7 @@ class PredictLoop:
             return
 
         signal = produce_signal(wired, market_data)
+        _log_signal(wired, signal)
         context = self._context_provider(wired.strategy_id)
 
         actions = self._runner.dispatch_signal(
@@ -191,6 +347,7 @@ class PredictLoop:
                     return
 
             signal = produce_signal(wired, market_data)
+            _log_signal(wired, signal)
             context = self._context_provider(wired.strategy_id)
 
             actions = self._runner.dispatch_signal(

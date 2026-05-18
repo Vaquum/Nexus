@@ -332,6 +332,7 @@ class TestPredictLoopTickOnce:
             '_extract_kline_size',
             '_market_data_provider',
             'produce_signal',
+            '_log_signal',
             '_context_provider',
             'dispatch_signal',
             '_action_submit',
@@ -476,3 +477,423 @@ class TestPredictLoopTickOnce:
         dispatch_args = runner.dispatch_signal.call_args
         assert dispatch_args[0][0] == 'strat_a'
         assert isinstance(dispatch_args[0][1], Signal)
+
+
+class TestPredictLoopSignalLogging:
+
+    def test_logs_signal_before_dispatch(self, caplog: pytest.LogCaptureFixture) -> None:
+        '''Every tick logs the produced Signal at INFO with
+        strategy_id, sensor_id, predictor_fn_id, and values BEFORE
+        the strategy runner is dispatched. Ordering is pinned by
+        capturing caplog state inside `dispatch_signal`'s side
+        effect: if the log record is already present when dispatch
+        runs, the log came first.
+
+        Without this a HOLD-only strategy is indistinguishable from
+        a broken predict path because the strategy itself logs
+        nothing on HOLD.
+        '''
+
+        runner = MagicMock(spec=StrategyRunner)
+        log_records_at_dispatch_time: list[str] = []
+
+        def capture_dispatch(*_args: object, **_kwargs: object) -> list[Action]:
+            log_records_at_dispatch_time.extend(
+                r.message for r in caplog.records
+            )
+            return []
+
+        runner.dispatch_signal.side_effect = capture_dispatch
+        wired = _make_wired(strategy_id='strat_a', sensor_id='exp:1')
+
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+
+        with caplog.at_level('INFO', logger='nexus.strategy.predict_loop'):
+            loop.tick_once(wired)
+
+        signal_records = [r for r in caplog.records if r.message == 'signal produced']
+        assert len(signal_records) == 1
+        record = signal_records[0]
+        assert record.strategy_id == 'strat_a'
+        assert record.sensor_id == 'exp:1'
+        assert record.predictor_fn_id
+        assert isinstance(record.values, dict)
+        assert 'signal produced' in log_records_at_dispatch_time, (
+            'log record was emitted AFTER dispatch_signal — ordering broken'
+        )
+
+    def test_values_for_log_passes_native_primitives_through(self) -> None:
+        '''Native JSON primitives (int / float / str / bool) pass
+        through unchanged. `Decimal` does NOT pass through — it is
+        coerced to `str` to preserve precision and survive the
+        orjson renderer; that case is covered in
+        `test_values_for_log_coerces_json_unsafe_types`.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'a': 1,
+            'b': 0.42,
+            'd': 'hello',
+            'e': True,
+        })
+        assert result == {
+            'a': 1,
+            'b': 0.42,
+            'd': 'hello',
+            'e': True,
+        }
+
+    def test_values_for_log_truncates_long_sequences(self) -> None:
+        '''A long sequence value is replaced with a length-summary
+        so structured logs stay bounded. Short sequences (<= the
+        threshold) pass through. `signal_producer._extract_values`
+        already collapses numpy arrays to scalars before they reach
+        the log so this guard is defensive — for any future
+        predictor that returns a long vector instead of a scalar.
+        '''
+
+        from nexus.strategy.predict_loop import (
+            _MAX_LOGGED_SEQUENCE_LEN,
+            _values_for_log,
+        )
+
+        short = list(range(_MAX_LOGGED_SEQUENCE_LEN))
+        long_ = list(range(_MAX_LOGGED_SEQUENCE_LEN + 1))
+        big_array = np.zeros(10000)
+
+        result = _values_for_log({
+            'short': short,
+            'long': long_,
+            'big': big_array,
+            'scalar': 0.42,
+        })
+        assert result['short'] == short
+        assert isinstance(result['long'], str)
+        assert f'len={len(long_)}' in result['long']
+        assert isinstance(result['big'], str)
+        assert 'size=10000' in result['big']
+        assert 'type=ndarray' in result['big']
+        assert result['scalar'] == 0.42
+
+    def test_values_for_log_coerces_json_unsafe_types(self) -> None:
+        '''The configured orjson renderer in observability.py has no
+        `default=` callback and no `OPT_SERIALIZE_NUMPY` flag, so any
+        non-native value reaching the structured log raises and the
+        record is dropped via `logging.handler.handleError`. The
+        helper must coerce known JSON-unsafe types regardless of
+        length:
+
+        * `Decimal` -> `str` (preserves precision; allowed by
+          `Signal.values` post_init)
+        * `numpy` scalars (`np.float64`, `np.int64`) -> Python
+          primitive via `.item()`
+        * short `numpy.ndarray` -> list of primitives
+        * short `polars.Series` -> list of primitives
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        short_ndarray = np.array([1, 2, 3])
+        short_series = pl.Series('x', [4, 5, 6])
+
+        result = _values_for_log({
+            'decimal': Decimal('3.14'),
+            'np_float': np.float64(0.42),
+            'np_int': np.int64(7),
+            'ndarray': short_ndarray,
+            'series': short_series,
+        })
+
+        assert result['decimal'] == '3.14'
+        assert isinstance(result['decimal'], str)
+        assert result['np_float'] == 0.42
+        assert isinstance(result['np_float'], float)
+        assert result['np_int'] == 7
+        assert isinstance(result['np_int'], int)
+        assert result['ndarray'] == [1, 2, 3]
+        assert all(isinstance(x, int) for x in result['ndarray'])
+        assert result['series'] == [4, 5, 6]
+        assert all(isinstance(x, int) for x in result['series'])
+
+    def test_values_for_log_summarizes_long_series_and_ndarrays(self) -> None:
+        '''Long sequence-typed values are summarized by SIZE (total
+        element count via .size / .len()), not first-axis length.
+        This catches multi-dim ndarrays that the round-1 len()-based
+        guard missed (round-1 TD-087).
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        big_2d = np.zeros((100, 100))
+        big_series = pl.Series('x', list(range(1000)))
+
+        result = _values_for_log({
+            'big_2d': big_2d,
+            'big_series': big_series,
+        })
+
+        assert isinstance(result['big_2d'], str)
+        assert 'size=10000' in result['big_2d']
+        assert 'type=ndarray' in result['big_2d']
+        assert isinstance(result['big_series'], str)
+        assert 'size=1000' in result['big_series']
+        assert 'type=Series' in result['big_series']
+
+    def test_values_for_log_recursively_coerces_list_contents(self) -> None:
+        '''Pin: a `list` short enough to pass the length threshold is
+        NOT passed through unchanged — its elements are recursively
+        coerced. A `list[np.float64]` or `list[Decimal]` would
+        otherwise reach the orjson renderer with JSON-unsafe leaves
+        and drop the log record.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'nested_floats': [np.float64(1.0), np.float64(2.0)],
+            'nested_decimals': [Decimal('0.1'), Decimal('0.2')],
+            'mixed': [1, np.int64(2), Decimal('3'), 'hello'],
+        })
+
+        assert result['nested_floats'] == [1.0, 2.0]
+        assert all(isinstance(x, float) for x in result['nested_floats'])
+        assert result['nested_decimals'] == ['0.1', '0.2']
+        assert all(isinstance(x, str) for x in result['nested_decimals'])
+        assert result['mixed'] == [1, 2, '3', 'hello']
+
+    def test_values_for_log_recursively_coerces_tuple_contents(self) -> None:
+        '''Tuples coerce to lists (orjson serializes both as arrays);
+        contents are recursively coerced like lists.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'pair': (np.float64(1.0), Decimal('2.0')),
+        })
+        assert result['pair'] == [1.0, '2.0']
+        assert isinstance(result['pair'], list)
+
+    def test_values_for_log_recursively_coerces_dict_values(self) -> None:
+        '''Pin: a `dict` short enough to pass the length threshold has
+        its VALUES recursively coerced and its KEYS stringified
+        (orjson rejects dicts with non-string keys).
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'config': {
+                'lr': np.float64(0.001),
+                'threshold': Decimal('0.5'),
+                'name': 'logreg',
+            },
+            'int_keys': {1: 'one', 2: 'two'},
+        })
+
+        assert result['config'] == {
+            'lr': 0.001,
+            'threshold': '0.5',
+            'name': 'logreg',
+        }
+        assert result['int_keys'] == {'1': 'one', '2': 'two'}
+
+    def test_values_for_log_summarizes_long_list_and_dict(self) -> None:
+        '''Long list/dict are summarized rather than walked, so
+        recursion cost is bounded.
+        '''
+
+        from nexus.strategy.predict_loop import (
+            _MAX_LOGGED_SEQUENCE_LEN,
+            _values_for_log,
+        )
+
+        long_list = list(range(_MAX_LOGGED_SEQUENCE_LEN + 1))
+        long_dict = {str(i): i for i in range(_MAX_LOGGED_SEQUENCE_LEN + 1)}
+
+        result = _values_for_log({
+            'long_list': long_list,
+            'long_dict': long_dict,
+        })
+
+        assert isinstance(result['long_list'], str)
+        assert 'type=list' in result['long_list']
+        assert f'len={len(long_list)}' in result['long_list']
+        assert isinstance(result['long_dict'], str)
+        assert 'type=dict' in result['long_dict']
+        assert f'len={len(long_dict)}' in result['long_dict']
+
+    def test_values_for_log_coerces_all_numpy_scalar_types_safely(self) -> None:
+        '''Pin: every `np.generic` subtype must coerce to a
+        JSON-safe form. `.item()` of `np.float64` / `np.int64` /
+        `np.bool_` returns native primitives (JSON-safe), but
+        `.item()` of `np.complex128` returns Python `complex` and
+        `.item()` of `np.bytes_` returns `bytes` — both rejected
+        by orjson. The recursion through `_coerce_value` sends
+        these through the final JSON-native scalar gate, which
+        falls through to `repr(val)`.
+        '''
+
+        import orjson
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        coerced = _values_for_log({
+            'np_float': np.float64(0.42),
+            'np_int': np.int64(7),
+            'np_bool': np.bool_(True),
+            'np_complex': np.complex128(1 + 2j),
+            'np_bytes': np.bytes_(b'hi'),
+            'np_str': np.str_('hello'),
+        })
+
+        assert coerced['np_float'] == 0.42
+        assert coerced['np_int'] == 7
+        assert coerced['np_bool'] is True
+        assert isinstance(coerced['np_complex'], str)
+        assert '1' in coerced['np_complex'] and '2j' in coerced['np_complex']
+        assert isinstance(coerced['np_bytes'], str)
+        assert coerced['np_str'] == 'hello'
+
+        # The actual contract: must survive orjson round-trip.
+        orjson.dumps(coerced)
+
+    def test_values_for_log_detects_dict_key_collisions(self) -> None:
+        '''Pin: stringifying dict keys can collide silently
+        (`str(1) == str("1") == "1"`). Without the collision check,
+        one entry would be dropped from the log. The collision
+        guard replaces the whole dict with a `dict-key-collision`
+        summary so the operator sees that something is wrong rather
+        than seeing a misleadingly-incomplete logged dict.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        result = _values_for_log({
+            'collides_int_str': {1: 'first', '1': 'second'},
+            'collides_bool_str': {True: 'first', 'True': 'second'},
+        })
+
+        assert isinstance(result['collides_int_str'], str)
+        assert 'dict-key-collision' in result['collides_int_str']
+        assert isinstance(result['collides_bool_str'], str)
+        assert 'dict-key-collision' in result['collides_bool_str']
+
+    def test_values_for_log_survives_raising_len(self) -> None:
+        '''Pin: a custom `__len__` that raises any `Exception` (not
+        just `TypeError`) must not propagate out of the helper. The
+        "logging never raises" contract requires every path to
+        absorb misbehaving containers.
+        '''
+
+        import orjson
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        class _RaisingLen:
+            def __len__(self) -> int:
+                msg = 'misbehaving __len__ raises ValueError'
+                raise ValueError(msg)
+
+            def __repr__(self) -> str:
+                return 'RaisingLen()'
+
+        class _RaisingLenList(list):  # type: ignore[type-arg]
+            def __len__(self) -> int:
+                msg = 'list subclass __len__ raises'
+                raise RuntimeError(msg)
+
+            def __repr__(self) -> str:
+                return 'RaisingLenList()'
+
+        class _RaisingLenDict(dict):  # type: ignore[type-arg]
+            def __len__(self) -> int:
+                msg = 'dict subclass __len__ raises'
+                raise RuntimeError(msg)
+
+            def __repr__(self) -> str:
+                return 'RaisingLenDict()'
+
+        result = _values_for_log({
+            'plain': _RaisingLen(),
+            'list_sub': _RaisingLenList(),
+            'dict_sub': _RaisingLenDict(),
+        })
+
+        assert result['plain'] == 'RaisingLen()'
+        assert result['list_sub'] == 'RaisingLenList()'
+        assert result['dict_sub'] == 'RaisingLenDict()'
+        orjson.dumps(result)
+
+    def test_values_for_log_repr_fallback_for_unknown_types(self) -> None:
+        '''Final defensive branch: any object that is neither a
+        JSON-native primitive (int / float / bool / None / list /
+        dict / str) nor one of the explicitly-handled types
+        (Decimal / numpy.generic / ndarray / pl.Series) falls
+        through to `repr(val)`. This makes the orjson safety
+        contract true — the helper guarantees the renderer cannot
+        crash on a returned value.
+        '''
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        class _UnknownNoLen:
+            def __repr__(self) -> str:
+                return 'UnknownNoLen()'
+
+        result = _values_for_log({
+            'unknown': _UnknownNoLen(),
+        })
+        assert result['unknown'] == 'UnknownNoLen()'
+        assert isinstance(result['unknown'], str)
+
+    def test_values_for_log_output_is_orjson_serializable(self) -> None:
+        '''End-to-end safety: every coerced value MUST round-trip
+        through orjson (the configured renderer) without raising.
+        This is the actual contract the helper's name claims.
+        '''
+
+        import orjson
+
+        from nexus.strategy.predict_loop import _values_for_log
+
+        class _UnknownNoLen:
+            def __repr__(self) -> str:
+                return 'UnknownNoLen()'
+
+        coerced = _values_for_log({
+            'decimal': Decimal('3.14'),
+            'np_float': np.float64(0.42),
+            'np_int': np.int64(7),
+            'ndarray_short': np.array([1.0, 2.0, 3.0]),
+            'ndarray_long': np.zeros(100),
+            'series_short': pl.Series('x', [1, 2, 3]),
+            'series_long': pl.Series('x', list(range(100))),
+            'plain_int': 1,
+            'plain_float': 0.42,
+            'plain_str': 'hello',
+            'plain_bool': True,
+            'unknown': _UnknownNoLen(),
+            'nested_list': [np.float64(1.0), Decimal('2.0')],
+            'nested_dict': {1: np.int64(2), 'k': Decimal('3.0')},
+        })
+
+        encoded = orjson.dumps(coerced)
+        decoded = orjson.loads(encoded)
+        assert decoded['decimal'] == '3.14'
+        assert decoded['np_float'] == 0.42
+        assert decoded['np_int'] == 7
+        assert decoded['ndarray_short'] == [1.0, 2.0, 3.0]
+        assert 'size=100' in decoded['ndarray_long']
+        assert decoded['series_short'] == [1, 2, 3]
+        assert 'size=100' in decoded['series_long']
+        assert decoded['unknown'] == 'UnknownNoLen()'
+        assert decoded['nested_list'] == [1.0, '2.0']
+        assert decoded['nested_dict'] == {'1': 2, 'k': '3.0'}
