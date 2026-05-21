@@ -322,6 +322,45 @@ class TestInjectReferencePrice:
 
         assert 'close' not in values
 
+    def test_nan_close_is_rejected(self) -> None:
+        '''NaN `close` is rejected at the boundary, not silently injected.
+
+        `float(polars_nan)` returns `math.nan` without raising, so the
+        cast guard alone would let a non-finite price land in
+        `Signal.values['close']`. The downstream strategy's
+        `_reference_price` then computes `notional / nan = nan` and
+        silently no-ops the order with no log trace. Per the Nexus
+        validation_finiteness pattern, the shim rejects at the
+        boundary so every consumer doesn't have to re-verify.
+        '''
+
+        values: dict[str, Any] = {'_preds': 1}
+        market_data = pl.DataFrame({'close': [100.0, float('nan')]})
+
+        _inject_reference_price(values, market_data)
+
+        assert 'close' not in values
+
+    def test_infinity_close_is_rejected(self) -> None:
+        '''+Infinity `close` is rejected at the boundary.'''
+
+        values: dict[str, Any] = {'_preds': 1}
+        market_data = pl.DataFrame({'close': [100.0, float('inf')]})
+
+        _inject_reference_price(values, market_data)
+
+        assert 'close' not in values
+
+    def test_negative_infinity_close_is_rejected(self) -> None:
+        '''-Infinity `close` is rejected at the boundary.'''
+
+        values: dict[str, Any] = {'_preds': 1}
+        market_data = pl.DataFrame({'close': [100.0, float('-inf')]})
+
+        _inject_reference_price(values, market_data)
+
+        assert 'close' not in values
+
 
 @_needs_limen
 class TestLookback:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 from typing import Any
 
@@ -118,9 +119,21 @@ def _inject_reference_price(values: dict[str, Any], market_data: pl.DataFrame) -
     last_close = market_data['close'][-1]
 
     try:
-        values['close'] = float(last_close)
+        candidate = float(last_close)
     except (TypeError, ValueError):
         return
+
+    # Reject NaN / +/-Infinity at the boundary. `float(polars_nan)`
+    # returns `math.nan` without raising, so without this check a
+    # non-finite price would land in `Signal.values['close']` and
+    # propagate to strategy ENTER sizing as `notional / nan = nan`,
+    # silently no-op'ing the order with no log trace. Per Nexus's
+    # validation_finiteness pattern, reject at the boundary rather
+    # than rely on every downstream consumer's `.is_finite()` check.
+    if not math.isfinite(candidate):
+        return
+
+    values['close'] = candidate
 
 
 def _extract_values(result: dict[str, Any]) -> dict[str, Any]:
