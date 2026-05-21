@@ -77,12 +77,50 @@ def produce_signal(
     result = wired.sensor.predict({test_key: tail_frame})
 
     values = _extract_values(result)
+    _inject_reference_price(values, market_data)
 
     return Signal(
         predictor_fn_id=wired.sensor_id,
         values=values,
         timestamp=datetime.now(tz=timezone.utc),
     )
+
+
+def _inject_reference_price(values: dict[str, Any], market_data: pl.DataFrame) -> None:
+    '''Inject the latest raw `close` price into the Signal values dict.
+
+    A strategy needs a price-anchor at signal time to size an ENTER
+    notional (see `_reference_price(signal)` in the
+    `logreg_binary_evsfd` strategy example). Predictors are free to
+    forward `close` themselves — `StubStrategySFD.predict()` does this
+    explicitly — but ML pipelines that run `close` through feature
+    engineering (e.g. `fractional_diff` in `consensus_logreg_features`)
+    cannot, because by the time `predict()` runs, the frame's `close`
+    column has been overwritten with a transformed value.
+
+    This shim falls back to the pre-feature-engineering `market_data`
+    frame and forwards its last raw `close`. It never overwrites a
+    `close` the predictor already supplied, so the stub path (which
+    forwards close itself) keeps that value verbatim. Without this
+    shim, strategies that key on `signal.get('close')` to size orders
+    silently no-op every actionable prediction — a true HOLD path is
+    indistinguishable from a broken predict path, which is the
+    failure mode `predict_loop._log_signal` was added to surface
+    (see `predict_loop.py:169-186`).
+    '''
+
+    if 'close' in values:
+        return
+
+    if market_data.is_empty() or 'close' not in market_data.columns:
+        return
+
+    last_close = market_data['close'][-1]
+
+    try:
+        values['close'] = float(last_close)
+    except (TypeError, ValueError):
+        return
 
 
 def _extract_values(result: dict[str, Any]) -> dict[str, Any]:

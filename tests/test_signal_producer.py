@@ -11,7 +11,11 @@ from typing import Any
 import pytest
 
 from nexus.startup.sequencer import WiredSensor
-from nexus.strategy.signal_producer import _extract_values, produce_signal
+from nexus.strategy.signal_producer import (
+    _extract_values,
+    _inject_reference_price,
+    produce_signal,
+)
 
 limen = pytest.importorskip('limen')
 _trainer_module = pytest.importorskip('limen.experiment.trainer.trainer')
@@ -252,6 +256,71 @@ class TestExtractValues:
 
         assert '_preds' not in values
         assert values['_probs'] == pytest.approx(0.5)
+
+
+class TestInjectReferencePrice:
+
+    '''The shim that forwards raw `close` from market_data when the
+    predictor's result dict does not carry it. Covers the ML-pipeline
+    case where `prepare_data` has overwritten the frame's `close`
+    column with a feature-engineered value (e.g. `fractional_diff`)
+    so the predictor cannot recover the raw price itself.
+    '''
+
+    def test_injects_close_when_absent(self) -> None:
+        '''Predictor result missing `close` gets the latest raw close from market_data.'''
+
+        values: dict[str, Any] = {'_preds': 1, '_probs': 0.7}
+        market_data = pl.DataFrame({
+            'open': [100.0, 101.0, 102.0],
+            'close': [100.5, 101.5, 102.5],
+        })
+
+        _inject_reference_price(values, market_data)
+
+        assert values['close'] == pytest.approx(102.5)
+        assert values['_preds'] == 1
+        assert values['_probs'] == pytest.approx(0.7)
+
+    def test_predictor_supplied_close_is_preserved(self) -> None:
+        '''When predictor forwards `close` itself (stub pattern), the value is not overwritten.'''
+
+        values: dict[str, Any] = {'_preds': 1, 'close': 77550.0}
+        market_data = pl.DataFrame({'close': [99.0, 100.0]})
+
+        _inject_reference_price(values, market_data)
+
+        assert values['close'] == pytest.approx(77550.0)
+
+    def test_empty_market_data_is_silent_noop(self) -> None:
+        '''Empty market_data leaves the values dict unchanged and does not raise.'''
+
+        values: dict[str, Any] = {'_preds': 1}
+        market_data = pl.DataFrame()
+
+        _inject_reference_price(values, market_data)
+
+        assert 'close' not in values
+
+    def test_missing_close_column_is_silent_noop(self) -> None:
+        '''market_data without a `close` column leaves values unchanged and does not raise.'''
+
+        values: dict[str, Any] = {'_preds': 1}
+        market_data = pl.DataFrame({'open': [100.0, 101.0]})
+
+        _inject_reference_price(values, market_data)
+
+        assert 'close' not in values
+
+    def test_non_numeric_close_is_silent_noop(self) -> None:
+        '''A non-castable `close` value is skipped without raising.'''
+
+        values: dict[str, Any] = {'_preds': 1}
+        market_data = pl.DataFrame({'close': ['not-a-number']})
+
+        _inject_reference_price(values, market_data)
+
+        assert 'close' not in values
 
 
 @_needs_limen
