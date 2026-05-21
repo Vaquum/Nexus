@@ -118,18 +118,31 @@ def _inject_reference_price(values: dict[str, Any], market_data: pl.DataFrame) -
 
     last_close = market_data['close'][-1]
 
+    # Reject bools before the float cast: `float(True) == 1.0` and
+    # `float(False) == 0.0` are both finite, so a boolean `close`
+    # column would slip past the isfinite() guard below and inject a
+    # bogus 0/1 reference price. Matches the canonical Nexus
+    # bool-exclusion pattern (`isinstance(val, bool) or not
+    # isinstance(val, (int, float))` — see `health_evaluator.py:42`,
+    # `:52`, `:105`, `:111`). Covers both Python `bool` and `np.bool_`
+    # since polars scalar access can return either depending on dtype.
+    if isinstance(last_close, (bool, np.bool_)):
+        return
+
     try:
         candidate = float(last_close)
     except (TypeError, ValueError):
         return
 
     # Reject NaN / +/-Infinity at the boundary. `float(polars_nan)`
-    # returns `math.nan` without raising, so without this check a
-    # non-finite price would land in `Signal.values['close']` and
-    # propagate to strategy ENTER sizing as `notional / nan = nan`,
-    # silently no-op'ing the order with no log trace. Per Nexus's
-    # validation_finiteness pattern, reject at the boundary rather
-    # than rely on every downstream consumer's `.is_finite()` check.
+    # returns `math.nan` without raising — without this guard the
+    # non-finite value would reach `Signal.__post_init__` (see
+    # `signal.py:45-46`) which raises `ValueError: values['close']
+    # must be finite`, crashing the predict-loop tick. Catching here
+    # converts the crash into a silent skip consistent with the
+    # shim's fail-silent contract on every other guard path. Mirrors
+    # the Nexus validation_finiteness pattern of rejecting at the
+    # boundary rather than letting a downstream invariant fire.
     if not math.isfinite(candidate):
         return
 
