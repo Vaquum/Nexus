@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaquum-nexus"
-version = "0.49.0"
+version = "0.50.0"
 description = "Layer for intelligence and decision-making between signal generation and trade execution."
 readme = "README.md"
 authors = [
@@ -12,7 +12,7 @@ authors = [
 ]
 license = { text = "MIT" }
 requires-python = ">=3.10"
-dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0", "pyyaml>=6.0", "vaquum_limen @ git+https://github.com/Vaquum/Limen@v3.0.6"]
+dependencies = ["structlog>=24.0", "orjson>=3.10", "msgpack>=1.0", "pyyaml>=6.0", "vaquum_limen @ git+https://github.com/Vaquum/Limen@v3.9.0"]
 
 [project.optional-dependencies]
 dev = [
