@@ -918,16 +918,16 @@ class StartupSequencer:
     ) -> bool:
         '''Wire a cache-loaded Sensor; return False when it is unusable.
 
-        A cache entry that unpickles but is not a usable Sensor — wrong
-        type, missing `permutation_id` / `round_params`, a
-        `permutation_id` that does not match the task's (a stale or
-        misplaced file under the right key), or no callable `predict`
-        (required later by the predict loop) — would otherwise wire the
-        wrong model, fail at runtime, or abort startup at
-        `_append_wired_sensor`. Rejecting it here and returning False
-        lets the caller treat the entry as a miss and reconstruct,
-        keeping the corrupt-entry → reconstruct guarantee whole rather
-        than only covering unpickling failures.
+        A cache entry that unpickles but does not satisfy the full
+        Sensor contract Nexus reads — a `permutation_id` matching the
+        task's (a stale or misplaced file under the right key fails
+        this), a callable `predict` (invoked by the predict loop), and
+        a dict `round_params` (passed to `manifest.prepare_data`) —
+        would otherwise wire the wrong model, fail later at runtime, or
+        abort startup at `_append_wired_sensor`. Rejecting it here and
+        returning False lets the caller treat the entry as a miss and
+        reconstruct, keeping the corrupt-entry → reconstruct guarantee
+        whole rather than only covering unpickling failures.
         '''
 
         try:
@@ -943,6 +943,14 @@ class StartupSequencer:
             if not callable(getattr(sensor, 'predict', None)):
                 _log.warning(
                     'cached sensor has no callable predict, reconstructing',
+                    experiment_dir=str(task.resolved_dir),
+                    permutation_id=task.permutation_id,
+                )
+                return False
+
+            if not isinstance(getattr(sensor, 'round_params', None), dict):
+                _log.warning(
+                    'cached sensor round_params is not a dict, reconstructing',
                     experiment_dir=str(task.resolved_dir),
                     permutation_id=task.permutation_id,
                 )

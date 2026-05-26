@@ -76,6 +76,17 @@ class _NoPredictSensor:
         self.round_params: dict[str, object] = {}
 
 
+class _BadRoundParamsSensor:
+    '''Sensor-shaped object whose `round_params` is not a dict.'''
+
+    def __init__(self, permutation_id: int) -> None:
+        self.permutation_id = permutation_id
+        self.round_params = 'not-a-dict'
+
+    def predict(self, _data: dict) -> dict:
+        return {}
+
+
 def _make_trainer_factory(
     calls: list[dict[str, object]],
     permutation_id: int = 1,
@@ -329,6 +340,34 @@ def test_cache_entry_without_predict_treated_as_miss(
     perm_dir = cache_dir / bundle_id_for(bundle)
     perm_dir.mkdir(parents=True)
     (perm_dir / '1.pkl').write_bytes(pickle.dumps(_NoPredictSensor(1)))
+
+    sequencer = _build_single_sensor_sequencer(bundle, permutation_id=1)
+
+    calls: list[dict[str, object]] = []
+    with patch(
+        'nexus.startup.sequencer.Trainer',
+        side_effect=_make_trainer_factory(calls, permutation_id=1),
+    ):
+        sequencer._wire_sensors()
+
+    assert len(calls) >= 1
+    assert len(sequencer.wired_sensors) == 1
+    assert sequencer.wired_sensors[0].sensor.permutation_id == 1
+
+
+def test_cache_entry_with_non_dict_round_params_treated_as_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    '''A cached object whose round_params is not a dict is rejected and reconstructed.'''
+
+    cache_dir = tmp_path / 'cache'
+    bundle = _make_bundle(tmp_path, 'bundle')
+    monkeypatch.setenv('NEXUS_SENSOR_CACHE_DIR', str(cache_dir))
+
+    perm_dir = cache_dir / bundle_id_for(bundle)
+    perm_dir.mkdir(parents=True)
+    (perm_dir / '1.pkl').write_bytes(pickle.dumps(_BadRoundParamsSensor(1)))
 
     sequencer = _build_single_sensor_sequencer(bundle, permutation_id=1)
 
