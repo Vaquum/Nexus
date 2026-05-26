@@ -64,6 +64,17 @@ class _StubSensor:
         self.permutation_id = permutation_id
         self.round_params: dict[str, object] = {}
 
+    def predict(self, _data: dict) -> dict:
+        return {}
+
+
+class _NoPredictSensor:
+    '''Sensor-shaped object lacking the callable `predict` the predict loop needs.'''
+
+    def __init__(self, permutation_id: int) -> None:
+        self.permutation_id = permutation_id
+        self.round_params: dict[str, object] = {}
+
 
 def _make_trainer_factory(
     calls: list[dict[str, object]],
@@ -303,3 +314,31 @@ def test_bundle_id_error_disables_cache_not_startup(
     assert len(calls) >= 1
     assert len(sequencer.wired_sensors) == 1
     assert not cache_dir.exists()
+
+
+def test_cache_entry_without_predict_treated_as_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    '''A cached object with the right permutation_id but no callable predict is reconstructed.'''
+
+    cache_dir = tmp_path / 'cache'
+    bundle = _make_bundle(tmp_path, 'bundle')
+    monkeypatch.setenv('NEXUS_SENSOR_CACHE_DIR', str(cache_dir))
+
+    perm_dir = cache_dir / bundle_id_for(bundle)
+    perm_dir.mkdir(parents=True)
+    (perm_dir / '1.pkl').write_bytes(pickle.dumps(_NoPredictSensor(1)))
+
+    sequencer = _build_single_sensor_sequencer(bundle, permutation_id=1)
+
+    calls: list[dict[str, object]] = []
+    with patch(
+        'nexus.startup.sequencer.Trainer',
+        side_effect=_make_trainer_factory(calls, permutation_id=1),
+    ):
+        sequencer._wire_sensors()
+
+    assert len(calls) >= 1
+    assert len(sequencer.wired_sensors) == 1
+    assert sequencer.wired_sensors[0].sensor.permutation_id == 1

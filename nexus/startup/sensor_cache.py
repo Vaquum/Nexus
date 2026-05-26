@@ -52,7 +52,6 @@ CACHE_DIR_ENV = 'NEXUS_SENSOR_CACHE_DIR'
 MAX_WORKERS_ENV = 'NEXUS_WIRE_MAX_WORKERS'
 
 _BUNDLE_ID_LENGTH = 16
-_WORKER_CAP = 16
 _HASH_FILES = ('metadata.json', 'manifest.yml')
 
 _worker_data: dict[str, Any] = {}
@@ -61,13 +60,15 @@ _worker_data: dict[str, Any] = {}
 def default_max_workers() -> int:
     '''Return the configured reconstruction worker count.
 
-    Reads `NEXUS_WIRE_MAX_WORKERS` when set and parseable as a positive
-    integer; otherwise defaults to `min(os.cpu_count() or 1, 16)`. A
-    value of `1` selects the inline (single-process) reconstruction
-    path in the sequencer.
+    Defaults to `1` — serial, inline reconstruction, which is the
+    pre-cache behavior, so wiring is unchanged unless parallelism is
+    explicitly opted into. Set `NEXUS_WIRE_MAX_WORKERS` to an integer
+    `N > 1` to reconstruct cache misses across `N` worker processes;
+    `N = 1` keeps the inline path.
 
     Returns:
-        The number of worker processes to use for reconstruction.
+        The worker count for reconstruction (`1` means inline, with no
+        `ProcessPoolExecutor`).
     '''
 
     raw = os.environ.get(MAX_WORKERS_ENV)
@@ -81,7 +82,7 @@ def default_max_workers() -> int:
                 return parsed
             _log.warning('non-positive NEXUS_WIRE_MAX_WORKERS, using default', value=raw)
 
-    return min(os.cpu_count() or 1, _WORKER_CAP)
+    return 1
 
 
 def bundle_id_for(experiment_dir: Path) -> str:
