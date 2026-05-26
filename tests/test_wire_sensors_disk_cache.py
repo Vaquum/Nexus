@@ -276,3 +276,30 @@ def test_cache_permutation_mismatch_treated_as_miss(
     assert len(calls) >= 1
     assert len(sequencer.wired_sensors) == 1
     assert sequencer.wired_sensors[0].sensor.permutation_id == 1
+
+
+def test_bundle_id_error_disables_cache_not_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    '''An unreadable bundle file (bundle_id_for raises) disables the cache for that dir without aborting wiring.'''
+
+    cache_dir = tmp_path / 'cache'
+    bundle = _make_bundle(tmp_path, 'bundle')
+    monkeypatch.setenv('NEXUS_SENSOR_CACHE_DIR', str(cache_dir))
+
+    sequencer = _build_single_sensor_sequencer(bundle)
+
+    calls: list[dict[str, object]] = []
+    with patch(
+        'nexus.startup.sequencer.bundle_id_for',
+        side_effect=OSError('unreadable bundle file'),
+    ), patch(
+        'nexus.startup.sequencer.Trainer',
+        side_effect=_make_trainer_factory(calls),
+    ):
+        sequencer._wire_sensors()
+
+    assert len(calls) >= 1
+    assert len(sequencer.wired_sensors) == 1
+    assert not cache_dir.exists()

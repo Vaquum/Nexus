@@ -667,7 +667,13 @@ class StartupSequencer:
         bundle_ids: dict[Path, str] = {}
         if cache_dir is not None:
             for resolved_dir in dict.fromkeys(task.resolved_dir for task in tasks):
-                bundle_ids[resolved_dir] = bundle_id_for(resolved_dir)
+                try:
+                    bundle_ids[resolved_dir] = bundle_id_for(resolved_dir)
+                except Exception:  # noqa: BLE001 - cache is best-effort; skip caching this dir
+                    _log.warning(
+                        'cache bundle id unavailable, caching disabled for dir',
+                        experiment_dir=str(resolved_dir),
+                    )
 
         misses: list[_SensorWiringTask] = []
         attempted = 0

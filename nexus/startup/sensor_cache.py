@@ -15,6 +15,13 @@ module supplies two facilities used by the sequencer:
 The data load (`Trainer._data`, ~160MB) is passed to workers via the
 pool initializer rather than per-task arguments; only the small,
 picklable `Sensor` crosses the process boundary on the way back.
+
+NOTE: the cache directory (`NEXUS_SENSOR_CACHE_DIR`) must be operator
+owned and trusted at the same level as the experiment directory.
+Cached `Sensor`s are unpickled on load, and `Trainer` already imports
+and executes the experiment dir's SFD as arbitrary Python, so a writer
+to either path already has code execution — the cache adds no trust
+boundary beyond the one the experiment dir already requires.
 '''
 
 from __future__ import annotations
