@@ -205,3 +205,46 @@ def test_manifest_yml_participates_in_bundle_id(tmp_path: Path) -> None:
     with_manifest = bundle_id_for(bundle)
 
     assert without_manifest != with_manifest
+
+
+def test_reconstruct_sensor_returns_none_on_empty_train() -> None:
+    '''The pooled worker returns None (not IndexError) when train() yields no Sensor.'''
+
+    from nexus.startup import sensor_cache
+
+    sensor_cache._init_worker({'/bundle': MagicMock()})
+    instance = MagicMock()
+    instance.train.return_value = []
+
+    with patch('nexus.startup.sensor_cache.Trainer', return_value=instance):
+        result = sensor_cache.reconstruct_sensor('/bundle', 1)
+
+    assert result is None
+
+
+def test_non_sensor_cache_entry_treated_as_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    '''A cache file that unpickles to a non-Sensor object is reconstructed, not aborted on.'''
+
+    cache_dir = tmp_path / 'cache'
+    bundle = _make_bundle(tmp_path, 'bundle')
+    monkeypatch.setenv('NEXUS_SENSOR_CACHE_DIR', str(cache_dir))
+
+    perm_dir = cache_dir / bundle_id_for(bundle)
+    perm_dir.mkdir(parents=True)
+    (perm_dir / '1.pkl').write_bytes(pickle.dumps({'not': 'a sensor'}))
+
+    sequencer = _build_single_sensor_sequencer(bundle)
+
+    calls: list[dict[str, object]] = []
+    with patch(
+        'nexus.startup.sequencer.Trainer',
+        side_effect=_make_trainer_factory(calls),
+    ):
+        sequencer._wire_sensors()
+
+    assert len(calls) >= 1
+    assert len(sequencer.wired_sensors) == 1
+    assert sequencer.wired_sensors[0].sensor.permutation_id == 1

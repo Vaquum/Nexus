@@ -157,7 +157,7 @@ def _init_worker(data_by_dir: dict[str, Any]) -> None:
     _worker_data.update(data_by_dir)
 
 
-def reconstruct_sensor(experiment_dir_str: str, permutation_id: int) -> Any:
+def reconstruct_sensor(experiment_dir_str: str, permutation_id: int) -> Any | None:
     '''Reconstruct one Limen `Sensor` inside a worker process.
 
     Builds `Trainer(experiment_dir, data=<worker-global _data>)` and
@@ -170,10 +170,14 @@ def reconstruct_sensor(experiment_dir_str: str, permutation_id: int) -> Any:
         permutation_id: Permutation (round) id to reconstruct.
 
     Returns:
-        The reconstructed, picklable Limen `Sensor`.
+        The reconstructed, picklable Limen `Sensor`, or `None` when
+        `train()` yields no Sensor — mirroring the inline path so an
+        empty result is accounted identically across inline and pooled
+        reconstruction (rather than raising `IndexError` in a worker).
     '''
 
     data = _worker_data[experiment_dir_str]
     trainer = Trainer(Path(experiment_dir_str), data=data)
+    sensors = trainer.train([permutation_id])
 
-    return trainer.train([permutation_id])[0]
+    return sensors[0] if sensors else None

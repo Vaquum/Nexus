@@ -683,8 +683,9 @@ class StartupSequencer:
             cached_sensor = self._load_cached_sensor(
                 cache_dir, bundle_ids.get(task.resolved_dir), task,
             )
-            if cached_sensor is not None:
-                self._append_wired_sensor(cached_sensor, task, loaders)
+            if cached_sensor is not None and self._wire_cached_sensor(
+                cached_sensor, task, loaders,
+            ):
                 continue
 
             misses.append(task)
@@ -902,6 +903,34 @@ class StartupSequencer:
             strategy_id=task.strategy_id,
             interval_seconds=task.interval_seconds,
         )
+
+    def _wire_cached_sensor(
+        self,
+        sensor: Any,
+        task: _SensorWiringTask,
+        loaders: dict[Path, Trainer],
+    ) -> bool:
+        '''Wire a cache-loaded Sensor; return False when it is unusable.
+
+        A cache entry that unpickles but is not a usable Sensor (wrong
+        type, or missing `permutation_id` / `round_params`) would
+        otherwise abort startup at `_append_wired_sensor`. Catching that
+        here and returning False lets the caller treat the entry as a
+        miss and reconstruct, keeping the corrupt-entry → reconstruct
+        guarantee whole rather than only covering unpickling failures.
+        '''
+
+        try:
+            self._append_wired_sensor(sensor, task, loaders)
+        except Exception:  # noqa: BLE001 - unusable cache entry => treat as miss
+            _log.warning(
+                'cached sensor unusable, reconstructing',
+                experiment_dir=str(task.resolved_dir),
+                permutation_id=task.permutation_id,
+            )
+            return False
+
+        return True
 
     def _sensor_cache_dir(self) -> Path | None:
         '''Return the configured sensor cache directory, or None when off.'''
