@@ -57,6 +57,7 @@ def _build_sequencer_with_two_sensor_specs(
     sequencer._wired_sensors = []
     sequencer._manifest = MagicMock()
     sequencer._manifest.strategies = [strat]
+    sequencer._sensor_wire_max_workers = 1
 
     return sequencer
 

@@ -80,12 +80,14 @@ def _make_sequencer(
     strategies_base_path: Path | None = None,
     strategy_state_path: Path | None = None,
 ) -> StartupSequencer:
-    return StartupSequencer(
+    sequencer = StartupSequencer(
         state_store=state_store or _make_mock_state_store(),
         manifest_path=manifest_path or _PLACEHOLDER_MANIFEST,
         strategies_base_path=strategies_base_path or _PLACEHOLDER_STRATEGIES,
         strategy_state_path=strategy_state_path,
     )
+    sequencer._sensor_wire_max_workers = 1
+    return sequencer
 
 
 class TestStartupSequencerConstruction:
