@@ -664,6 +664,10 @@ class StartupSequencer:
 
         loaders, failed_dirs = self._load_bundle_trainers(tasks)
         cache_dir = self._sensor_cache_dir()
+        bundle_ids: dict[Path, str] = {}
+        if cache_dir is not None:
+            for resolved_dir in dict.fromkeys(task.resolved_dir for task in tasks):
+                bundle_ids[resolved_dir] = bundle_id_for(resolved_dir)
 
         misses: list[_SensorWiringTask] = []
         attempted = 0
@@ -676,7 +680,9 @@ class StartupSequencer:
                 raised += 1
                 continue
 
-            cached_sensor = self._load_cached_sensor(cache_dir, task)
+            cached_sensor = self._load_cached_sensor(
+                cache_dir, bundle_ids.get(task.resolved_dir), task,
+            )
             if cached_sensor is not None:
                 self._append_wired_sensor(cached_sensor, task, loaders)
                 continue
@@ -695,7 +701,9 @@ class StartupSequencer:
                     raised += 1
                 continue
 
-            self._store_cached_sensor(cache_dir, task, sensor)
+            self._store_cached_sensor(
+                cache_dir, bundle_ids.get(task.resolved_dir), task, sensor,
+            )
             self._append_wired_sensor(sensor, task, loaders)
 
         if not self._wired_sensors:
@@ -907,14 +915,15 @@ class StartupSequencer:
     def _load_cached_sensor(
         self,
         cache_dir: Path | None,
+        bundle_id: str | None,
         task: _SensorWiringTask,
     ) -> Any | None:
         '''Load a cached Sensor for a task, or None on miss/corruption.'''
 
-        if cache_dir is None:
+        if cache_dir is None or bundle_id is None:
             return None
 
-        path = cache_path_for(cache_dir, bundle_id_for(task.resolved_dir), task.permutation_id)
+        path = cache_path_for(cache_dir, bundle_id, task.permutation_id)
         if not path.is_file():
             return None
 
@@ -933,15 +942,16 @@ class StartupSequencer:
     def _store_cached_sensor(
         self,
         cache_dir: Path | None,
+        bundle_id: str | None,
         task: _SensorWiringTask,
         sensor: Any,
     ) -> None:
         '''Persist a reconstructed Sensor to the cache when enabled.'''
 
-        if cache_dir is None:
+        if cache_dir is None or bundle_id is None:
             return
 
-        path = cache_path_for(cache_dir, bundle_id_for(task.resolved_dir), task.permutation_id)
+        path = cache_path_for(cache_dir, bundle_id, task.permutation_id)
         try:
             write_sensor_atomic(path, sensor)
         except Exception:  # noqa: BLE001 - cache write must not abort wiring

@@ -122,6 +122,8 @@ def write_sensor_atomic(path: Path, sensor: Any) -> None:
 
     Writes to a temporary file in the same directory and `os.replace`s
     it into place so a concurrent reader never observes a partial file.
+    The temporary file is removed if the write fails (e.g. disk full) so
+    failed writes do not litter the cache directory.
 
     Args:
         path: Destination pickle path.
@@ -130,10 +132,13 @@ def write_sensor_atomic(path: Path, sensor: Any) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f'{path.name}.{os.getpid()}.tmp')
-    with tmp_path.open('wb') as handle:
-        pickle.dump(sensor, handle)
+    try:
+        with tmp_path.open('wb') as handle:
+            pickle.dump(sensor, handle)
 
-    tmp_path.replace(path)
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _init_worker(data_by_dir: dict[str, Any]) -> None:
