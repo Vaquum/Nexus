@@ -31,6 +31,7 @@ from nexus.startup.sensor_cache import (
     bundle_id_for,
     cache_path_for,
     default_max_workers,
+    init_worker,
     reconstruct_sensor,
     write_sensor_atomic,
 )
@@ -848,8 +849,6 @@ class StartupSequencer:
     ) -> dict[tuple[Path, int], Any]:
         '''Reconstruct misses across a `ProcessPoolExecutor`.'''
 
-        from nexus.startup import sensor_cache
-
         miss_dirs = {task.resolved_dir for task in misses}
         # NOTE: loader._data is a private attribute on Limen Trainer.
         # No public accessor exists as of vaquum_limen 4.0.1.
@@ -863,7 +862,7 @@ class StartupSequencer:
 
         with ProcessPoolExecutor(
             max_workers=max_workers,
-            initializer=sensor_cache._init_worker,
+            initializer=init_worker,
             initargs=(data_by_dir,),
         ) as pool:
             futures = {

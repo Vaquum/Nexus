@@ -44,6 +44,7 @@ __all__ = [
     'bundle_id_for',
     'cache_path_for',
     'default_max_workers',
+    'init_worker',
     'reconstruct_sensor',
     'write_sensor_atomic',
 ]
@@ -149,7 +150,7 @@ def write_sensor_atomic(path: Path, sensor: Any) -> None:
         tmp_path.unlink(missing_ok=True)
 
 
-def _init_worker(data_by_dir: dict[str, Any]) -> None:
+def init_worker(data_by_dir: dict[str, Any]) -> None:
     '''Populate the worker-global bundle-data map (pool initializer).
 
     Runs once per worker process. Stores each experiment directory's

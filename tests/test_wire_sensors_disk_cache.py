@@ -234,7 +234,7 @@ def test_reconstruct_sensor_returns_none_on_empty_train() -> None:
 
     from nexus.startup import sensor_cache
 
-    sensor_cache._init_worker({'/bundle': MagicMock()})
+    sensor_cache.init_worker({'/bundle': MagicMock()})
     instance = MagicMock()
     instance.train.return_value = []
 
