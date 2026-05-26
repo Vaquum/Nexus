@@ -149,6 +149,7 @@ class TestWireSensors:
             strategies_base_path=tmp_path,
         )
 
+        sequencer._sensor_wire_max_workers = 1
         sequencer._load_manifest()
         sequencer._recover_state()
         sequencer._instantiate_strategies()
@@ -174,6 +175,7 @@ class TestWireSensors:
             strategies_base_path=tmp_path,
         )
 
+        sequencer._sensor_wire_max_workers = 1
         sequencer._load_manifest()
         sequencer._recover_state()
         sequencer._instantiate_strategies()
@@ -198,6 +200,7 @@ class TestWireSensors:
             strategies_base_path=tmp_path,
         )
 
+        sequencer._sensor_wire_max_workers = 1
         sequencer._load_manifest()
         sequencer._recover_state()
         sequencer._instantiate_strategies()
@@ -217,6 +220,7 @@ class TestWireSensors:
             strategies_base_path=tmp_path,
         )
 
+        sequencer._sensor_wire_max_workers = 1
         sequencer._load_manifest()
         sequencer._recover_state()
         sequencer._instantiate_strategies()
@@ -236,6 +240,7 @@ class TestWireSensors:
             strategies_base_path=tmp_path,
         )
 
+        sequencer._sensor_wire_max_workers = 1
         sequencer._load_manifest()
         sequencer._recover_state()
         sequencer._instantiate_strategies()

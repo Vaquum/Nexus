@@ -1,4 +1,4 @@
-'''Tests for PT-FIX-9: per-experiment_dir Trainer data cache.
+'''Tests for PT-FIX-9: bundle data fetched once per experiment_dir.
 
 Pre-fix: `_wire_sensors` constructed a fresh `Trainer(experiment_dir)`
 for every `SensorSpec`. Each construction calls
@@ -7,14 +7,19 @@ Face dataset. Two `SensorSpec`s sharing the same `experiment_dir`
 fetched data twice (potentially yielding different snapshots) and
 multiplied the live-fetch cost by `N_sensors`.
 
-Post-fix: `_wire_sensors` caches the first `Trainer` per resolved
-`experiment_dir` and constructs subsequent `Trainer`s with
-`data=cached._data` so the same frozen slice flows through every
-permutation reconstructed from that experiment directory.
+Post-fix (parallel-reconstruction refactor): `_wire_sensors`
+constructs exactly one loader `Trainer(dir)` per unique resolved
+`experiment_dir` (WITHOUT a `data=` kwarg) to obtain that bundle's
+frozen `_data`, then reconstructs every permutation from that one
+slice by passing `data=loader._data` to each per-sensor `Trainer`.
+The intent is unchanged: the bundle data is fetched exactly once per
+unique `experiment_dir`, and every sensor from that dir reconstructs
+from the same frozen slice.
 
-These tests exercise the cache by patching
-`nexus.startup.sequencer.Trainer` (the import site `_wire_sensors`
-binds against) so they do not depend on the live Hugging Face dataset.
+These tests force the inline reconstruction path (worker count of 1)
+with the disk cache OFF so the patched `nexus.startup.sequencer.Trainer`
+mock applies in the current process; a `ProcessPoolExecutor` would not
+see the patch.
 '''
 
 from __future__ import annotations
@@ -68,22 +73,22 @@ def _build_sequencer_with_two_sensor_specs(
     sequencer._wired_sensors = []
     sequencer._manifest = MagicMock()
     sequencer._manifest.strategies = [strat_a, strat_b]
+    sequencer._sensor_wire_max_workers = 1
 
     return sequencer, exp_dir_a, exp_dir_b, [sensor_a, sensor_b]
 
 
-def test_shared_experiment_dir_reuses_cached_trainer_data(
-    tmp_path: Path,
-) -> None:
-    '''Two SensorSpecs sharing one experiment_dir → second Trainer ctor
-    receives the cached _data via the `data=` kwarg.'''
+def test_shared_experiment_dir_fetches_data_once(tmp_path: Path) -> None:
+    '''Two SensorSpecs sharing one experiment_dir → exactly one loader
+    Trainer (no `data=`) and both reconstructions receive that frozen
+    `_data` via the `data=` kwarg.'''
 
     sequencer, _exp_dir, _, _ = _build_sequencer_with_two_sensor_specs(
         tmp_path,
         shared_experiment_dir=True,
     )
 
-    cached_data = MagicMock(name='frozen_dataframe')
+    frozen_data = MagicMock(name='frozen_dataframe')
 
     constructor_calls: list[dict[str, object]] = []
 
@@ -92,45 +97,9 @@ def test_shared_experiment_dir_reuses_cached_trainer_data(
         instance = MagicMock()
         instance._manifest = MagicMock()
         if 'data' not in kwargs or kwargs['data'] is None:
-            instance._data = cached_data
+            instance._data = frozen_data
         else:
             instance._data = kwargs['data']
-        sensor_obj = MagicMock()
-        sensor_obj.permutation_id = 1 if len(constructor_calls) == 1 else 2
-        sensor_obj.round_params = {}
-        instance.train.return_value = [sensor_obj]
-        return instance
-
-    with patch(
-        'nexus.startup.sequencer.Trainer',
-        side_effect=fake_trainer_factory,
-    ):
-        sequencer._wire_sensors()
-
-    assert len(constructor_calls) == 2
-    assert 'data' not in constructor_calls[0]['kwargs']
-    assert constructor_calls[1]['kwargs'].get('data') is cached_data
-    assert len(sequencer.wired_sensors) == 2
-
-
-def test_distinct_experiment_dirs_each_get_fresh_fetch(
-    tmp_path: Path,
-) -> None:
-    '''Distinct experiment_dirs build separate Trainer instances; neither
-    receives a `data=` kwarg.'''
-
-    sequencer, _, _, _ = _build_sequencer_with_two_sensor_specs(
-        tmp_path,
-        shared_experiment_dir=False,
-    )
-
-    constructor_calls: list[dict[str, object]] = []
-
-    def fake_trainer_factory(*args: object, **kwargs: object) -> MagicMock:
-        constructor_calls.append({'args': args, 'kwargs': dict(kwargs)})
-        instance = MagicMock()
-        instance._manifest = MagicMock()
-        instance._data = MagicMock()
         sensor_obj = MagicMock()
         sensor_obj.permutation_id = len(constructor_calls)
         sensor_obj.round_params = {}
@@ -143,13 +112,54 @@ def test_distinct_experiment_dirs_each_get_fresh_fetch(
     ):
         sequencer._wire_sensors()
 
-    assert len(constructor_calls) == 2
-    assert 'data' not in constructor_calls[0]['kwargs']
-    assert 'data' not in constructor_calls[1]['kwargs']
+    loader_calls = [c for c in constructor_calls if 'data' not in c['kwargs']]
+    reconstruct_calls = [c for c in constructor_calls if 'data' in c['kwargs']]
+
+    assert len(loader_calls) == 1
+    assert len(reconstruct_calls) == 2
+    assert all(c['kwargs']['data'] is frozen_data for c in reconstruct_calls)
+    assert len(sequencer.wired_sensors) == 2
 
 
-def test_single_sensor_does_not_use_cache_kwarg(tmp_path: Path) -> None:
-    '''With one SensorSpec, Trainer is constructed exactly once without `data=`.'''
+def test_distinct_experiment_dirs_each_fetch_once(tmp_path: Path) -> None:
+    '''Distinct experiment_dirs build one loader Trainer each (no `data=`)
+    plus one `data=`-bearing reconstruction per sensor.'''
+
+    sequencer, _, _, _ = _build_sequencer_with_two_sensor_specs(
+        tmp_path,
+        shared_experiment_dir=False,
+    )
+
+    constructor_calls: list[dict[str, object]] = []
+
+    def fake_trainer_factory(*args: object, **kwargs: object) -> MagicMock:
+        constructor_calls.append({'args': args, 'kwargs': dict(kwargs)})
+        instance = MagicMock()
+        instance._manifest = MagicMock()
+        instance._data = kwargs.get('data', MagicMock())
+        sensor_obj = MagicMock()
+        sensor_obj.permutation_id = len(constructor_calls)
+        sensor_obj.round_params = {}
+        instance.train.return_value = [sensor_obj]
+        return instance
+
+    with patch(
+        'nexus.startup.sequencer.Trainer',
+        side_effect=fake_trainer_factory,
+    ):
+        sequencer._wire_sensors()
+
+    loader_calls = [c for c in constructor_calls if 'data' not in c['kwargs']]
+    reconstruct_calls = [c for c in constructor_calls if 'data' in c['kwargs']]
+
+    assert len(loader_calls) == 2
+    assert len(reconstruct_calls) == 2
+    assert len(sequencer.wired_sensors) == 2
+
+
+def test_single_sensor_uses_one_loader_then_data_reconstruct(tmp_path: Path) -> None:
+    '''One SensorSpec → one loader Trainer (no `data=`) then one
+    reconstruction with `data=loader._data`.'''
 
     exp_dir = tmp_path / 'exp_only'
     exp_dir.mkdir()
@@ -167,6 +177,9 @@ def test_single_sensor_does_not_use_cache_kwarg(tmp_path: Path) -> None:
     sequencer._wired_sensors = []
     sequencer._manifest = MagicMock()
     sequencer._manifest.strategies = [strat]
+    sequencer._sensor_wire_max_workers = 1
+
+    frozen_data = MagicMock(name='frozen_dataframe')
 
     constructor_calls: list[dict[str, object]] = []
 
@@ -174,7 +187,10 @@ def test_single_sensor_does_not_use_cache_kwarg(tmp_path: Path) -> None:
         constructor_calls.append({'args': args, 'kwargs': dict(kwargs)})
         instance = MagicMock()
         instance._manifest = MagicMock()
-        instance._data = MagicMock()
+        if 'data' not in kwargs or kwargs['data'] is None:
+            instance._data = frozen_data
+        else:
+            instance._data = kwargs['data']
         sensor_obj = MagicMock()
         sensor_obj.permutation_id = 1
         sensor_obj.round_params = {}
@@ -187,5 +203,10 @@ def test_single_sensor_does_not_use_cache_kwarg(tmp_path: Path) -> None:
     ):
         sequencer._wire_sensors()
 
-    assert len(constructor_calls) == 1
-    assert 'data' not in constructor_calls[0]['kwargs']
+    loader_calls = [c for c in constructor_calls if 'data' not in c['kwargs']]
+    reconstruct_calls = [c for c in constructor_calls if 'data' in c['kwargs']]
+
+    assert len(loader_calls) == 1
+    assert len(reconstruct_calls) == 1
+    assert reconstruct_calls[0]['kwargs']['data'] is frozen_data
+    assert len(sequencer.wired_sensors) == 1

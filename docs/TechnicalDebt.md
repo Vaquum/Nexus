@@ -1072,3 +1072,31 @@ Both changes together close the window. Option (1) alone is preferred where feas
 - Coverage must include `append_mutation` failure followed by later `_final_checkpoint` (clean-shutdown variant where in-memory mutation is persisted to snapshot even though `OutcomeAcked` was withheld).
 - Neither of the two migration options listed above (reorder I/O before mutation; in-memory `_in_flight_outcome_ids` set) currently produces a `recover()`-observable signal that an outcome was applied. For the cross-restart paired-boundary use with Praxis TD-052, the migration must additionally include a durable applied-outcome marker — either by extending option (2) so the `_processed_outcome_ids` set is persisted to the WAL on the success-side commit (not just held in memory after the in-flight handoff), OR by adding a third migration step that writes an outcome-applied record to the snapshot/WAL on `append_mutation`. Whichever shape is chosen, `StateStore.recover()` (Nexus-side) must reconstruct the applied-outcome marker into a `_processed_outcome_ids`-equivalent set on the rebuilt `OutcomeProcessor`. The dedup happens server-side inside Nexus when Praxis TD-052 replay re-delivers a `TradeOutcome` (which arrives at `OutcomeProcessor.process` carrying its Nexus-derived `outcome_id`) that is already in the recovered set — Praxis itself does not read Nexus state.
 - TD-086 must NOT be deferred past the landing of Praxis TD-052 (paired implementation boundary): TD-052 boot replay-from-spine cannot safely run while `OutcomeProcessor.process` retains the dedup-after-success contract.
+
+---
+
+## TD-087: `reconstruct_sensor` raises bare `KeyError` for an unseeded `_worker_data` dir — indistinguishable from a per-sensor reconstruction failure
+
+**Origin**: Greybeard pre-PR review (#72 parallel/cache wiring)
+**Severity**: Low (internal invariant — only fires on a worker-seeding bug, not on normal input)
+**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/sequencer.py` `_reconstruct_pooled`
+
+`reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and `_reconstruct_pooled` catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
+
+**When to fix**: When a second experiment-dir source or a non-trivial `data_by_dir` construction path is added (raising the chance of a seeding mismatch), or if a quarantine-everything-for-a-dir incident is observed.
+
+**Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have `_reconstruct_pooled` surface that as a hard startup error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
+
+---
+
+## TD-088: pool initializer broadcasts every dir's `_data` to every worker — O(num_dirs × num_workers) memory for multi-dir manifests
+
+**Origin**: Copilot PR #73 review (#72 parallel/cache wiring)
+**Severity**: Low today (current deploys wire a single experiment_dir); material only for manifests spanning several large bundles
+**Module**: `nexus/startup/sequencer.py` `_reconstruct_pooled`
+
+`_reconstruct_pooled` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
+
+**When to fix**: When a manifest wires sensors from multiple large experiment_dirs under process-parallel reconstruction.
+
+**Migration**: Shard reconstruction by dir — either a separate `ProcessPoolExecutor` per experiment_dir (each seeded with only its own `_data`), or a worker `initializer` that lazily loads a dir's `_data` on first use behind a small per-worker LRU, so a worker holds only the bundles it actually touches.
