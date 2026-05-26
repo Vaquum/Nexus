@@ -1079,10 +1079,24 @@ Both changes together close the window. Option (1) alone is preferred where feas
 
 **Origin**: Greybeard pre-PR review (#72 parallel/cache wiring)
 **Severity**: Low (internal invariant — only fires on a worker-seeding bug, not on normal input)
-**Module**: `nexus/startup/sensor_cache.py:171` (`reconstruct_sensor`); pool path `nexus/startup/sequencer.py` `_reconstruct_pooled`
+**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/sequencer.py` `_reconstruct_pooled`
 
 `reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `_init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and `_reconstruct_pooled` catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
 
 **When to fix**: When a second experiment-dir source or a non-trivial `data_by_dir` construction path is added (raising the chance of a seeding mismatch), or if a quarantine-everything-for-a-dir incident is observed.
 
 **Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have `_reconstruct_pooled` surface that as a hard startup error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
+
+---
+
+## TD-088: pool initializer broadcasts every dir's `_data` to every worker — O(num_dirs × num_workers) memory for multi-dir manifests
+
+**Origin**: Copilot PR #73 review (#72 parallel/cache wiring)
+**Severity**: Low today (current deploys wire a single experiment_dir); material only for manifests spanning several large bundles
+**Module**: `nexus/startup/sequencer.py` `_reconstruct_pooled`
+
+`_reconstruct_pooled` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=_init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
+
+**When to fix**: When a manifest wires sensors from multiple large experiment_dirs under process-parallel reconstruction.
+
+**Migration**: Shard reconstruction by dir — either a separate `ProcessPoolExecutor` per experiment_dir (each seeded with only its own `_data`), or a worker `initializer` that lazily loads a dir's `_data` on first use behind a small per-worker LRU, so a worker holds only the bundles it actually touches.

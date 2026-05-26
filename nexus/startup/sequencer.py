@@ -710,7 +710,7 @@ class StartupSequencer:
         if not self._wired_sensors:
             raise StartupError(
                 'wire_sensors',
-                f'all {attempted} sensor specs produced no wired sensors '
+                f'all {attempted} sensor tasks produced no wired sensors '
                 f'({raised} raised, {empty} returned no Sensors); '
                 'refusing to start an account with no signal source',
             )
@@ -913,14 +913,25 @@ class StartupSequencer:
         '''Wire a cache-loaded Sensor; return False when it is unusable.
 
         A cache entry that unpickles but is not a usable Sensor (wrong
-        type, or missing `permutation_id` / `round_params`) would
-        otherwise abort startup at `_append_wired_sensor`. Catching that
+        type, missing `permutation_id` / `round_params`), or whose
+        `permutation_id` does not match the task's (a stale or misplaced
+        cache file under the right key), would otherwise wire the wrong
+        model or abort startup at `_append_wired_sensor`. Rejecting it
         here and returning False lets the caller treat the entry as a
         miss and reconstruct, keeping the corrupt-entry → reconstruct
         guarantee whole rather than only covering unpickling failures.
         '''
 
         try:
+            if sensor.permutation_id != task.permutation_id:
+                _log.warning(
+                    'cached sensor permutation mismatch, reconstructing',
+                    experiment_dir=str(task.resolved_dir),
+                    expected_permutation_id=task.permutation_id,
+                    cached_permutation_id=sensor.permutation_id,
+                )
+                return False
+
             self._append_wired_sensor(sensor, task, loaders)
         except Exception:  # noqa: BLE001 - unusable cache entry => treat as miss
             _log.warning(

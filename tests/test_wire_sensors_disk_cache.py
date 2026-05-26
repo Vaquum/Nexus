@@ -248,3 +248,31 @@ def test_non_sensor_cache_entry_treated_as_miss(
     assert len(calls) >= 1
     assert len(sequencer.wired_sensors) == 1
     assert sequencer.wired_sensors[0].sensor.permutation_id == 1
+
+
+def test_cache_permutation_mismatch_treated_as_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    '''A cached Sensor whose permutation_id != the task's is rejected and reconstructed.'''
+
+    cache_dir = tmp_path / 'cache'
+    bundle = _make_bundle(tmp_path, 'bundle')
+    monkeypatch.setenv('NEXUS_SENSOR_CACHE_DIR', str(cache_dir))
+
+    perm_dir = cache_dir / bundle_id_for(bundle)
+    perm_dir.mkdir(parents=True)
+    (perm_dir / '1.pkl').write_bytes(pickle.dumps(_StubSensor(99)))
+
+    sequencer = _build_single_sensor_sequencer(bundle, permutation_id=1)
+
+    calls: list[dict[str, object]] = []
+    with patch(
+        'nexus.startup.sequencer.Trainer',
+        side_effect=_make_trainer_factory(calls, permutation_id=1),
+    ):
+        sequencer._wire_sensors()
+
+    assert len(calls) >= 1
+    assert len(sequencer.wired_sensors) == 1
+    assert sequencer.wired_sensors[0].sensor.permutation_id == 1
