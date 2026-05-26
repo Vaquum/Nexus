@@ -355,6 +355,64 @@ def test_cache_entry_without_predict_treated_as_miss(
     assert sequencer.wired_sensors[0].sensor.permutation_id == 1
 
 
+def test_shared_permutation_reconstructed_once_wired_per_strategy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    '''Two strategies sharing one (dir, perm) reconstruct it once and wire one WiredSensor each.'''
+
+    bundle = _make_bundle(tmp_path, 'bundle')
+    monkeypatch.delenv('NEXUS_SENSOR_CACHE_DIR', raising=False)
+
+    sensor_spec_a = MagicMock()
+    sensor_spec_a.experiment_dir = bundle
+    sensor_spec_a.permutation_ids = (1,)
+    sensor_spec_a.interval_seconds = 60
+
+    sensor_spec_b = MagicMock()
+    sensor_spec_b.experiment_dir = bundle
+    sensor_spec_b.permutation_ids = (1,)
+    sensor_spec_b.interval_seconds = 60
+
+    strat_a = MagicMock()
+    strat_a.strategy_id = 'strat_a'
+    strat_a.sensors = [sensor_spec_a]
+
+    strat_b = MagicMock()
+    strat_b.strategy_id = 'strat_b'
+    strat_b.sensors = [sensor_spec_b]
+
+    sequencer = StartupSequencer.__new__(StartupSequencer)
+    sequencer._wired_sensors = []
+    sequencer._manifest = MagicMock()
+    sequencer._manifest.strategies = [strat_a, strat_b]
+    sequencer._sensor_wire_max_workers = 1
+
+    train_calls: list[list[int]] = []
+
+    def fake_trainer_factory(*_args: object, **_kwargs: object) -> MagicMock:
+        instance = MagicMock()
+        instance._manifest = MagicMock()
+        instance._data = MagicMock()
+
+        def fake_train(permutation_ids: list[int]) -> list[_StubSensor]:
+            train_calls.append(list(permutation_ids))
+
+            return [_StubSensor(permutation_ids[0])]
+
+        instance.train.side_effect = fake_train
+
+        return instance
+
+    with patch('nexus.startup.sequencer.Trainer', side_effect=fake_trainer_factory):
+        sequencer._wire_sensors()
+
+    assert train_calls == [[1]]
+    assert len(sequencer.wired_sensors) == 2
+    assert {w.strategy_id for w in sequencer.wired_sensors} == {'strat_a', 'strat_b'}
+    assert sequencer.wired_sensors[0].sensor is sequencer.wired_sensors[1].sensor
+
+
 def test_cache_entry_with_non_dict_round_params_treated_as_miss(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

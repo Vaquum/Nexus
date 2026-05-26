@@ -171,7 +171,7 @@ def reconstruct_sensor(experiment_dir_str: str, permutation_id: int) -> Any | No
 
     Builds `Trainer(experiment_dir, data=<worker-global _data>)` and
     returns `train([permutation_id])[0]`. The bundle data comes from the
-    worker-global map populated by `_init_worker`, so the heavy slice
+    worker-global map populated by `init_worker`, so the heavy slice
     never crosses the process boundary as a task argument.
 
     Args:

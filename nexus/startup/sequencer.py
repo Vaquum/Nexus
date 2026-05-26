@@ -797,6 +797,12 @@ class StartupSequencer:
         otherwise it fans out across a `ProcessPoolExecutor` seeded with
         each dir's frozen `_data` via the pool initializer.
 
+        Misses are deduplicated by `task.key` before reconstruction, so a
+        `(dir, permutation_id)` referenced by more than one task (e.g.
+        shared across strategies) is reconstructed exactly once; the
+        result is keyed by `task.key`, so the caller's per-task wiring
+        loop wires that single Sensor to every referencing task.
+
         A key present in the result with a non-`None` value reconstructed
         cleanly; a key present mapped to `None` means `train()` returned
         no Sensor; an absent key means the reconstruction raised.
@@ -813,10 +819,16 @@ class StartupSequencer:
         if not misses:
             return {}
 
-        if self._sensor_wire_max_workers <= 1:
-            return self._reconstruct_inline(misses, loaders)
+        unique: dict[tuple[Path, int], _SensorWiringTask] = {}
+        for task in misses:
+            unique.setdefault(task.key, task)
 
-        return self._reconstruct_pooled(misses, loaders)
+        deduped = list(unique.values())
+
+        if self._sensor_wire_max_workers <= 1:
+            return self._reconstruct_inline(deduped, loaders)
+
+        return self._reconstruct_pooled(deduped, loaders)
 
     def _reconstruct_inline(
         self,
