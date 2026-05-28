@@ -652,6 +652,9 @@ class PredictLoop:
                 self._in_flight.discard(key)
                 self._ipc_refs[path] = max(0, self._ipc_refs.get(path, 0) - 1)
 
+                if self._running:
+                    self._next_due[key] = time.monotonic() + wired.interval_seconds
+
     def _write_market_data_ipc(
         self,
         kline_size: int,

@@ -535,6 +535,53 @@ class TestPredictLoopResilience:
 
             loop.stop()
 
+    def test_broken_pool_does_not_tight_loop_after_failure(self) -> None:
+        '''After a submit failure, `_next_due[key]` is advanced by
+        `interval_seconds` so the scheduler does not re-pick the key on
+        the next ~0.25 s poll. Without the advance, a persistently
+        broken pool would retry at the ~4 submits/sec poll rate and
+        flood logs.
+        '''
+
+        _BrokenExecutor.submit_calls = []
+        wired = _make_wired(interval_seconds=1)
+        runner = MagicMock(spec=StrategyRunner)
+
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+
+        with (
+            patch.object(predict_loop_module, 'ProcessPoolExecutor', _BrokenExecutor),
+            patch.object(
+                predict_loop_module,
+                '_predict_in_process',
+                _stub_predict_in_process,
+            ),
+        ):
+            loop.start()
+
+            for _ in range(40):
+                if _BrokenExecutor.submit_calls:
+                    break
+
+                time.sleep(0.1)
+
+            assert _BrokenExecutor.submit_calls, 'scheduler never attempted submit'
+            first_count = len(_BrokenExecutor.submit_calls)
+            time.sleep(0.5)
+            after_count = len(_BrokenExecutor.submit_calls)
+            loop.stop()
+
+        assert after_count - first_count <= 1, (
+            f'expected at most 1 retry in 0.5 s with interval_seconds=1; '
+            f'got {after_count - first_count} retries '
+            f'(tight retry loop bug — `_next_due[key]` not advanced)'
+        )
+
     def test_write_ipc_failure_rolls_back_ipc_current(
         self,
         tmp_path: Path,
