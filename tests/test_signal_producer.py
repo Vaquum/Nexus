@@ -87,6 +87,7 @@ def _make_wired_sensor(tmp_path: Path) -> tuple[WiredSensor, pl.DataFrame]:
         round_params=sensor.round_params,
         strategy_id='test_strat',
         interval_seconds=60,
+        experiment_dir=exp_dir,
     )
 
     return wired, trainer._data
@@ -127,6 +128,7 @@ def _make_wired_rule_based_sensor(tmp_path: Path) -> tuple[WiredSensor, pl.DataF
         round_params=sensor.round_params,
         strategy_id='test_rule_strat',
         interval_seconds=60,
+        experiment_dir=exp_dir,
     )
 
     return wired, trainer._data

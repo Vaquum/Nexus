@@ -57,6 +57,9 @@ class WiredSensor:
         round_params: Hyperparameters used to train this Sensor.
         strategy_id: Strategy this Sensor feeds signals to.
         interval_seconds: How often to call predict().
+        experiment_dir: Resolved Limen experiment directory, so a predict
+            worker process can rebuild the (unpicklable) `limen_manifest`
+            from disk rather than receiving it across a process boundary.
     '''
 
     sensor_id: str
@@ -65,6 +68,7 @@ class WiredSensor:
     round_params: dict[str, Any]
     strategy_id: str
     interval_seconds: int
+    experiment_dir: Path
 
 
 @dataclass(frozen=True)
@@ -865,6 +869,7 @@ class StartupSequencer:
             round_params=sensor.round_params,
             strategy_id=task.strategy_id,
             interval_seconds=task.interval_seconds,
+            experiment_dir=task.resolved_dir,
         )
         self._wired_sensors.append(wired)
         _log.info(

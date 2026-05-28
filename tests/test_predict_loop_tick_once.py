@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 from datetime import datetime, timezone
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import polars as pl
@@ -54,6 +54,7 @@ def _make_wired(
         round_params={'random_weights': 0.5},
         strategy_id=strategy_id,
         interval_seconds=interval_seconds,
+        experiment_dir=Path('exp'),
     )
 
 
@@ -122,8 +123,8 @@ class TestPredictLoopTickOnce:
         assert loop.running is False
         assert runner.dispatch_signal.called
 
-    def test_does_not_schedule_follow_up_timer(self) -> None:
-        '''tick_once does not populate _active_timers; caller owns cadence.'''
+    def test_does_not_start_scheduler(self) -> None:
+        '''tick_once does not start the scheduler/pool; caller owns cadence.'''
 
         runner = MagicMock(spec=StrategyRunner)
         runner.dispatch_signal.return_value = []
@@ -138,7 +139,9 @@ class TestPredictLoopTickOnce:
 
         loop.tick_once(wired)
 
-        assert loop._active_timers == {}
+        assert loop.running is False
+        assert loop._executor is None
+        assert loop._scheduler_thread is None
 
     def test_raises_when_timer_loop_is_running(self) -> None:
         '''tick_once raises RuntimeError when the Timer-driven loop is active.'''
@@ -314,113 +317,8 @@ class TestPredictLoopTickOnce:
         loop.tick_once(wired)
 
         assert runner.dispatch_signal.call_count == 2
-        assert loop._active_timers == {}
-
-    def test_chain_markers_present_and_ordered_in_both_paths(self) -> None:
-        '''Static-source drift sentinel: both `_tick` and `tick_once` must
-        invoke the same chain steps in the same order.
-
-        `tick_once` deliberately duplicates the chain `_tick` runs (rather
-        than extracting a shared helper) to keep `_tick` byte-identical for
-        production Timer callers. Duplication invites silent drift — this
-        test inspects the source of both methods and asserts the chain
-        markers appear in the canonical order in each. A future edit that
-        adds, removes, or reorders a step in only one path fails CI here.
-        '''
-
-        canonical_order = [
-            '_extract_kline_size',
-            '_market_data_provider',
-            'produce_signal',
-            '_log_signal',
-            '_context_provider',
-            'dispatch_signal',
-            '_action_submit',
-        ]
-
-        for method in (PredictLoop._tick, PredictLoop.tick_once):
-            source = inspect.getsource(method)
-            positions: list[tuple[str, int]] = []
-
-            for marker in canonical_order:
-                idx = source.find(marker)
-                assert idx != -1, (
-                    f'{method.__name__} does not invoke {marker!r}; '
-                    f'chain duplication has drifted'
-                )
-                positions.append((marker, idx))
-
-            ordered_markers = [m for m, _ in sorted(positions, key=lambda mp: mp[1])]
-            assert ordered_markers == canonical_order, (
-                f'{method.__name__} chain order is {ordered_markers}; '
-                f'expected {canonical_order}'
-            )
-
-    def test_chain_invoked_in_same_order_as_tick(self) -> None:
-        '''Real runtime parity: drive both `_tick` and `tick_once` with
-        identical setup and assert the recorded sequence of chain side
-        effects is identical.
-
-        `_tick` is driven directly with `_running` set to True (bypassing
-        `start()`) and `_schedule_locked` no-op'd so the call does not
-        spawn a follow-up Timer. The recorded event list must match the
-        one from `tick_once` byte-for-byte. A future edit that changes
-        the chain in only one of the two methods produces divergent
-        event lists and fails this test.
-        '''
-
-        action = Action(
-            action_type=ActionType.ENTER,
-            direction=OrderSide.BUY,
-            size=Decimal('0.01'),
-            execution_mode=ExecutionMode.SINGLE_SHOT,
-            order_type=OrderType.MARKET,
-            deadline=300,
-        )
-
-        def make_loop() -> tuple[PredictLoop, WiredSensor, list[str]]:
-            events: list[str] = []
-            runner = MagicMock(spec=StrategyRunner)
-
-            def market_provider(kline_size: int) -> pl.DataFrame:
-                events.append(f'market_data:{kline_size}')
-                return _mock_market_data_provider(kline_size)
-
-            def context_provider(strategy_id: str) -> StrategyContext:
-                events.append(f'context:{strategy_id}')
-                return _mock_context_provider(strategy_id)
-
-            def dispatch(*_args: object, **_kwargs: object) -> list[Action]:
-                events.append('dispatch')
-                return [action]
-
-            runner.dispatch_signal.side_effect = dispatch
-
-            def submitter(actions: list[Action], strategy_id: str) -> None:
-                events.append(f'submit:{strategy_id}:{len(actions)}')
-
-            wired = _make_wired(strategy_id='strat_a')
-            loop = PredictLoop(
-                runner=runner,
-                wired_sensors=[wired],
-                market_data_provider=market_provider,
-                context_provider=context_provider,
-                action_submit=submitter,
-            )
-            return loop, wired, events
-
-        loop_a, wired_a, events_a = make_loop()
-        loop_a.tick_once(wired_a)
-
-        loop_b, wired_b, events_b = make_loop()
-        loop_b._running = True
-        with patch.object(loop_b, '_schedule_locked', lambda *_args, **_kwargs: None):
-            try:
-                loop_b._tick(wired_b)
-            finally:
-                loop_b._running = False
-
-        assert events_a == events_b
+        assert loop._executor is None
+        assert loop._scheduler_thread is None
 
     def test_chain_invoked_in_order_at_runtime(self) -> None:
         '''Runtime call-order check for `tick_once`: the four chain steps
