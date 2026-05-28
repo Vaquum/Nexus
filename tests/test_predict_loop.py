@@ -4,17 +4,22 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Iterator
+from concurrent.futures import Future
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any
-from unittest.mock import MagicMock
+from pathlib import Path
+from typing import Any, ClassVar
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import polars as pl
+import pytest
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.startup.sequencer import WiredSensor
+from nexus.strategy import predict_loop as predict_loop_module
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.predict_loop import PredictLoop
@@ -55,6 +60,7 @@ def _make_wired(
         round_params={'random_weights': 0.5},
         strategy_id=strategy_id,
         interval_seconds=interval_seconds,
+        experiment_dir=Path('exp'),
     )
 
 
@@ -77,7 +83,54 @@ def _mock_context_provider(_strategy_id: str) -> StrategyContext:
     )
 
 
+class _SyncExecutor:
+    '''In-process stand-in for the spawn ProcessPoolExecutor.
+
+    Runs submitted callables synchronously so the parent-side scheduler,
+    dispatch, and reschedule logic can be exercised without spawning real
+    worker processes, which cannot run MagicMock sensors across a pickle
+    boundary or rebuild a manifest from a non-existent experiment dir.
+    '''
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def submit(self, fn: Any, *args: Any, **kwargs: Any) -> Future:
+        future: Future = Future()
+
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except Exception as exc:
+            future.set_exception(exc)
+
+        return future
+
+    def shutdown(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+
+def _stub_predict_in_process(task: Any, _market_data_path: str) -> Signal:
+    return Signal(
+        predictor_fn_id=task.sensor_id,
+        values={'_preds': 1, '_probs': 0.85, 'close': 70500.0},
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+
+
 class TestPredictLoop:
+
+    @pytest.fixture(autouse=True)
+    def _in_process_predict_pool(self) -> Iterator[None]:
+        with (
+            patch.object(predict_loop_module, 'ProcessPoolExecutor', _SyncExecutor),
+            patch.object(
+                predict_loop_module,
+                '_predict_in_process',
+                _stub_predict_in_process,
+            ),
+        ):
+            yield
+
 
     def test_start_and_stop(self) -> None:
         '''PredictLoop starts and stops without error.'''
@@ -336,3 +389,235 @@ class TestPredictLoop:
 
         assert 'strat_a' in strategies_seen
         assert 'strat_b' in strategies_seen
+
+
+class TestPredictInProcess:
+
+    def _task(self, experiment_dir: str) -> Any:
+        return predict_loop_module.PredictTask(
+            sensor_id='exp:1',
+            sensor=_mock_sensor(),
+            round_params={'random_weights': 0.5},
+            strategy_id='strat_a',
+            interval_seconds=60,
+            experiment_dir=experiment_dir,
+        )
+
+    def test_rebuilds_manifest_and_produces_signal(self, tmp_path: Path) -> None:
+        '''Worker reads the IPC frame, rebuilds the manifest, returns a Signal.'''
+
+        predict_loop_module._WORKER_MANIFESTS.clear()
+        predict_loop_module._WORKER_MARKET_DATA.clear()
+
+        market_data = pl.DataFrame({
+            'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
+            'close': [70500.0],
+        })
+        ipc_path = tmp_path / 'md.arrow'
+        market_data.write_ipc(ipc_path)
+
+        trainer = MagicMock()
+        trainer._manifest = _mock_limen_manifest()
+        task = self._task(str(tmp_path))
+
+        with patch.object(predict_loop_module, 'Trainer', return_value=trainer) as trainer_cls:
+            signal = predict_loop_module._predict_in_process(task, str(ipc_path))
+            predict_loop_module._predict_in_process(task, str(ipc_path))
+
+        assert isinstance(signal, Signal)
+        assert signal.predictor_fn_id == 'exp:1'
+        assert trainer_cls.call_count == 1
+        assert str(tmp_path) in predict_loop_module._WORKER_MANIFESTS
+
+        predict_loop_module._WORKER_MANIFESTS.clear()
+        predict_loop_module._WORKER_MARKET_DATA.clear()
+
+    def test_market_data_cache_is_bounded(self, tmp_path: Path) -> None:
+        '''Worker market-data cache evicts the oldest frame beyond the cap.'''
+
+        predict_loop_module._WORKER_MANIFESTS.clear()
+        predict_loop_module._WORKER_MARKET_DATA.clear()
+
+        trainer = MagicMock()
+        trainer._manifest = _mock_limen_manifest()
+        task = self._task(str(tmp_path))
+
+        cap = predict_loop_module._WORKER_MARKET_DATA_CACHE_MAX
+        paths: list[str] = []
+
+        with patch.object(predict_loop_module, 'Trainer', return_value=trainer):
+            for index in range(cap + 2):
+                frame = pl.DataFrame({
+                    'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
+                    'close': [70500.0 + index],
+                })
+                path = tmp_path / f'md_{index}.arrow'
+                frame.write_ipc(path)
+                paths.append(str(path))
+                predict_loop_module._predict_in_process(task, str(path))
+
+        assert len(predict_loop_module._WORKER_MARKET_DATA) <= cap
+        assert paths[0] not in predict_loop_module._WORKER_MARKET_DATA
+
+        predict_loop_module._WORKER_MANIFESTS.clear()
+        predict_loop_module._WORKER_MARKET_DATA.clear()
+
+
+class _BrokenExecutor:
+    '''Stand-in for ProcessPoolExecutor whose `submit` always raises.
+
+    Mirrors the `BrokenProcessPool` failure mode (a `RuntimeError`
+    subclass) without needing a real spawn pool.
+    '''
+
+    submit_calls: ClassVar[list[tuple[Any, ...]]] = []
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def submit(self, fn: Any, *args: Any, **_kwargs: Any) -> Future:
+        _BrokenExecutor.submit_calls.append((fn, args))
+        msg = 'simulated broken pool'
+        raise RuntimeError(msg)
+
+    def shutdown(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+
+class TestPredictLoopResilience:
+    '''Pin: pool-submit and IPC-write failures must not kill the scheduler.
+
+    Both failure modes mutate lock-protected state (`_in_flight`,
+    `_ipc_refs`, `_ipc_current`) before the failing external call;
+    each fix must roll back the mutation so a transient failure is
+    recoverable and a persistent failure keeps logging instead of
+    going silent.
+    '''
+
+    def test_broken_pool_submit_does_not_kill_scheduler(self) -> None:
+        '''A `submit` failure logs, rolls back `_in_flight` + `_ipc_refs`,
+        and the daemon scheduler thread keeps polling.
+        '''
+
+        _BrokenExecutor.submit_calls = []
+        wired = _make_wired(interval_seconds=1)
+        runner = MagicMock(spec=StrategyRunner)
+
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+
+        with (
+            patch.object(predict_loop_module, 'ProcessPoolExecutor', _BrokenExecutor),
+            patch.object(
+                predict_loop_module,
+                '_predict_in_process',
+                _stub_predict_in_process,
+            ),
+        ):
+            loop.start()
+
+            for _ in range(40):
+                if _BrokenExecutor.submit_calls:
+                    break
+
+                time.sleep(0.1)
+
+            assert _BrokenExecutor.submit_calls, 'scheduler never attempted submit'
+            assert loop.running is True
+            assert loop._scheduler_thread is not None
+            assert loop._scheduler_thread.is_alive()
+            assert runner.dispatch_signal.called is False
+            assert all(count == 0 for count in loop._ipc_refs.values())
+
+            loop.stop()
+
+    def test_broken_pool_does_not_tight_loop_after_failure(self) -> None:
+        '''After a submit failure, `_next_due[key]` is advanced by
+        `interval_seconds` so the scheduler does not re-pick the key on
+        the next ~0.25 s poll. Without the advance, a persistently
+        broken pool would retry at the ~4 submits/sec poll rate and
+        flood logs.
+        '''
+
+        _BrokenExecutor.submit_calls = []
+        wired = _make_wired(interval_seconds=1)
+        runner = MagicMock(spec=StrategyRunner)
+
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+
+        with (
+            patch.object(predict_loop_module, 'ProcessPoolExecutor', _BrokenExecutor),
+            patch.object(
+                predict_loop_module,
+                '_predict_in_process',
+                _stub_predict_in_process,
+            ),
+        ):
+            loop.start()
+
+            for _ in range(40):
+                if _BrokenExecutor.submit_calls:
+                    break
+
+                time.sleep(0.1)
+
+            assert _BrokenExecutor.submit_calls, 'scheduler never attempted submit'
+            first_count = len(_BrokenExecutor.submit_calls)
+            time.sleep(0.5)
+            after_count = len(_BrokenExecutor.submit_calls)
+            loop.stop()
+
+        assert after_count - first_count <= 1, (
+            f'expected at most 1 retry in 0.5 s with interval_seconds=1; '
+            f'got {after_count - first_count} retries '
+            f'(tight retry loop bug — `_next_due[key]` not advanced)'
+        )
+
+    def test_write_ipc_failure_rolls_back_ipc_current(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''An `OSError` in `write_ipc` restores the prior `_ipc_current`
+        entry and drops the phantom `_ipc_refs` entry, so the next call
+        does not return a path to a non-existent file.
+        '''
+
+        wired = _make_wired(interval_seconds=3600)
+        runner = MagicMock(spec=StrategyRunner)
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+        loop._ipc_dir = tmp_path
+        loop._ipc_current = {}
+        loop._ipc_refs = {}
+        loop._ipc_seq = 0
+
+        market_data = pl.DataFrame({
+            'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
+            'close': [70500.0],
+        })
+
+        def _failing_write(_frame: pl.DataFrame, *_args: Any, **_kwargs: Any) -> None:
+            msg = 'disk full'
+            raise OSError(msg)
+
+        monkeypatch.setattr(pl.DataFrame, 'write_ipc', _failing_write)
+
+        with pytest.raises(OSError, match='disk full'):
+            loop._write_market_data_ipc(3600, market_data)
+
+        assert 3600 not in loop._ipc_current
+        assert loop._ipc_refs == {}

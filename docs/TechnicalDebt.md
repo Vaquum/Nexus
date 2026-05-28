@@ -1079,13 +1079,13 @@ Both changes together close the window. Option (1) alone is preferred where feas
 
 **Origin**: Greybeard pre-PR review (#72 parallel/cache wiring)
 **Severity**: Low (internal invariant — only fires on a worker-seeding bug, not on normal input)
-**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/sequencer.py` `_reconstruct_pooled`
+**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/warm_cache.py` `warm_cache` (was `nexus/startup/sequencer.py` `_reconstruct_pooled` through v0.52.0; moved to the pre-launch warmer in v0.52.1 as the launcher no longer runs a pool).
 
-`reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and `_reconstruct_pooled` catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
+`reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and the pooled caller catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` (now in `warm_cache.warm_cache`) are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
 
 **When to fix**: When a second experiment-dir source or a non-trivial `data_by_dir` construction path is added (raising the chance of a seeding mismatch), or if a quarantine-everything-for-a-dir incident is observed.
 
-**Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have `_reconstruct_pooled` surface that as a hard startup error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
+**Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have the pooled caller in `warm_cache.warm_cache` surface that as a hard warmer-exit error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
 
 ---
 
@@ -1093,10 +1093,26 @@ Both changes together close the window. Option (1) alone is preferred where feas
 
 **Origin**: Copilot PR #73 review (#72 parallel/cache wiring)
 **Severity**: Low today (current deploys wire a single experiment_dir); material only for manifests spanning several large bundles
-**Module**: `nexus/startup/sequencer.py` `_reconstruct_pooled`
+**Module**: `nexus/startup/warm_cache.py` `warm_cache` (was `nexus/startup/sequencer.py` `_reconstruct_pooled` through v0.52.0; moved to the pre-launch warmer in v0.52.1)
 
-`_reconstruct_pooled` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
+`warm_cache` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
 
 **When to fix**: When a manifest wires sensors from multiple large experiment_dirs under process-parallel reconstruction.
 
 **Migration**: Shard reconstruction by dir — either a separate `ProcessPoolExecutor` per experiment_dir (each seeded with only its own `_data`), or a worker `initializer` that lazily loads a dir's `_data` on first use behind a small per-worker LRU, so a worker holds only the bundles it actually touches.
+
+---
+
+## TD-089: PredictLoop test executor runs done-callbacks inline, not on a separate thread
+
+**Origin**: Greybeard pre-PR review of `fix/wire-pool-spawn-start-method` (v0.53.0 process-pool predict executor)
+**Severity**: Low (test fidelity only; production correctness verified by real spawn-pool smoke test)
+**Module**: `tests/test_predict_loop.py` `_SyncExecutor`
+
+`_SyncExecutor.submit` returns a completed `concurrent.futures.Future`. When `_submit_one` then calls `future.add_done_callback(_on_done)` on a future that is already done, the callback fires **inline in the calling thread** (the scheduler thread). The production `ProcessPoolExecutor` invokes done-callbacks on a separate result-handler thread, so the parent-side dispatch chain (`_log_signal` -> `context_provider` -> `dispatch_signal` -> `action_submit`) actually runs concurrent with the scheduler thread's next iteration. The test double therefore cannot exercise any cross-thread race between scheduling and result handling — for example, a `stop()` racing against an in-flight callback, or two callbacks contending for `self._lock` while the scheduler is mid-poll.
+
+The `MagicMock`-sensor + spawn-pickle-boundary constraint forced this seam; the test executor is the only practical way to exercise parent-side behavior without spawning real workers (which would also bypass the mocks and try to load a real bundle from disk). Real-pool coverage is limited to the smoke test in the session that ships the change (and the prod runtime itself).
+
+**When to fix**: When a concurrency defect in the parent-side scheduler/callback interaction is suspected or reported, or when adding a feature that meaningfully changes lock scope in `_handle_predict_result`, `_submit_one`, or `_maybe_unlink_ipc`.
+
+**Migration**: Add a second test double that submits to a thread-based executor and fires `add_done_callback` from a worker thread (or use a real `ThreadPoolExecutor` patched in place of `ProcessPoolExecutor`); use it for the lock/race-sensitive subset of tests while keeping the synchronous `_SyncExecutor` for the dispatch-chain tests that don't need cross-thread fidelity. An integration test against a real spawn pool with a recorded bundle on disk would be even stronger but requires CI infrastructure to ship a small fixture bundle.

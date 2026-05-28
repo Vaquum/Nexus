@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
 
@@ -36,9 +37,11 @@ from nexus.instance_config import InstanceConfig
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.params import StrategyParams
-from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
 from nexus.strategy.timer_loop import TimerLoop
+
+if TYPE_CHECKING:
+    from nexus.strategy.predict_loop import PredictLoop
 
 __all__ = ['ShutdownSequencer']
 
