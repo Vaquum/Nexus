@@ -1079,13 +1079,13 @@ Both changes together close the window. Option (1) alone is preferred where feas
 
 **Origin**: Greybeard pre-PR review (#72 parallel/cache wiring)
 **Severity**: Low (internal invariant — only fires on a worker-seeding bug, not on normal input)
-**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/sequencer.py` `_reconstruct_pooled`
+**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/warm_cache.py` `warm_cache` (was `nexus/startup/sequencer.py` `_reconstruct_pooled` through v0.52.0; moved to the pre-launch warmer in v0.52.1 as the launcher no longer runs a pool).
 
-`reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and `_reconstruct_pooled` catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
+`reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and the pooled caller catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` (now in `warm_cache.warm_cache`) are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
 
 **When to fix**: When a second experiment-dir source or a non-trivial `data_by_dir` construction path is added (raising the chance of a seeding mismatch), or if a quarantine-everything-for-a-dir incident is observed.
 
-**Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have `_reconstruct_pooled` surface that as a hard startup error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
+**Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have the pooled caller in `warm_cache.warm_cache` surface that as a hard warmer-exit error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
 
 ---
 
@@ -1093,9 +1093,9 @@ Both changes together close the window. Option (1) alone is preferred where feas
 
 **Origin**: Copilot PR #73 review (#72 parallel/cache wiring)
 **Severity**: Low today (current deploys wire a single experiment_dir); material only for manifests spanning several large bundles
-**Module**: `nexus/startup/sequencer.py` `_reconstruct_pooled`
+**Module**: `nexus/startup/warm_cache.py` `warm_cache` (was `nexus/startup/sequencer.py` `_reconstruct_pooled` through v0.52.0; moved to the pre-launch warmer in v0.52.1)
 
-`_reconstruct_pooled` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
+`warm_cache` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
 
 **When to fix**: When a manifest wires sensors from multiple large experiment_dirs under process-parallel reconstruction.
 

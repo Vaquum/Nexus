@@ -9,7 +9,7 @@ from concurrent.futures import Future
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -461,3 +461,116 @@ class TestPredictInProcess:
 
         predict_loop_module._WORKER_MANIFESTS.clear()
         predict_loop_module._WORKER_MARKET_DATA.clear()
+
+
+class _BrokenExecutor:
+    '''Stand-in for ProcessPoolExecutor whose `submit` always raises.
+
+    Mirrors the `BrokenProcessPool` failure mode (a `RuntimeError`
+    subclass) without needing a real spawn pool.
+    '''
+
+    submit_calls: ClassVar[list[tuple[Any, ...]]] = []
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def submit(self, fn: Any, *args: Any, **_kwargs: Any) -> Future:
+        _BrokenExecutor.submit_calls.append((fn, args))
+        msg = 'simulated broken pool'
+        raise RuntimeError(msg)
+
+    def shutdown(self, *_args: Any, **_kwargs: Any) -> None:
+        pass
+
+
+class TestPredictLoopResilience:
+    '''Pin: pool-submit and IPC-write failures must not kill the scheduler.
+
+    Both failure modes mutate lock-protected state (`_in_flight`,
+    `_ipc_refs`, `_ipc_current`) before the failing external call;
+    each fix must roll back the mutation so a transient failure is
+    recoverable and a persistent failure keeps logging instead of
+    going silent.
+    '''
+
+    def test_broken_pool_submit_does_not_kill_scheduler(self) -> None:
+        '''A `submit` failure logs, rolls back `_in_flight` + `_ipc_refs`,
+        and the daemon scheduler thread keeps polling.
+        '''
+
+        _BrokenExecutor.submit_calls = []
+        wired = _make_wired(interval_seconds=1)
+        runner = MagicMock(spec=StrategyRunner)
+
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+
+        with (
+            patch.object(predict_loop_module, 'ProcessPoolExecutor', _BrokenExecutor),
+            patch.object(
+                predict_loop_module,
+                '_predict_in_process',
+                _stub_predict_in_process,
+            ),
+        ):
+            loop.start()
+
+            for _ in range(40):
+                if _BrokenExecutor.submit_calls:
+                    break
+
+                time.sleep(0.1)
+
+            assert _BrokenExecutor.submit_calls, 'scheduler never attempted submit'
+            assert loop.running is True
+            assert loop._scheduler_thread is not None
+            assert loop._scheduler_thread.is_alive()
+            assert runner.dispatch_signal.called is False
+            assert all(count == 0 for count in loop._ipc_refs.values())
+
+            loop.stop()
+
+    def test_write_ipc_failure_rolls_back_ipc_current(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''An `OSError` in `write_ipc` restores the prior `_ipc_current`
+        entry and drops the phantom `_ipc_refs` entry, so the next call
+        does not return a path to a non-existent file.
+        '''
+
+        wired = _make_wired(interval_seconds=3600)
+        runner = MagicMock(spec=StrategyRunner)
+        loop = PredictLoop(
+            runner=runner,
+            wired_sensors=[wired],
+            market_data_provider=_mock_market_data_provider,
+            context_provider=_mock_context_provider,
+        )
+        loop._ipc_dir = tmp_path
+        loop._ipc_current = {}
+        loop._ipc_refs = {}
+        loop._ipc_seq = 0
+
+        market_data = pl.DataFrame({
+            'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
+            'close': [70500.0],
+        })
+
+        def _failing_write(_frame: pl.DataFrame, *_args: Any, **_kwargs: Any) -> None:
+            msg = 'disk full'
+            raise OSError(msg)
+
+        monkeypatch.setattr(pl.DataFrame, 'write_ipc', _failing_write)
+
+        with pytest.raises(OSError, match='disk full'):
+            loop._write_market_data_ipc(3600, market_data)
+
+        assert 3600 not in loop._ipc_current
+        assert loop._ipc_refs == {}

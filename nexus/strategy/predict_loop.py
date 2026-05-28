@@ -616,7 +616,14 @@ class PredictLoop:
                 self._submit_one(key, path)
 
     def _submit_one(self, key: str, path: Path) -> None:
-        '''Submit one sensor's predict task and track its IPC reference.'''
+        '''Submit one sensor's predict task and track its IPC reference.
+
+        Wraps the pool submit so a `BrokenProcessPool` (or any other
+        submit-time failure) cannot kill the daemon scheduler thread
+        silently — the lock-protected `in_flight` mark and the
+        already-incremented IPC ref are rolled back, the failure is
+        logged, and the scheduler keeps polling.
+        '''
 
         with self._lock:
             executor = self._executor
@@ -633,7 +640,17 @@ class PredictLoop:
         def _on_done(future: Future[Signal]) -> None:
             self._handle_predict_result(wired, path, future)
 
-        executor.submit(_predict_in_process, task, str(path)).add_done_callback(_on_done)
+        try:
+            executor.submit(_predict_in_process, task, str(path)).add_done_callback(_on_done)
+        except Exception:  # noqa: BLE001 - broken pool must not silently kill scheduler
+            _log.exception(
+                'predict submit failed for %s; pool may be broken',
+                key,
+            )
+
+            with self._lock:
+                self._in_flight.discard(key)
+                self._ipc_refs[path] = max(0, self._ipc_refs.get(path, 0) - 1)
 
     def _write_market_data_ipc(
         self,
@@ -664,14 +681,25 @@ class PredictLoop:
 
             self._ipc_seq += 1
             path = ipc_dir / f'md_{kline_size}_{self._ipc_seq}.arrow'
-            previous = current[1] if current is not None else None
+            previous = current
             self._ipc_current[kline_size] = (signature, path)
             self._ipc_refs.setdefault(path, 0)
 
-        market_data.write_ipc(path)
+        try:
+            market_data.write_ipc(path)
+        except OSError:
+            with self._lock:
+                if previous is None:
+                    self._ipc_current.pop(kline_size, None)
+                else:
+                    self._ipc_current[kline_size] = previous
+
+                self._ipc_refs.pop(path, None)
+
+            raise
 
         if previous is not None:
-            self._maybe_unlink_ipc(previous)
+            self._maybe_unlink_ipc(previous[1])
 
         return path
 
