@@ -6,7 +6,6 @@ import hashlib
 import os
 import pickle
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -30,9 +29,6 @@ from nexus.startup.sensor_cache import (
     CACHE_DIR_ENV,
     bundle_id_for,
     cache_path_for,
-    default_max_workers,
-    init_worker,
-    reconstruct_sensor,
     write_sensor_atomic,
 )
 from nexus.strategy.action import Action
@@ -169,7 +165,6 @@ class StartupSequencer:
         self._wired_sensors: list[WiredSensor] = []
         self._timer_specs: dict[str, tuple[TimerSpec, ...]] = {}
         self._pending_startup_actions: dict[str, list[Action]] = {}
-        self._sensor_wire_max_workers: int = default_max_workers()
 
     @property
     def timer_specs(self) -> dict[str, tuple[TimerSpec, ...]]:
@@ -642,8 +637,9 @@ class StartupSequencer:
         `WiredSensor` from that dir) and its frozen `_data`. Sensors
         already present in the opt-in disk cache
         (`NEXUS_SENSOR_CACHE_DIR`) are loaded directly; the remaining
-        misses are reconstructed inline (when `max_workers <= 1`) or
-        across a `ProcessPoolExecutor`, then persisted to the cache.
+        misses are reconstructed inline and persisted to the cache.
+        Parallel reconstruction is done ahead of launch by
+        `nexus.startup.warm_cache`, never in this process.
 
         Per-sensor failures are logged with full context and skipped.
         The account aborts with `StartupError` only when no sensor
@@ -790,14 +786,16 @@ class StartupSequencer:
         misses: list[_SensorWiringTask],
         loaders: dict[Path, Trainer],
     ) -> dict[tuple[Path, int], Any]:
-        '''Reconstruct cache-miss sensors inline or across a process pool.
+        '''Reconstruct cache-miss sensors inline in this process.
 
-        When `_sensor_wire_max_workers <= 1` reconstruction runs inline
-        in this process so a patched `Trainer` (used by tests) applies;
-        otherwise it fans out across a `ProcessPoolExecutor` seeded with
-        each dir's frozen `_data` via the pool initializer.
+        Reconstruction always runs inline: the launcher owns Polars'
+        rayon thread pool, and creating a `ProcessPoolExecutor` here
+        crashes that pool (see `nexus.startup.warm_cache`, which runs the
+        parallel reconstruction in a separate pre-launch process). With a
+        warm cache the inline path only reconstructs the handful of
+        uncached misses, so it stays cheap.
 
-        Misses are deduplicated by `task.key` before reconstruction, so a
+        Misses are deduplicated by `task.key` first, so a
         `(dir, permutation_id)` referenced by more than one task (e.g.
         shared across strategies) is reconstructed exactly once; the
         result is keyed by `task.key`, so the caller's per-task wiring
@@ -823,12 +821,7 @@ class StartupSequencer:
         for task in misses:
             unique.setdefault(task.key, task)
 
-        deduped = list(unique.values())
-
-        if self._sensor_wire_max_workers <= 1:
-            return self._reconstruct_inline(deduped, loaders)
-
-        return self._reconstruct_pooled(deduped, loaders)
+        return self._reconstruct_inline(list(unique.values()), loaders)
 
     def _reconstruct_inline(
         self,
@@ -851,46 +844,6 @@ class StartupSequencer:
                 continue
 
             results[task.key] = sensors[0] if sensors else None
-
-        return results
-
-    def _reconstruct_pooled(
-        self,
-        misses: list[_SensorWiringTask],
-        loaders: dict[Path, Trainer],
-    ) -> dict[tuple[Path, int], Any]:
-        '''Reconstruct misses across a `ProcessPoolExecutor`.'''
-
-        miss_dirs = {task.resolved_dir for task in misses}
-        # NOTE: loader._data is a private attribute on Limen Trainer.
-        # No public accessor exists as of vaquum_limen 4.0.1.
-        data_by_dir = {
-            str(resolved_dir): loaders[resolved_dir]._data
-            for resolved_dir in miss_dirs
-        }
-
-        results: dict[tuple[Path, int], Any] = {}
-        max_workers = min(self._sensor_wire_max_workers, len(misses))
-
-        with ProcessPoolExecutor(
-            max_workers=max_workers,
-            initializer=init_worker,
-            initargs=(data_by_dir,),
-        ) as pool:
-            futures = {
-                pool.submit(
-                    reconstruct_sensor,
-                    str(task.resolved_dir),
-                    task.permutation_id,
-                ): task
-                for task in misses
-            }
-
-            for future, task in futures.items():
-                try:
-                    results[task.key] = future.result()
-                except Exception:  # noqa: BLE001 - per-sensor isolation
-                    self._log_reconstruction_failure(task)
 
         return results
 
