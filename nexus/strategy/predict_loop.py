@@ -1,19 +1,35 @@
-'''Timer-based predict loop for signal generation.
+'''Process-backed predict loop for signal generation.
 
-Runs per-sensor timers that call produce_signal and dispatch
-the resulting Signal to the bound strategy. Captures the
-list[Action] returned from each dispatch and forwards it to an
-injected `action_submit` callback (typically `submit_actions`
-from `nexus.strategy.action_submit`, curried with validator,
-config, state, and PraxisOutbound by the launcher).
+Schedules per-sensor predict ticks across a spawn
+`ProcessPoolExecutor` (`NEXUS_PREDICT_MAX_WORKERS`, default 16)
+so the GIL-bound Limen `prepare_data` parallelises across cores.
+One scheduler thread polls per-sensor due-times; due sensors are
+grouped by `kline_size` and each group's aggregated market-data
+frame is written to a per-cycle Arrow IPC file (refcounted,
+shared) that workers read via `pl.read_ipc`. Each worker
+rebuilds the (unpicklable) Limen manifest from `experiment_dir`
+via `Trainer(...)._manifest`, cached per worker, so the heavy
+manifest never crosses the pickle boundary; only the small
+fitted `sensor` does.
 
-Logs every signal at INFO immediately after `produce_signal()`
+Strategy dispatch stays in the parent process. The pool's
+result-handling thread invokes `_handle_predict_result`, which
+runs `_log_signal`, `context_provider`,
+`runner.dispatch_signal`, and `action_submit` serially in the
+parent — so capital, WAL, and risk plumbing are never touched
+by a worker.
+
+Logs every produced Signal at INFO immediately after the worker
 returns, BEFORE the strategy's dispatch handler is called. This
 gives operators full visibility into predictor output regardless
 of whether the strategy chose to emit an action — without this,
 a HOLD-only strategy (every prediction maps to no-action) is
 indistinguishable from a broken predict path because the
 strategy itself logs nothing on HOLD.
+
+`tick_once` retains the original in-process synchronous predict
+path for deterministic backtest replay; it does not touch the
+process pool.
 '''
 
 from __future__ import annotations
@@ -148,6 +164,8 @@ def _predict_in_process(task: PredictTask, market_data_path: str) -> Signal:
     manifest = _WORKER_MANIFESTS.get(task.experiment_dir)
 
     if manifest is None:
+        # NOTE: Trainer._manifest is a private attribute on Limen Trainer.
+        # No public accessor exists as of vaquum_limen 4.0.1.
         manifest = Trainer(Path(task.experiment_dir))._manifest
         _WORKER_MANIFESTS[task.experiment_dir] = manifest
 
@@ -658,7 +676,13 @@ class PredictLoop:
         return path
 
     def _maybe_unlink_ipc(self, path: Path) -> None:
-        '''Delete an IPC file once it is non-current and unreferenced.'''
+        '''Delete an IPC file once it is non-current and unreferenced.
+
+        Swallows OS-level unlink failures with a logged exception. Called
+        from the result-handler thread's done-callback `finally`; an
+        uncaught exception would propagate into the executor's internal
+        thread and only the stdlib default handler would see it.
+        '''
 
         with self._lock:
             if self._ipc_refs.get(path, 0) > 0:
@@ -669,7 +693,10 @@ class PredictLoop:
 
             self._ipc_refs.pop(path, None)
 
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            _log.exception('failed to unlink predict market-data IPC %s', path)
 
     def _reschedule(self, key: str) -> None:
         '''Release the in-flight mark and arm the next due-time.'''

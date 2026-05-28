@@ -1100,3 +1100,19 @@ Both changes together close the window. Option (1) alone is preferred where feas
 **When to fix**: When a manifest wires sensors from multiple large experiment_dirs under process-parallel reconstruction.
 
 **Migration**: Shard reconstruction by dir — either a separate `ProcessPoolExecutor` per experiment_dir (each seeded with only its own `_data`), or a worker `initializer` that lazily loads a dir's `_data` on first use behind a small per-worker LRU, so a worker holds only the bundles it actually touches.
+
+---
+
+## TD-089: PredictLoop test executor runs done-callbacks inline, not on a separate thread
+
+**Origin**: Greybeard pre-PR review of `fix/wire-pool-spawn-start-method` (v0.53.0 process-pool predict executor)
+**Severity**: Low (test fidelity only; production correctness verified by real spawn-pool smoke test)
+**Module**: `tests/test_predict_loop.py` `_SyncExecutor`
+
+`_SyncExecutor.submit` returns a completed `concurrent.futures.Future`. When `_submit_one` then calls `future.add_done_callback(_on_done)` on a future that is already done, the callback fires **inline in the calling thread** (the scheduler thread). The production `ProcessPoolExecutor` invokes done-callbacks on a separate result-handler thread, so the parent-side dispatch chain (`_log_signal` -> `context_provider` -> `dispatch_signal` -> `action_submit`) actually runs concurrent with the scheduler thread's next iteration. The test double therefore cannot exercise any cross-thread race between scheduling and result handling — for example, a `stop()` racing against an in-flight callback, or two callbacks contending for `self._lock` while the scheduler is mid-poll.
+
+The `MagicMock`-sensor + spawn-pickle-boundary constraint forced this seam; the test executor is the only practical way to exercise parent-side behavior without spawning real workers (which would also bypass the mocks and try to load a real bundle from disk). Real-pool coverage is limited to the smoke test in the session that ships the change (and the prod runtime itself).
+
+**When to fix**: When a concurrency defect in the parent-side scheduler/callback interaction is suspected or reported, or when adding a feature that meaningfully changes lock scope in `_handle_predict_result`, `_submit_one`, or `_maybe_unlink_ipc`.
+
+**Migration**: Add a second test double that submits to a thread-based executor and fires `add_done_callback` from a worker thread (or use a real `ThreadPoolExecutor` patched in place of `ProcessPoolExecutor`); use it for the lock/race-sensitive subset of tests while keeping the synchronous `_SyncExecutor` for the dispatch-chain tests that don't need cross-thread fidelity. An integration test against a real spawn pool with a recorded bundle on disk would be even stronger but requires CI infrastructure to ship a small fixture bundle.

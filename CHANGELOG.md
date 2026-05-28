@@ -589,27 +589,27 @@
 
 - `_wire_sensors` in [`nexus/startup/sequencer.py`](nexus/startup/sequencer.py) no longer runs a `ProcessPoolExecutor`; it reconstructs cache misses **inline only**. `NEXUS_WIRE_MAX_WORKERS` no longer affects the launcher — it now governs the standalone warmer below. Parallel reconstruction must be done ahead of launch via `python -m nexus.startup.warm_cache`. A deployment that previously set `NEXUS_WIRE_MAX_WORKERS > 1` to parallelize in-launcher wiring must move that to the pre-launch warmer step
 
-### Fix
-
-- Move parallel sensor reconstruction out of the launcher process into a new pre-launch warmer, [`nexus/startup/warm_cache.py`](nexus/startup/warm_cache.py). The launcher owns Polars' global rayon thread pool (market-data cache); creating a worker `ProcessPoolExecutor` in that process degrades the rayon pool and a later large Polars merge **segfaults** the process (rayon worker stack overflow → SIGSEGV → restart-loop). Observed on a 5000-permutation deploy: `_polars_runtime.abi3.so` segfaults on a `polars-N` thread every ~37min, fault address just below the thread stack pointer, regardless of worker count; 0.66.0 (serial, no pool) ran 8h clean. The warmer reconstructs every sensor in a process that never imports Polars and exits before the launcher starts, writes the disk cache, and the launcher then wires inline against the warm cache — keeping the CPU-bound pool and the Polars-using trading runtime in separate processes
-
 ### Add
 
 - Add [`nexus/startup/warm_cache.py`](nexus/startup/warm_cache.py) (`python -m nexus.startup.warm_cache`): collects the union of `(experiment_dir, permutation_id)` tasks across one or more manifests (`--manifests-dir` mirrors the launcher's `MANIFESTS_DIR` enumeration of every `*.yaml`/`*.yml`, plus repeatable `--manifest`), skips already-cached entries, and reconstructs the rest across a `spawn` `ProcessPoolExecutor` (`NEXUS_WIRE_MAX_WORKERS` / `--max-workers`). It pins `OMP_NUM_THREADS`/`OPENBLAS_NUM_THREADS`/`MKL_NUM_THREADS`/`NUMEXPR_NUM_THREADS` to `1` before spawning workers so `N` workers use `N` cores rather than `N × cores` (the BLAS oversubscription that made a 32-worker wire thrash all 48 cores at ~38 perms/min). Per-sensor `ReconstructionError` (Limen metric-jitter) failures are logged and skipped
 - Add [`tests/test_warm_cache.py`](tests/test_warm_cache.py): the warmer dedups tasks within and across manifests, builds the pool with a `spawn` context, pins BLAS to one thread, and writes one cache entry per reconstructed sensor
 
-## v0.53.0 on 28th of May, 2026
-
 ### Fix
 
-- Replace [`PredictLoop`](nexus/strategy/predict_loop.py)'s bounded `ThreadPoolExecutor` with a `spawn` `ProcessPoolExecutor`, lifting the GIL-bound `prepare_data` cost out of the predict cycle. On a 5000-permutation 15m deploy, threads do not scale (Limen `MLManifest.prepare_data` is ~4.4s/predict and ~99.9% Python/Polars — measured 6.37 predicts/sec across 16 spawn workers vs ~0.3 predicts/sec serial; required 5.05/sec to hit the 15-minute cadence SLA). Strategy dispatch, context lookup, and action submission stay in the parent process and are serialized by the pool's result-handling thread, so capital/WAL/risk plumbing is untouched
-- Add `NEXUS_PREDICT_MAX_WORKERS` (default `16`) and `NEXUS_PREDICT_POLARS_MAX_THREADS` (default `1`); the latter is set via `os.environ.setdefault('POLARS_MAX_THREADS', ...)` before pool creation so spawned worker interpreters inherit it. Bounding Polars to one thread per worker stops BLAS-style oversubscription (`N` workers x `M` rayon threads) without changing parent-side Polars use
+- Move parallel sensor reconstruction out of the launcher process into a new pre-launch warmer, [`nexus/startup/warm_cache.py`](nexus/startup/warm_cache.py). The launcher owns Polars' global rayon thread pool (market-data cache); creating a worker `ProcessPoolExecutor` in that process degrades the rayon pool and a later large Polars merge **segfaults** the process (rayon worker stack overflow → SIGSEGV → restart-loop). Observed on a 5000-permutation deploy: `_polars_runtime.abi3.so` segfaults on a `polars-N` thread every ~37min, fault address just below the thread stack pointer, regardless of worker count; 0.66.0 (serial, no pool) ran 8h clean. The warmer reconstructs every sensor in a process that never imports Polars and exits before the launcher starts, writes the disk cache, and the launcher then wires inline against the warm cache — keeping the CPU-bound pool and the Polars-using trading runtime in separate processes
+
+## v0.53.0 on 28th of May, 2026
 
 ### Add
 
 - Add `experiment_dir: Path` field to [`WiredSensor`](nexus/startup/sequencer.py) (and pass `task.resolved_dir` at construction) so a predict worker can rebuild the (unpicklable) Limen manifest from disk via `Trainer(experiment_dir)._manifest` rather than receive it across the pickle boundary. The fitted `sensor` (small) still rides the submit pickle; the manifest is cached per worker in a module-level `_WORKER_MANIFESTS` dict so it is built once per worker per experiment dir
 - Add per-cycle Arrow IPC sharing of the aggregated market-data frame: the parent computes one aggregation per `(kline_size, latest_bar)`, writes it to a temp Arrow IPC file under a refcounted lifecycle (`_ipc_current`, `_ipc_refs`, `_maybe_unlink_ipc`), and submits each due sensor with `(PredictTask, path)`. Workers read the file (cached per path in `_WORKER_MARKET_DATA`, bounded to `_WORKER_MARKET_DATA_CACHE_MAX=4` frames). This means 5000 sensors sharing one kline pay a single parent aggregation per cycle, not one per sensor
 - Add new module-level worker surface in [`predict_loop.py`](nexus/strategy/predict_loop.py): frozen `PredictTask` dataclass, `_predict_worker_init`, `_predict_in_process(task, market_data_path)` (rebuild manifest, read IPC, run `produce_signal`, return Signal), and `_market_data_signature` for the IPC cache key
+- Add `NEXUS_PREDICT_MAX_WORKERS` (default `16`) and `NEXUS_PREDICT_POLARS_MAX_THREADS` (default `1`); the latter is set via `os.environ.setdefault('POLARS_MAX_THREADS', ...)` before pool creation so spawned worker interpreters inherit it. Bounding Polars to one thread per worker stops BLAS-style oversubscription (`N` workers x `M` rayon threads) without changing parent-side Polars use
+
+### Fix
+
+- Replace [`PredictLoop`](nexus/strategy/predict_loop.py)'s bounded `ThreadPoolExecutor` with a `spawn` `ProcessPoolExecutor`, lifting the GIL-bound `prepare_data` cost out of the predict cycle. On a 5000-permutation 15m deploy, threads do not scale (Limen `MLManifest.prepare_data` is ~4.4s/predict and ~99.9% Python/Polars — measured 6.37 predicts/sec across 16 spawn workers vs ~0.3 predicts/sec serial; required 5.05/sec to hit the 15-minute cadence SLA). Strategy dispatch, context lookup, and action submission stay in the parent process and are serialized by the pool's result-handling thread, so capital/WAL/risk plumbing is untouched
 
 ### Update
 
