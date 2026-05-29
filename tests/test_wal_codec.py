@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import ItemsView
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import cast
@@ -16,6 +16,7 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
+from nexus.infrastructure import wal_codec
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal_codec import (
     deserialize_event,
@@ -627,11 +628,24 @@ class TestEventSerializationOutput:
         assert isinstance(unpacked, dict)
 
 
+def _anchor_position(trade_id: str) -> Position:
+    '''Build a Position with `trade_id` and otherwise minimal fields.'''
+
+    return Position(
+        trade_id=trade_id,
+        strategy_id=f'{trade_id}_strat',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=Decimal('0.001'),
+        entry_price=Decimal('70000'),
+        unrealized_pnl=Decimal('0'),
+    )
+
+
 class TestSerializeStateConcurrentMutation:
     '''Pin: `serialize_state` must not raise
     `RuntimeError: dictionary changed size during iteration` when
-    another thread mutates `state.positions` or `state.strategy_modes`
-    concurrently.
+    another thread mutates `state.positions` concurrently.
 
     The v0.53.0-era prod hit this exact failure path: an
     OutcomeProcessor / dispatch thread was inserting/popping into
@@ -648,46 +662,71 @@ class TestSerializeStateConcurrentMutation:
     mutations from other threads.
     '''
 
-    def test_serialize_snapshots_positions_before_iterating_subdicts(self) -> None:
-        '''Serialize takes a single C-level `dict()` snapshot of
-        `state.positions` and `state.strategy_modes` before
-        comprehending them, so a writer mutating those dicts after the
-        snapshot cannot trigger
-        `RuntimeError: dictionary changed size during iteration`.
+    def test_serialize_does_not_observe_mid_iteration_position_insert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''An insert into `state.positions` that lands mid-iteration
+        of the encode comprehension must not trip the dict-mutation
+        guard, and the resulting payload must reflect the pre-insert
+        snapshot only.
 
-        Deterministic test: substitute `state.positions` with a
-        spy-dict that mutates *itself* every time it is asked for an
-        `items()` view. Without the snapshot, the comprehension would
-        iterate the spy-dict directly and trip the mutation guard on
-        the first `next()`. With the snapshot, `dict(spy)` evaluates
-        first and the comprehension iterates the copy.
+        The test wraps `_encode_position` with a barrier that suspends
+        the encoder during the **first** position encode; a worker
+        thread then inserts a fresh position into `state.positions`
+        and releases the barrier. Without the `dict(state.positions)`
+        snapshot in `serialize_state`, the comprehension would iterate
+        the live dict and the next item-view step after the worker's
+        insert would raise
+        `RuntimeError: dictionary changed size during iteration`,
+        which propagates out of `serialize_state` and fails the test.
+        With the snapshot, the comprehension iterates the copy taken
+        before the encoder enters the barrier, so the worker's insert
+        is invisible to the payload.
         '''
 
-        class _MutatingDict(dict[str, Position]):
-            '''Mutates itself on every items() call to surface a stale-iteration bug.'''
-
-            def __init__(self, src: dict[str, Position]) -> None:
-                super().__init__(src)
-                self._tag = 0
-
-            def items(self) -> ItemsView[str, Position]:  # type: ignore[override]
-                self._tag += 1
-                self[f'_spy_inserted_{self._tag}'] = next(iter(super().values()))
-
-                return super().items()
-
         state = _make_minimal_state()
-        state.positions['anchor'] = Position(
-            trade_id='anchor',
-            strategy_id='anchor_strat',
-            symbol='BTCUSDT',
-            side=OrderSide.BUY,
-            size=Decimal('0.001'),
-            entry_price=Decimal('70000'),
-            unrealized_pnl=Decimal('0'),
-        )
-        state.positions = _MutatingDict(state.positions)
+
+        for i in range(5):
+            state.positions[f'anchor_{i}'] = _anchor_position(f'anchor_{i}')
+
+        original_encode = wal_codec._encode_position
+        encoder_inside_barrier = threading.Event()
+        encoder_release_barrier = threading.Event()
+        encode_call_count = 0
+
+        def barriered_encode(position: Position) -> dict[str, str]:
+            nonlocal encode_call_count
+            encode_call_count += 1
+
+            if encode_call_count == 1:
+                encoder_inside_barrier.set()
+                encoder_release_barrier.wait(timeout=2)
+
+            return original_encode(position)
+
+        monkeypatch.setattr(wal_codec, '_encode_position', barriered_encode)
+
+        mutator_done = threading.Event()
+
+        def mutator() -> None:
+            encoder_inside_barrier.wait(timeout=2)
+            state.positions['injected_after_iter_started'] = _anchor_position(
+                'injected_after_iter_started'
+            )
+            encoder_release_barrier.set()
+            mutator_done.set()
+
+        worker = threading.Thread(target=mutator)
+        worker.start()
 
         payload = serialize_state(state)
 
-        assert isinstance(payload, bytes)
+        worker.join(timeout=2)
+
+        assert mutator_done.is_set()
+
+        decoded = deserialize_state(payload)
+
+        assert 'injected_after_iter_started' not in decoded.positions
+        assert sorted(decoded.positions) == [f'anchor_{i}' for i in range(5)]
