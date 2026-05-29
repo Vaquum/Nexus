@@ -808,3 +808,108 @@ class TestSerializeStateConcurrentMutation:
 
         assert 'injected_after_iter_started' not in decoded.strategy_modes
         assert sorted(decoded.strategy_modes) == [f'anchor_strat_{i}' for i in range(5)]
+
+    def test_serialize_does_not_observe_mid_iteration_risk_per_strategy_insert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''Symmetric guarantee for `state.risk.per_strategy`. The
+        v0.53.1 hotfix originally snapshotted only the two top-level
+        `state.positions` / `state.strategy_modes` dicts; PR #75 review
+        surfaced that `_encode_risk_state` and `_encode_capital_state`
+        also iterate per-strategy dicts inside `serialize_state` and
+        run without `positions_lock` / `CapitalController._lock` since
+        `wal_lock` is innermost in the lock chain. This test pins the
+        snapshot inside `_encode_risk_state` using the same barrier
+        pattern as the positions / strategy_modes tests: monkey-patch
+        `_encode_strategy_risk_state` to block during the first call,
+        worker thread inserts a fresh StrategyRiskState into
+        `state.risk.per_strategy` and releases the barrier, decoded
+        payload must omit the injected key.
+        '''
+
+        state = _make_minimal_state()
+
+        for i in range(5):
+            state.risk.per_strategy[f'anchor_strat_{i}'] = StrategyRiskState(
+                strategy_id=f'anchor_strat_{i}',
+            )
+
+        original_encode = wal_codec._encode_strategy_risk_state
+        encoder_inside_barrier = threading.Event()
+        encoder_release_barrier = threading.Event()
+        encode_call_count = 0
+
+        def barriered_encode(srs: StrategyRiskState) -> dict[str, str]:
+            nonlocal encode_call_count
+            encode_call_count += 1
+
+            if encode_call_count == 1:
+                encoder_inside_barrier.set()
+                assert encoder_release_barrier.wait(timeout=2), (
+                    'mutator did not release the barrier within 2s'
+                )
+
+            return original_encode(srs)
+
+        monkeypatch.setattr(wal_codec, '_encode_strategy_risk_state', barriered_encode)
+
+        mutator_done = threading.Event()
+        worker_errors: list[str] = []
+
+        def mutator() -> None:
+            if not encoder_inside_barrier.wait(timeout=2):
+                worker_errors.append('encoder did not reach barrier within 2s')
+                return
+
+            state.risk.per_strategy['injected_after_iter_started'] = StrategyRiskState(
+                strategy_id='injected_after_iter_started',
+            )
+            encoder_release_barrier.set()
+            mutator_done.set()
+
+        worker = threading.Thread(target=mutator, daemon=True)
+        worker.start()
+
+        payload = serialize_state(state)
+
+        worker.join(timeout=2)
+
+        assert not worker.is_alive(), 'mutator thread did not exit within 2s'
+        assert worker_errors == [], f'mutator reported errors: {worker_errors}'
+        assert mutator_done.is_set()
+
+        decoded = deserialize_state(payload)
+
+        assert 'injected_after_iter_started' not in decoded.risk.per_strategy
+        assert sorted(decoded.risk.per_strategy) == [
+            f'anchor_strat_{i}' for i in range(5)
+        ]
+
+    def test_serialize_round_trips_capital_per_strategy_deployed(self) -> None:
+        '''Coverage for the symmetric snapshot at
+        `_encode_capital_state` line 126. The comprehension over
+        `cs.per_strategy_deployed` has no per-item helper to patch
+        (it calls `str(deployed)` directly), so a barrier-style
+        test cannot be written without refactoring production code
+        for testability. This round-trip test exercises the encode +
+        decode path with populated `per_strategy_deployed` and pins
+        that the snapshot does not corrupt the encoded payload; the
+        snapshot mechanism itself is proven by the analogous barrier
+        tests for positions, strategy_modes, and risk.per_strategy.
+        '''
+
+        state = _make_minimal_state()
+
+        state.capital.per_strategy_deployed['strat_a'] = Decimal('1234.56')
+        state.capital.per_strategy_deployed['strat_b'] = Decimal('7890.12')
+        state.capital.per_strategy_deployed['strat_c'] = Decimal('0')
+
+        payload = serialize_state(state)
+        decoded = deserialize_state(payload)
+
+        assert dict(decoded.capital.per_strategy_deployed) == {
+            'strat_a': Decimal('1234.56'),
+            'strat_b': Decimal('7890.12'),
+            'strat_c': Decimal('0'),
+        }

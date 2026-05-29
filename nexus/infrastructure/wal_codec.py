@@ -123,6 +123,8 @@ def _encode_capital_state(cs: CapitalState) -> dict[str, Any]:
         ``strategy_id -> deployed Decimal`` encoded as strings.
     '''
 
+    per_strategy_deployed_snapshot = dict(cs.per_strategy_deployed)
+
     return {
         'capital_pool': str(cs.capital_pool),
         'position_notional': str(cs.position_notional),
@@ -132,7 +134,7 @@ def _encode_capital_state(cs: CapitalState) -> dict[str, Any]:
         'reservation_notional': str(cs.reservation_notional),
         'per_strategy_deployed': {
             strategy_id: str(deployed)
-            for strategy_id, deployed in cs.per_strategy_deployed.items()
+            for strategy_id, deployed in per_strategy_deployed_snapshot.items()
         },
     }
 
@@ -212,6 +214,8 @@ def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
         Nested dict with per-strategy risk states.
     '''
 
+    per_strategy_snapshot = dict(rs.per_strategy)
+
     return {
         'high_water_mark': str(rs.high_water_mark),
         'starting_capital': str(rs.starting_capital),
@@ -227,7 +231,7 @@ def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
         'max_drawdown': str(rs.max_drawdown),
         'max_drawdown_pct': str(rs.max_drawdown_pct),
         'per_strategy': {
-            k: _encode_strategy_risk_state(v) for k, v in rs.per_strategy.items()
+            k: _encode_strategy_risk_state(v) for k, v in per_strategy_snapshot.items()
         },
     }
 

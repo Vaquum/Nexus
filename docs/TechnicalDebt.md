@@ -1136,3 +1136,5 @@ The lock chain (`command_registry_lock -> positions_lock -> CapitalController._l
 2. Deep-copy inside `serialize_state` by replacing the snapshot with `{k: replace(v) for k, v in state.positions.items()}` (and similarly for `strategy_modes`); the comprehension still iterates a top-level snapshot, and each value is a point-in-time copy of the dataclass fields. Cheaper than option 1 in scope; more expensive at runtime per serialize call.
 
 Option 1 is the right long-term shape (matches `Signal`'s `frozen=True` discipline); option 2 is the contained hotfix if a torn-read incident surfaces before option 1 is ready.
+
+**Scope note (PR #75 review)**: the same shallow-snapshot caveat applies to the v0.53.1 follow-up snapshots in [`_encode_capital_state`](nexus/infrastructure/wal_codec.py) (`per_strategy_deployed: dict[str, Decimal]`) and [`_encode_risk_state`](nexus/infrastructure/wal_codec.py) (`per_strategy: dict[str, StrategyRiskState]`). `Decimal` is immutable so the capital values cannot tear field-wise; `StrategyRiskState` is a non-frozen dataclass and is in scope for the same migration as `Position` / `StrategyModeState`.
