@@ -1116,3 +1116,25 @@ The `MagicMock`-sensor + spawn-pickle-boundary constraint forced this seam; the 
 **When to fix**: When a concurrency defect in the parent-side scheduler/callback interaction is suspected or reported, or when adding a feature that meaningfully changes lock scope in `_handle_predict_result`, `_submit_one`, or `_maybe_unlink_ipc`.
 
 **Migration**: Add a second test double that submits to a thread-based executor and fires `add_done_callback` from a worker thread (or use a real `ThreadPoolExecutor` patched in place of `ProcessPoolExecutor`); use it for the lock/race-sensitive subset of tests while keeping the synchronous `_SyncExecutor` for the dispatch-chain tests that don't need cross-thread fidelity. An integration test against a real spawn pool with a recorded bundle on disk would be even stronger but requires CI infrastructure to ship a small fixture bundle.
+
+## TD-090: `serialize_state` snapshot is shallow — `Position` / `StrategyModeState` field-level torn reads still possible
+
+**Origin**: Greybeard pre-PR review of `fix/signal-pickle-wal-race` (v0.53.1 WAL serialize race)
+**Severity**: Low (no torn-read incident observed; `praxis:0.68.0-mp1` ran 1h41m on prod with 4,253 commands submitted and zero WAL-decode failures before promotion)
+**Module**: [`nexus/infrastructure/wal_codec.py`](nexus/infrastructure/wal_codec.py) `serialize_state`
+
+The v0.53.1 fix snapshots `state.positions` and `state.strategy_modes` via `dict()` before the per-item encode comprehensions, eliminating `RuntimeError: dictionary changed size during iteration`. The snapshot is **shallow**: it copies the top-level mapping but the `Position` and `StrategyModeState` values are still references to the live, non-frozen dataclass instances. [`Position`](nexus/core/domain/position.py) is `@dataclass` without `frozen=True`, as is [`StrategyModeState`](nexus/core/domain/operational_mode.py); a writer holding `positions_lock` can mutate `Position.unrealized_pnl`, `Position.pending_exit`, or any other field between the snapshot at `wal_codec.py:49-50` and the encode call at `wal_codec.py:56` / `wal_codec.py:58-60`, and the WAL captures torn per-position state (e.g. a `size` from time T and an `unrealized_pnl` from time T+1).
+
+The lock chain (`command_registry_lock -> positions_lock -> CapitalController._lock -> wal_lock`) makes `wal_lock` innermost, so `serialize_state` runs without `positions_lock` and cannot rely on writer exclusion. The snapshot narrows the race from "any mutation of the dict tripping iteration" to "field-level mutation of the referenced dataclass instances", but does not eliminate it.
+
+**When to fix**: When a WAL-decode failure or post-recovery state inconsistency is observed that traces to a torn `Position`/`StrategyModeState` snapshot, or when adding any field to those dataclasses that participates in capital/risk math where the encoded value must be a coherent point-in-time read.
+
+**Migration**: Two practical options.
+
+1. Make `Position` and `StrategyModeState` `@dataclass(frozen=True)` and migrate every mutation site to `dataclasses.replace(p, field=new_value)` plus a dict-level `state.positions[k] = new_p` swap. The snapshot then captures immutable instances and the torn-read class disappears entirely.
+
+2. Deep-copy inside `serialize_state` by replacing the snapshot with `{k: replace(v) for k, v in state.positions.items()}` (and similarly for `strategy_modes`); the comprehension still iterates a top-level snapshot, and each value is a point-in-time copy of the dataclass fields. Cheaper than option 1 in scope; more expensive at runtime per serialize call.
+
+Option 1 is the right long-term shape (matches `Signal`'s `frozen=True` discipline); option 2 is the contained hotfix if a torn-read incident surfaces before option 1 is ready.
+
+**Scope note (PR #75 review)**: the same shallow-snapshot caveat applies to the v0.53.1 follow-up snapshots in [`_encode_capital_state`](nexus/infrastructure/wal_codec.py) (`per_strategy_deployed: dict[str, Decimal]`) and [`_encode_risk_state`](nexus/infrastructure/wal_codec.py) (`per_strategy: dict[str, StrategyRiskState]`). `Decimal` is immutable so the capital values cannot tear field-wise; `StrategyRiskState` is a non-frozen dataclass and is in scope for the same migration as `Position` / `StrategyModeState`.

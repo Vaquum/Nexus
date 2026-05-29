@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
 import msgpack
 import pytest
@@ -15,6 +16,7 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState, StrategyModeState
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
+from nexus.infrastructure import wal_codec
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal_codec import (
     deserialize_event,
@@ -624,3 +626,290 @@ class TestEventSerializationOutput:
         result = serialize_event(_make_event())
         unpacked = msgpack.unpackb(result, raw=False)
         assert isinstance(unpacked, dict)
+
+
+def _anchor_position(trade_id: str) -> Position:
+    '''Build a Position with `trade_id` and otherwise minimal fields.'''
+
+    return Position(
+        trade_id=trade_id,
+        strategy_id=f'{trade_id}_strat',
+        symbol='BTCUSDT',
+        side=OrderSide.BUY,
+        size=Decimal('0.001'),
+        entry_price=Decimal('70000'),
+        unrealized_pnl=Decimal('0'),
+    )
+
+
+class TestSerializeStateConcurrentMutation:
+    '''Pin: `serialize_state` must not raise
+    `RuntimeError: dictionary changed size during iteration` when
+    another thread mutates `state.positions` concurrently.
+
+    The v0.53.0-era prod hit this exact failure path: an
+    OutcomeProcessor / dispatch thread was inserting/popping into
+    `state.positions` while `state_store.append_mutation(state)` was
+    iterating the live dict inside `serialize_state`. The error
+    propagated, the outcome ack was withheld (by design), and the
+    instance state-machine demoted the operational mode to
+    `REDUCE_ONLY` — which then blocked every subsequent ENTER for
+    ~26 h until the next epoch reset.
+
+    The fix snapshots `positions` and `strategy_modes` via `dict()`
+    inside `serialize_state` before iterating; `dict()` is a single
+    C-level operation under the GIL and is safe against Python-level
+    mutations from other threads.
+    '''
+
+    def test_serialize_does_not_observe_mid_iteration_position_insert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''An insert into `state.positions` that lands mid-iteration
+        of the encode comprehension must not trip the dict-mutation
+        guard, and the resulting payload must reflect the pre-insert
+        snapshot only.
+
+        The test wraps `_encode_position` with a barrier that suspends
+        the encoder during the **first** position encode; a worker
+        thread then inserts a fresh position into `state.positions`
+        and releases the barrier. Without the `dict(state.positions)`
+        snapshot in `serialize_state`, the comprehension would iterate
+        the live dict and the next item-view step after the worker's
+        insert would raise
+        `RuntimeError: dictionary changed size during iteration`,
+        which propagates out of `serialize_state` and fails the test.
+        With the snapshot, the comprehension iterates the copy taken
+        before the encoder enters the barrier, so the worker's insert
+        is invisible to the payload.
+        '''
+
+        state = _make_minimal_state()
+
+        for i in range(5):
+            state.positions[f'anchor_{i}'] = _anchor_position(f'anchor_{i}')
+
+        original_encode = wal_codec._encode_position
+        encoder_inside_barrier = threading.Event()
+        encoder_release_barrier = threading.Event()
+        encode_call_count = 0
+
+        def barriered_encode(position: Position) -> dict[str, str]:
+            nonlocal encode_call_count
+            encode_call_count += 1
+
+            if encode_call_count == 1:
+                encoder_inside_barrier.set()
+                assert encoder_release_barrier.wait(timeout=2), (
+                    'mutator did not release the barrier within 2s'
+                )
+
+            return original_encode(position)
+
+        monkeypatch.setattr(wal_codec, '_encode_position', barriered_encode)
+
+        mutator_done = threading.Event()
+        worker_errors: list[str] = []
+
+        def mutator() -> None:
+            if not encoder_inside_barrier.wait(timeout=2):
+                worker_errors.append('encoder did not reach barrier within 2s')
+                return
+
+            state.positions['injected_after_iter_started'] = _anchor_position(
+                'injected_after_iter_started'
+            )
+            encoder_release_barrier.set()
+            mutator_done.set()
+
+        worker = threading.Thread(target=mutator, daemon=True)
+        worker.start()
+
+        payload = serialize_state(state)
+
+        worker.join(timeout=2)
+
+        assert not worker.is_alive(), 'mutator thread did not exit within 2s'
+        assert worker_errors == [], f'mutator reported errors: {worker_errors}'
+        assert mutator_done.is_set()
+
+        decoded = deserialize_state(payload)
+
+        assert 'injected_after_iter_started' not in decoded.positions
+        assert sorted(decoded.positions) == [f'anchor_{i}' for i in range(5)]
+
+    def test_serialize_does_not_observe_mid_iteration_strategy_modes_insert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''Symmetric guarantee for `state.strategy_modes`: the snapshot
+        at `serialize_state` covers strategy_modes as well as positions,
+        and an insert that lands while `_encode_strategy_mode_state` is
+        mid-iteration must not trip the dict-mutation guard or appear in
+        the decoded payload. Without the `dict(state.strategy_modes)`
+        snapshot, removing it for strategy_modes alone (while leaving the
+        positions snapshot intact) would silently slip past the
+        positions-only test.
+        '''
+
+        state = _make_minimal_state()
+
+        for i in range(5):
+            state.strategy_modes[f'anchor_strat_{i}'] = StrategyModeState(
+                strategy_id=f'anchor_strat_{i}',
+            )
+
+        original_encode = wal_codec._encode_strategy_mode_state
+        encoder_inside_barrier = threading.Event()
+        encoder_release_barrier = threading.Event()
+        encode_call_count = 0
+
+        def barriered_encode(sms: StrategyModeState) -> dict[str, Any]:
+            nonlocal encode_call_count
+            encode_call_count += 1
+
+            if encode_call_count == 1:
+                encoder_inside_barrier.set()
+                assert encoder_release_barrier.wait(timeout=2), (
+                    'mutator did not release the barrier within 2s'
+                )
+
+            return original_encode(sms)
+
+        monkeypatch.setattr(wal_codec, '_encode_strategy_mode_state', barriered_encode)
+
+        mutator_done = threading.Event()
+        worker_errors: list[str] = []
+
+        def mutator() -> None:
+            if not encoder_inside_barrier.wait(timeout=2):
+                worker_errors.append('encoder did not reach barrier within 2s')
+                return
+
+            state.strategy_modes['injected_after_iter_started'] = StrategyModeState(
+                strategy_id='injected_after_iter_started',
+            )
+            encoder_release_barrier.set()
+            mutator_done.set()
+
+        worker = threading.Thread(target=mutator, daemon=True)
+        worker.start()
+
+        payload = serialize_state(state)
+
+        worker.join(timeout=2)
+
+        assert not worker.is_alive(), 'mutator thread did not exit within 2s'
+        assert worker_errors == [], f'mutator reported errors: {worker_errors}'
+        assert mutator_done.is_set()
+
+        decoded = deserialize_state(payload)
+
+        assert 'injected_after_iter_started' not in decoded.strategy_modes
+        assert sorted(decoded.strategy_modes) == [f'anchor_strat_{i}' for i in range(5)]
+
+    def test_serialize_does_not_observe_mid_iteration_risk_per_strategy_insert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''Symmetric guarantee for `state.risk.per_strategy`. The
+        v0.53.1 hotfix originally snapshotted only the two top-level
+        `state.positions` / `state.strategy_modes` dicts; PR #75 review
+        surfaced that `_encode_risk_state` and `_encode_capital_state`
+        also iterate per-strategy dicts inside `serialize_state` and
+        run without `positions_lock` / `CapitalController._lock` since
+        `wal_lock` is innermost in the lock chain. This test pins the
+        snapshot inside `_encode_risk_state` using the same barrier
+        pattern as the positions / strategy_modes tests: monkey-patch
+        `_encode_strategy_risk_state` to block during the first call,
+        worker thread inserts a fresh StrategyRiskState into
+        `state.risk.per_strategy` and releases the barrier, decoded
+        payload must omit the injected key.
+        '''
+
+        state = _make_minimal_state()
+
+        for i in range(5):
+            state.risk.per_strategy[f'anchor_strat_{i}'] = StrategyRiskState(
+                strategy_id=f'anchor_strat_{i}',
+            )
+
+        original_encode = wal_codec._encode_strategy_risk_state
+        encoder_inside_barrier = threading.Event()
+        encoder_release_barrier = threading.Event()
+        encode_call_count = 0
+
+        def barriered_encode(srs: StrategyRiskState) -> dict[str, str]:
+            nonlocal encode_call_count
+            encode_call_count += 1
+
+            if encode_call_count == 1:
+                encoder_inside_barrier.set()
+                assert encoder_release_barrier.wait(timeout=2), (
+                    'mutator did not release the barrier within 2s'
+                )
+
+            return original_encode(srs)
+
+        monkeypatch.setattr(wal_codec, '_encode_strategy_risk_state', barriered_encode)
+
+        mutator_done = threading.Event()
+        worker_errors: list[str] = []
+
+        def mutator() -> None:
+            if not encoder_inside_barrier.wait(timeout=2):
+                worker_errors.append('encoder did not reach barrier within 2s')
+                return
+
+            state.risk.per_strategy['injected_after_iter_started'] = StrategyRiskState(
+                strategy_id='injected_after_iter_started',
+            )
+            encoder_release_barrier.set()
+            mutator_done.set()
+
+        worker = threading.Thread(target=mutator, daemon=True)
+        worker.start()
+
+        payload = serialize_state(state)
+
+        worker.join(timeout=2)
+
+        assert not worker.is_alive(), 'mutator thread did not exit within 2s'
+        assert worker_errors == [], f'mutator reported errors: {worker_errors}'
+        assert mutator_done.is_set()
+
+        decoded = deserialize_state(payload)
+
+        assert 'injected_after_iter_started' not in decoded.risk.per_strategy
+        assert sorted(decoded.risk.per_strategy) == [
+            f'anchor_strat_{i}' for i in range(5)
+        ]
+
+    def test_serialize_round_trips_capital_per_strategy_deployed(self) -> None:
+        '''Coverage for the symmetric snapshot at
+        `_encode_capital_state` line 126. The comprehension over
+        `cs.per_strategy_deployed` has no per-item helper to patch
+        (it calls `str(deployed)` directly), so a barrier-style
+        test cannot be written without refactoring production code
+        for testability. This round-trip test exercises the encode +
+        decode path with populated `per_strategy_deployed` and pins
+        that the snapshot does not corrupt the encoded payload; the
+        snapshot mechanism itself is proven by the analogous barrier
+        tests for positions, strategy_modes, and risk.per_strategy.
+        '''
+
+        state = _make_minimal_state()
+
+        state.capital.per_strategy_deployed['strat_a'] = Decimal('1234.56')
+        state.capital.per_strategy_deployed['strat_b'] = Decimal('7890.12')
+        state.capital.per_strategy_deployed['strat_c'] = Decimal('0')
+
+        payload = serialize_state(state)
+        decoded = deserialize_state(payload)
+
+        assert dict(decoded.capital.per_strategy_deployed) == {
+            'strat_a': Decimal('1234.56'),
+            'strat_b': Decimal('7890.12'),
+            'strat_c': Decimal('0'),
+        }

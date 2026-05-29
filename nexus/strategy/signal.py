@@ -60,6 +60,26 @@ class Signal:
 
         object.__setattr__(self, 'values', MappingProxyType(dict(self.values)))
 
+    def __reduce__(self) -> tuple[Any, tuple[Any, ...]]:
+        '''Pickle protocol: ship `values` as a plain dict across the wire.
+
+        `__post_init__` wraps `values` in a `MappingProxyType` for
+        immutability, which is not picklable. Without this hook, returning
+        a `Signal` from a `ProcessPoolExecutor` worker (e.g. the
+        `PredictLoop` spawn pool) fails with
+        `TypeError: cannot pickle 'mappingproxy' object` inside the pool's
+        `_sendback_result`. `__reduce__` re-emits the constructor args with
+        `values` unwrapped to a plain dict; unpickle re-runs
+        `__post_init__` and re-wraps it on the receiving side, preserving
+        the immutability contract for consumers without ever putting a
+        `MappingProxyType` on the wire.
+        '''
+
+        return (
+            self.__class__,
+            (self.predictor_fn_id, dict(self.values), self.timestamp),
+        )
+
     def get(self, key: str, default: Any = None) -> Any:
         '''Get a signal value by key.
 
