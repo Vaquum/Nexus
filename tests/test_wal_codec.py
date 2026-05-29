@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
 import msgpack
 import pytest
@@ -701,29 +701,37 @@ class TestSerializeStateConcurrentMutation:
 
             if encode_call_count == 1:
                 encoder_inside_barrier.set()
-                encoder_release_barrier.wait(timeout=2)
+                assert encoder_release_barrier.wait(timeout=2), (
+                    'mutator did not release the barrier within 2s'
+                )
 
             return original_encode(position)
 
         monkeypatch.setattr(wal_codec, '_encode_position', barriered_encode)
 
         mutator_done = threading.Event()
+        worker_errors: list[str] = []
 
         def mutator() -> None:
-            encoder_inside_barrier.wait(timeout=2)
+            if not encoder_inside_barrier.wait(timeout=2):
+                worker_errors.append('encoder did not reach barrier within 2s')
+                return
+
             state.positions['injected_after_iter_started'] = _anchor_position(
                 'injected_after_iter_started'
             )
             encoder_release_barrier.set()
             mutator_done.set()
 
-        worker = threading.Thread(target=mutator)
+        worker = threading.Thread(target=mutator, daemon=True)
         worker.start()
 
         payload = serialize_state(state)
 
         worker.join(timeout=2)
 
+        assert not worker.is_alive(), 'mutator thread did not exit within 2s'
+        assert worker_errors == [], f'mutator reported errors: {worker_errors}'
         assert mutator_done.is_set()
 
         decoded = deserialize_state(payload)
@@ -757,35 +765,43 @@ class TestSerializeStateConcurrentMutation:
         encoder_release_barrier = threading.Event()
         encode_call_count = 0
 
-        def barriered_encode(sms: StrategyModeState) -> dict[str, str]:
+        def barriered_encode(sms: StrategyModeState) -> dict[str, Any]:
             nonlocal encode_call_count
             encode_call_count += 1
 
             if encode_call_count == 1:
                 encoder_inside_barrier.set()
-                encoder_release_barrier.wait(timeout=2)
+                assert encoder_release_barrier.wait(timeout=2), (
+                    'mutator did not release the barrier within 2s'
+                )
 
             return original_encode(sms)
 
         monkeypatch.setattr(wal_codec, '_encode_strategy_mode_state', barriered_encode)
 
         mutator_done = threading.Event()
+        worker_errors: list[str] = []
 
         def mutator() -> None:
-            encoder_inside_barrier.wait(timeout=2)
+            if not encoder_inside_barrier.wait(timeout=2):
+                worker_errors.append('encoder did not reach barrier within 2s')
+                return
+
             state.strategy_modes['injected_after_iter_started'] = StrategyModeState(
                 strategy_id='injected_after_iter_started',
             )
             encoder_release_barrier.set()
             mutator_done.set()
 
-        worker = threading.Thread(target=mutator)
+        worker = threading.Thread(target=mutator, daemon=True)
         worker.start()
 
         payload = serialize_state(state)
 
         worker.join(timeout=2)
 
+        assert not worker.is_alive(), 'mutator thread did not exit within 2s'
+        assert worker_errors == [], f'mutator reported errors: {worker_errors}'
         assert mutator_done.is_set()
 
         decoded = deserialize_state(payload)
