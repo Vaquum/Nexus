@@ -46,14 +46,17 @@ def serialize_state(state: InstanceState) -> bytes:
         Msgpack-encoded bytes.
     '''
 
+    positions_snapshot = dict(state.positions)
+    strategy_modes_snapshot = dict(state.strategy_modes)
+
     d: dict[str, Any] = {
         '_v': _CODEC_VERSION_LATEST,
         'capital': _encode_capital_state(state.capital),
         'risk': _encode_risk_state(state.risk),
-        'positions': {k: _encode_position(v) for k, v in state.positions.items()},
+        'positions': {k: _encode_position(v) for k, v in positions_snapshot.items()},
         'mode': _encode_mode_state(state.mode),
         'strategy_modes': {
-            k: _encode_strategy_mode_state(v) for k, v in state.strategy_modes.items()
+            k: _encode_strategy_mode_state(v) for k, v in strategy_modes_snapshot.items()
         },
     }
     return cast(bytes, msgpack.packb(d))

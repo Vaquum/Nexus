@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import ItemsView
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import cast
@@ -624,3 +625,69 @@ class TestEventSerializationOutput:
         result = serialize_event(_make_event())
         unpacked = msgpack.unpackb(result, raw=False)
         assert isinstance(unpacked, dict)
+
+
+class TestSerializeStateConcurrentMutation:
+    '''Pin: `serialize_state` must not raise
+    `RuntimeError: dictionary changed size during iteration` when
+    another thread mutates `state.positions` or `state.strategy_modes`
+    concurrently.
+
+    The v0.53.0-era prod hit this exact failure path: an
+    OutcomeProcessor / dispatch thread was inserting/popping into
+    `state.positions` while `state_store.append_mutation(state)` was
+    iterating the live dict inside `serialize_state`. The error
+    propagated, the outcome ack was withheld (by design), and the
+    instance state-machine demoted the operational mode to
+    `REDUCE_ONLY` — which then blocked every subsequent ENTER for
+    ~26 h until the next epoch reset.
+
+    The fix snapshots `positions` and `strategy_modes` via `dict()`
+    inside `serialize_state` before iterating; `dict()` is a single
+    C-level operation under the GIL and is safe against Python-level
+    mutations from other threads.
+    '''
+
+    def test_serialize_snapshots_positions_before_iterating_subdicts(self) -> None:
+        '''Serialize takes a single C-level `dict()` snapshot of
+        `state.positions` and `state.strategy_modes` before
+        comprehending them, so a writer mutating those dicts after the
+        snapshot cannot trigger
+        `RuntimeError: dictionary changed size during iteration`.
+
+        Deterministic test: substitute `state.positions` with a
+        spy-dict that mutates *itself* every time it is asked for an
+        `items()` view. Without the snapshot, the comprehension would
+        iterate the spy-dict directly and trip the mutation guard on
+        the first `next()`. With the snapshot, `dict(spy)` evaluates
+        first and the comprehension iterates the copy.
+        '''
+
+        class _MutatingDict(dict[str, Position]):
+            '''Mutates itself on every items() call to surface a stale-iteration bug.'''
+
+            def __init__(self, src: dict[str, Position]) -> None:
+                super().__init__(src)
+                self._tag = 0
+
+            def items(self) -> ItemsView[str, Position]:  # type: ignore[override]
+                self._tag += 1
+                self[f'_spy_inserted_{self._tag}'] = next(iter(super().values()))
+
+                return super().items()
+
+        state = _make_minimal_state()
+        state.positions['anchor'] = Position(
+            trade_id='anchor',
+            strategy_id='anchor_strat',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.001'),
+            entry_price=Decimal('70000'),
+            unrealized_pnl=Decimal('0'),
+        )
+        state.positions = _MutatingDict(state.positions)
+
+        payload = serialize_state(state)
+
+        assert isinstance(payload, bytes)
