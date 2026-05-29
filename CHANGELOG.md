@@ -623,7 +623,7 @@
 ### Add
 
 - Add [`tests/test_signal_pickle.py`](tests/test_signal_pickle.py): direct `pickle.dumps`/`loads` round-trip plus a real `multiprocessing.get_context('spawn')` `ProcessPoolExecutor` round-trip that returns a `Signal` from a worker through the pool's `_sendback_result` to the parent's `future.result()`. This is the exact production failure path; the test fails if `Signal.__reduce__` is removed or stops unwrapping `values` to a plain dict
-- Add [`TestSerializeStateConcurrentMutation`](tests/test_wal_codec.py) to [`tests/test_wal_codec.py`](tests/test_wal_codec.py): substitutes `state.positions` with a `_MutatingDict` spy whose `items()` inserts a new entry on every call, deterministically tripping `RuntimeError: dictionary changed size during iteration` if the snapshot in `serialize_state` is removed; with the snapshot in place, `dict(spy)` evaluates first and the comprehension iterates the copy
+- Add [`TestSerializeStateConcurrentMutation`](tests/test_wal_codec.py) to [`tests/test_wal_codec.py`](tests/test_wal_codec.py): two threading-barrier tests (one for `state.positions`, one for `state.strategy_modes`) that monkey-patch the per-item encoder to block on a `threading.Event` during the first call; a worker thread inserts a fresh entry into the live dict and releases the barrier, so the encoder resumes after a real mid-iteration mutation. Without the snapshot in [`serialize_state`](nexus/infrastructure/wal_codec.py) the next item-view step raises `RuntimeError: dictionary changed size during iteration` and the test fails; with the snapshot, the comprehension iterates the copy taken before the barrier and the assertions confirm the injected key is absent from the decoded payload while every pre-insert anchor key is present
 
 ### Fix
 

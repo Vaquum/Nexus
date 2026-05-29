@@ -730,3 +730,65 @@ class TestSerializeStateConcurrentMutation:
 
         assert 'injected_after_iter_started' not in decoded.positions
         assert sorted(decoded.positions) == [f'anchor_{i}' for i in range(5)]
+
+    def test_serialize_does_not_observe_mid_iteration_strategy_modes_insert(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        '''Symmetric guarantee for `state.strategy_modes`: the snapshot
+        at `serialize_state` covers strategy_modes as well as positions,
+        and an insert that lands while `_encode_strategy_mode_state` is
+        mid-iteration must not trip the dict-mutation guard or appear in
+        the decoded payload. Without the `dict(state.strategy_modes)`
+        snapshot, removing it for strategy_modes alone (while leaving the
+        positions snapshot intact) would silently slip past the
+        positions-only test.
+        '''
+
+        state = _make_minimal_state()
+
+        for i in range(5):
+            state.strategy_modes[f'anchor_strat_{i}'] = StrategyModeState(
+                strategy_id=f'anchor_strat_{i}',
+            )
+
+        original_encode = wal_codec._encode_strategy_mode_state
+        encoder_inside_barrier = threading.Event()
+        encoder_release_barrier = threading.Event()
+        encode_call_count = 0
+
+        def barriered_encode(sms: StrategyModeState) -> dict[str, str]:
+            nonlocal encode_call_count
+            encode_call_count += 1
+
+            if encode_call_count == 1:
+                encoder_inside_barrier.set()
+                encoder_release_barrier.wait(timeout=2)
+
+            return original_encode(sms)
+
+        monkeypatch.setattr(wal_codec, '_encode_strategy_mode_state', barriered_encode)
+
+        mutator_done = threading.Event()
+
+        def mutator() -> None:
+            encoder_inside_barrier.wait(timeout=2)
+            state.strategy_modes['injected_after_iter_started'] = StrategyModeState(
+                strategy_id='injected_after_iter_started',
+            )
+            encoder_release_barrier.set()
+            mutator_done.set()
+
+        worker = threading.Thread(target=mutator)
+        worker.start()
+
+        payload = serialize_state(state)
+
+        worker.join(timeout=2)
+
+        assert mutator_done.is_set()
+
+        decoded = deserialize_state(payload)
+
+        assert 'injected_after_iter_started' not in decoded.strategy_modes
+        assert sorted(decoded.strategy_modes) == [f'anchor_strat_{i}' for i in range(5)]
