@@ -29,6 +29,10 @@ class StrategyRiskState:
         rolling_loss_7d: Rolling 7-day realized loss (optional).
         rolling_loss_30d: Rolling 30-day realized loss (optional).
         strategy_realized_pnl: Cumulative realized P&L for this strategy.
+        strategy_unrealized_pnl: Current mark-to-market unrealized P&L
+            aggregated over this strategy's open positions. Written by
+            `MtmLoop` on each tick; zero when the strategy has no open
+            positions. Signed (can be negative).
     '''
 
     strategy_id: str
@@ -37,6 +41,7 @@ class StrategyRiskState:
     rolling_loss_7d: Decimal = _ZERO
     rolling_loss_30d: Decimal = _ZERO
     strategy_realized_pnl: Decimal = _ZERO
+    strategy_unrealized_pnl: Decimal = _ZERO
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -55,9 +60,11 @@ class StrategyRiskState:
                 msg = f'StrategyRiskState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
 
-        if not self.strategy_realized_pnl.is_finite():
-            msg = 'StrategyRiskState.strategy_realized_pnl must be finite'
-            raise ValueError(msg)
+        for field_name in ('strategy_realized_pnl', 'strategy_unrealized_pnl'):
+            val = getattr(self, field_name)
+            if not val.is_finite():
+                msg = f'StrategyRiskState.{field_name} must be finite'
+                raise ValueError(msg)
 
 
 @dataclass(frozen=True)
@@ -111,8 +118,24 @@ class RiskState:
         total_drawdown_pct: Current drawdown as fraction of equity_hwm.
         realized_drawdown: Current drawdown from realized_equity_hwm.
         unrealized_drawdown: Current unrealized-only drawdown component.
-        max_drawdown: Lifetime worst total drawdown.
-        max_drawdown_pct: Lifetime worst drawdown fraction.
+        max_drawdown: Lifetime worst REALIZED drawdown. Validator risk
+            gates that compare against a calibrated max-drawdown
+            threshold read this field, so its ratchet semantics are
+            stable across deployments with or without an MtmLoop wired.
+            Pre-v0.54.0 deployments had `unrealized_pnl == 0` always so
+            this field's value is identical to what
+            `max(total_drawdown)` would have produced; the field's
+            interpretation has been narrowed from "total" to
+            "realized-only" without changing any historical number.
+        max_drawdown_pct: Lifetime worst realized drawdown fraction
+            (same realized-only semantics as `max_drawdown`).
+        max_total_drawdown: Lifetime worst TOTAL drawdown including
+            unrealized P&L. Ratchets every MtmLoop tick that drops
+            equity below `equity_hwm`. Exposed for telemetry and for
+            gates that want strictly tighter mark-to-market discipline.
+            Defaults to 0 in snapshots written by pre-v0.54.0 Nexus.
+        max_total_drawdown_pct: Lifetime worst total drawdown fraction
+            (same total-equity semantics as `max_total_drawdown`).
         per_strategy: Per-strategy risk state keyed by strategy_id.
     '''
 
@@ -129,6 +152,8 @@ class RiskState:
     unrealized_drawdown: Decimal = _ZERO
     max_drawdown: Decimal = _ZERO
     max_drawdown_pct: Decimal = _ZERO
+    max_total_drawdown: Decimal = _ZERO
+    max_total_drawdown_pct: Decimal = _ZERO
     per_strategy: dict[str, StrategyRiskState] = field(default_factory=dict)
     lock: threading.Lock | None = field(default=None, init=False, repr=False, compare=False)
 
@@ -161,6 +186,8 @@ class RiskState:
             'unrealized_drawdown',
             'max_drawdown',
             'max_drawdown_pct',
+            'max_total_drawdown',
+            'max_total_drawdown_pct',
         ):
             val = getattr(self, field_name)
             if not val.is_finite() or val < _ZERO:
@@ -231,8 +258,17 @@ class RiskState:
         self.realized_drawdown = max(_ZERO, self.realized_equity_hwm - realized_equity)
         self.unrealized_drawdown = max(_ZERO, -self.unrealized_pnl)
 
-        self.max_drawdown = max(self.max_drawdown, self.total_drawdown)
-        self.max_drawdown_pct = max(self.max_drawdown_pct, self.total_drawdown_pct)
+        if self.realized_equity_hwm == _ZERO:
+            realized_drawdown_pct = _ZERO
+        else:
+            realized_drawdown_pct = self.realized_drawdown / self.realized_equity_hwm
+
+        self.max_drawdown = max(self.max_drawdown, self.realized_drawdown)
+        self.max_drawdown_pct = max(self.max_drawdown_pct, realized_drawdown_pct)
+        self.max_total_drawdown = max(self.max_total_drawdown, self.total_drawdown)
+        self.max_total_drawdown_pct = max(
+            self.max_total_drawdown_pct, self.total_drawdown_pct
+        )
 
     def update_cumulative_realized_pnl(self, cumulative_realized_pnl: Decimal) -> None:
         '''Set cumulative realized P&L and recompute drawdown metrics.'''
