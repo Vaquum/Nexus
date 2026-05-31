@@ -29,6 +29,10 @@ class StrategyRiskState:
         rolling_loss_7d: Rolling 7-day realized loss (optional).
         rolling_loss_30d: Rolling 30-day realized loss (optional).
         strategy_realized_pnl: Cumulative realized P&L for this strategy.
+        strategy_unrealized_pnl: Current mark-to-market unrealized P&L
+            aggregated over this strategy's open positions. Written by
+            `MtmLoop` on each tick; zero when the strategy has no open
+            positions. Signed (can be negative).
     '''
 
     strategy_id: str
@@ -37,6 +41,7 @@ class StrategyRiskState:
     rolling_loss_7d: Decimal = _ZERO
     rolling_loss_30d: Decimal = _ZERO
     strategy_realized_pnl: Decimal = _ZERO
+    strategy_unrealized_pnl: Decimal = _ZERO
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -55,9 +60,11 @@ class StrategyRiskState:
                 msg = f'StrategyRiskState.{field_name} must be a finite non-negative value'
                 raise ValueError(msg)
 
-        if not self.strategy_realized_pnl.is_finite():
-            msg = 'StrategyRiskState.strategy_realized_pnl must be finite'
-            raise ValueError(msg)
+        for field_name in ('strategy_realized_pnl', 'strategy_unrealized_pnl'):
+            val = getattr(self, field_name)
+            if not val.is_finite():
+                msg = f'StrategyRiskState.{field_name} must be finite'
+                raise ValueError(msg)
 
 
 @dataclass(frozen=True)

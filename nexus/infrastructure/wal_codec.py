@@ -181,11 +181,16 @@ def _encode_strategy_risk_state(srs: StrategyRiskState) -> dict[str, str]:
         'rolling_loss_7d': str(srs.rolling_loss_7d),
         'rolling_loss_30d': str(srs.rolling_loss_30d),
         'strategy_realized_pnl': str(srs.strategy_realized_pnl),
+        'strategy_unrealized_pnl': str(srs.strategy_unrealized_pnl),
     }
 
 
 def _decode_strategy_risk_state(d: dict[str, str]) -> StrategyRiskState:
     '''Decode string-valued dict to StrategyRiskState.
+
+    `strategy_unrealized_pnl` defaults to zero for snapshots/WAL
+    entries written before the field was added (pre-v0.54.0); MtmLoop
+    overwrites the zero on the next tick.
 
     Args:
         d: Encoded strategy risk state dict.
@@ -201,6 +206,7 @@ def _decode_strategy_risk_state(d: dict[str, str]) -> StrategyRiskState:
         rolling_loss_7d=Decimal(d['rolling_loss_7d']),
         rolling_loss_30d=Decimal(d['rolling_loss_30d']),
         strategy_realized_pnl=Decimal(d['strategy_realized_pnl']),
+        strategy_unrealized_pnl=Decimal(d.get('strategy_unrealized_pnl', '0')),
     )
 
 
