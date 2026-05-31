@@ -9,9 +9,13 @@ caller-provided mark-price source, then sums the result into
 Per-strategy attribution is preserved: each `Position` carries its
 own `strategy_id`, so the loop also buckets per-position unrealized
 P&L by `strategy_id` and writes the per-strategy aggregate into
-`StrategyRiskState.strategy_unrealized_pnl`. Per-strategy risk gates
-can therefore see per-strategy unrealized exposure, not just the
-instance aggregate.
+`StrategyRiskState.strategy_unrealized_pnl`. The current
+`RiskCheckMetrics` surface consumed by [`risk_stage`](nexus/core/validator/risk_stage.py)
+exposes instance-level fields only (`total_drawdown`, `max_drawdown`,
+rolling losses), so this per-strategy field is **persisted and
+visible to telemetry / `recover()` / external readers** but not yet
+read by the validator's per-action gates. Wiring per-strategy
+unrealized into a per-strategy gate is a follow-up scope.
 
 Without this loop, `Position.unrealized_pnl` is set on entry
 (typically to 0) and never re-touched until close. `state.risk.equity`
@@ -167,13 +171,38 @@ class MtmLoop:
     def _mark(self, respect_running: bool = True) -> None:
         '''Compute per-position unrealized P&L, aggregate, write under lock.
 
-        Provider-side soft failures (`None` returned, non-finite mark
-        returned) are logged at WARN and the tick is aborted without
-        partial writes — existing `unrealized_pnl` values are retained,
-        stale marks beat half-marked snapshots. An unexpected exception
-        (provider raised, or math failed mid-loop) is logged at ERROR
-        via `_log.exception` and the tick is aborted the same way. The
-        next tick still fires either way.
+        Three-phase tick to avoid holding `positions_lock` (==
+        `state.risk.lock`) across the `mark_price_provider` call:
+
+        A. **Snapshot symbols under lock** — collect the set of
+           symbols currently held in `state.positions`, release the
+           lock. Fast — no provider call, no math.
+        B. **Fetch marks lock-free** — call `mark_price_provider`
+           once per unique symbol from Phase A. The provider can
+           safely re-enter risk APIs that need `state.risk.lock`
+           because we are NOT holding it here. Soft failures (None or
+           non-finite return) abort the tick without partial writes.
+        C. **Re-acquire lock and write** — for each currently-open
+           position, look up the mark by symbol, compute
+           `(mark − entry) * size * side_sign` from the CURRENT
+           `Position.size`/`entry_price` (not the snapshotted ones —
+           partial-fill mutations between phases must be respected),
+           write to `position.unrealized_pnl`, bucket per
+           `strategy_id` into `StrategyRiskState.strategy_unrealized_pnl`
+           (lazily creating `StrategyRiskState` for first-open
+           strategies), and call `state.risk.update_unrealized_pnl`
+           which triggers `recompute_drawdown_metrics`.
+
+        Position lifecycle during the unlocked Phase B is handled by:
+        positions closed mid-fetch are simply absent from Phase C's
+        iteration (no write); positions opened mid-fetch for a NEW
+        symbol abort the tick (we have no mark for the new symbol).
+        Per-strategy entries with no live position get their
+        `strategy_unrealized_pnl` zeroed in Phase C.
+
+        Unexpected exceptions (provider raised, math failed, lock
+        acquisition failed) are logged at ERROR via `_log.exception`
+        and the tick is aborted. The next tick still fires.
 
         Args:
             respect_running: when False, the `_running` re-check is
@@ -186,6 +215,36 @@ class MtmLoop:
         )
 
         try:
+            with positions_cm:
+                if respect_running:
+                    with self._lock:
+                        if not self._running:
+                            return
+
+                pre_snapshot_symbols = sorted({
+                    position.symbol
+                    for position in self._state.positions.values()
+                })
+
+            marks: dict[str, Decimal] = {}
+            for symbol in pre_snapshot_symbols:
+                mark = self._mark_price_provider(symbol)
+                if mark is None:
+                    _log.warning(
+                        'MtmLoop: mark price unavailable; tick aborted',
+                        extra={'symbol': symbol, 'pre_snapshot_symbols': len(pre_snapshot_symbols)},
+                    )
+                    return
+
+                if not isinstance(mark, Decimal) or not mark.is_finite():
+                    _log.warning(
+                        'MtmLoop: mark price is not a finite Decimal; tick aborted',
+                        extra={'symbol': symbol, 'mark_repr': repr(mark)},
+                    )
+                    return
+
+                marks[symbol] = mark
+
             with positions_cm:
                 if respect_running:
                     with self._lock:
@@ -209,28 +268,14 @@ class MtmLoop:
 
                     return
 
-                marks: dict[str, Decimal] = {}
-                for position in snapshot:
-                    symbol = position.symbol
-                    if symbol in marks:
-                        continue
-
-                    mark = self._mark_price_provider(symbol)
-                    if mark is None:
-                        _log.warning(
-                            'MtmLoop: mark price unavailable; tick aborted',
-                            extra={'symbol': symbol, 'positions': len(snapshot)},
-                        )
-                        return
-
-                    if not isinstance(mark, Decimal) or not mark.is_finite():
-                        _log.warning(
-                            'MtmLoop: mark price is not a finite Decimal; tick aborted',
-                            extra={'symbol': symbol, 'mark_repr': repr(mark)},
-                        )
-                        return
-
-                    marks[symbol] = mark
+                current_symbols = {position.symbol for position in snapshot}
+                missing = current_symbols - marks.keys()
+                if missing:
+                    _log.warning(
+                        'MtmLoop: new symbols opened during mark fetch; tick aborted',
+                        extra={'missing_symbols': sorted(missing)},
+                    )
+                    return
 
                 aggregate = _ZERO
                 per_position: dict[str, Decimal] = {}

@@ -265,7 +265,64 @@ def test_multi_symbol_provider_called_once_per_symbol() -> None:
     assert state.risk.unrealized_pnl == Decimal('2250.0')
 
 
-def test_tick_holds_positions_lock() -> None:
+def test_provider_can_reacquire_risk_lock_without_deadlock() -> None:
+    '''Phase B (mark fetch) must NOT hold positions_lock / state.risk.lock.
+
+    The lock is non-reentrant; if MtmLoop held it across the provider
+    call, any provider implementation that re-entered risk APIs (e.g.
+    `state.risk.to_risk_check_metrics()` which acquires
+    `state.risk.lock_cm()`) would deadlock. This test wires a
+    provider that explicitly acquires state.risk.lock and asserts
+    tick_once() returns inside a small wall-clock budget.
+    '''
+
+    import threading
+
+    state = _make_state()
+    state.positions['t1'] = _make_position('t1', OrderSide.BUY, '1.0', '70000')
+    positions_lock = threading.Lock()
+    state.risk.lock = positions_lock
+
+    provider_observed_lock_held: list[bool] = []
+
+    def reentrant_provider(_symbol: str) -> Decimal:
+        provider_observed_lock_held.append(positions_lock.locked())
+        with state.risk.lock_cm():
+            return Decimal('71000')
+
+    loop = MtmLoop(
+        state=state,
+        mark_price_provider=reentrant_provider,
+        positions_lock=positions_lock,
+    )
+
+    completed = threading.Event()
+
+    def run_tick() -> None:
+        loop.tick_once()
+        completed.set()
+
+    worker = threading.Thread(target=run_tick, daemon=True)
+    worker.start()
+    finished = completed.wait(timeout=3)
+    worker.join(timeout=1)
+
+    assert finished, 'tick_once() did not complete within 3s — provider deadlocked on positions_lock'
+    assert not worker.is_alive()
+    assert provider_observed_lock_held == [False], (
+        'provider observed positions_lock held during its call; '
+        'lock must be released before Phase B mark fetch'
+    )
+    assert state.positions['t1'].unrealized_pnl == Decimal('1000.0')
+
+
+def test_provider_called_without_positions_lock() -> None:
+    '''Pin the deadlock-safety contract: the mark_price_provider is
+    invoked OUTSIDE positions_lock (Phase B). A provider that
+    re-enters risk APIs needing state.risk.lock can do so safely
+    because the lock is released before the call.
+    '''
+
     state = _make_state()
     state.positions['t1'] = _make_position('t1', OrderSide.BUY, '1.0', '70000')
     positions_lock = threading.Lock()
@@ -284,7 +341,8 @@ def test_tick_holds_positions_lock() -> None:
     )
     loop.tick_once()
 
-    assert lock_held_during_provider == [True]
+    assert lock_held_during_provider == [False]
+    assert state.positions['t1'].unrealized_pnl == Decimal('1000.0')
 
 
 def test_start_stop_is_idempotent() -> None:
