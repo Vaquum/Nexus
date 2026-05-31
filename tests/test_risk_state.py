@@ -222,7 +222,13 @@ def test_recompute_drawdown_metrics_updates_peaks_and_resets_drawdowns() -> None
 
 
 def test_recompute_drawdown_metrics_tracks_losses_without_new_peak() -> None:
-    '''Verify recompute grows drawdowns under worse PnL without updating HWMs.'''
+    '''Verify recompute grows drawdowns under worse PnL without updating HWMs.
+
+    Post-v0.54.0 split: max_drawdown ratchets from realized-only
+    drawdown; max_total_drawdown ratchets from total (realized +
+    unrealized) drawdown. Pre-v0.54.0 the two were conflated; the
+    new assertions separate them.
+    '''
 
     rs = RiskState(
         starting_capital=Decimal('1000'),
@@ -241,8 +247,13 @@ def test_recompute_drawdown_metrics_tracks_losses_without_new_peak() -> None:
     assert rs.total_drawdown_pct == Decimal('0.1916666666666666666666666667')
     assert rs.realized_drawdown == Decimal('50')
     assert rs.unrealized_drawdown == Decimal('80')
-    assert rs.max_drawdown == Decimal('230')
-    assert rs.max_drawdown_pct == Decimal('0.1916666666666666666666666667')
+    assert rs.max_drawdown == Decimal('50'), (
+        'max_drawdown ratchets from realized_drawdown only (50), '
+        'NOT from total_drawdown (230 includes 80 unrealized + 100 HWM gap)'
+    )
+    assert rs.max_drawdown_pct == Decimal('50') / Decimal('1100')
+    assert rs.max_total_drawdown == Decimal('230')
+    assert rs.max_total_drawdown_pct == Decimal('0.1916666666666666666666666667')
 
 
 def test_recompute_drawdown_metrics_sets_unrealized_drawdown_zero_when_flat() -> None:
@@ -268,7 +279,17 @@ def test_recompute_drawdown_metrics_sets_unrealized_drawdown_zero_when_flat() ->
 
 
 def test_recompute_drawdown_metrics_preserves_lifetime_max_drawdown() -> None:
-    '''Verify max drawdown metrics remain at lifetime worst after recovery.'''
+    '''Verify max-drawdown metrics remain at lifetime worst after recovery.
+
+    Post-v0.54.0 split: a transient unrealized loss followed by
+    recovery does NOT ratchet `max_drawdown` (realized-only), but DOES
+    ratchet `max_total_drawdown` (total-equity). This is the v0.54.0
+    semantics change driven by introducing the MtmLoop — pre-PR,
+    unrealized stayed at zero so both peaks were identical; the split
+    keeps the validator's max-drawdown gate on stable realized
+    semantics while exposing the new mark-aware peak on a separate
+    field.
+    '''
 
     rs = RiskState(
         starting_capital=Decimal('1000'),
@@ -279,14 +300,24 @@ def test_recompute_drawdown_metrics_preserves_lifetime_max_drawdown() -> None:
     )
 
     rs.recompute_drawdown_metrics()
-    assert rs.max_drawdown == Decimal('300')
-    assert rs.max_drawdown_pct == Decimal('0.3')
+    assert rs.max_drawdown == Decimal('0'), (
+        'realized_pnl is 0; max_drawdown (realized-only) must not move'
+    )
+    assert rs.max_drawdown_pct == Decimal('0')
+    assert rs.max_total_drawdown == Decimal('300')
+    assert rs.max_total_drawdown_pct == Decimal('0.3')
 
     rs.unrealized_pnl = Decimal('50')
     rs.recompute_drawdown_metrics()
     assert rs.total_drawdown == Decimal('0')
-    assert rs.max_drawdown == Decimal('300')
-    assert rs.max_drawdown_pct == Decimal('0.3')
+    assert rs.max_drawdown == Decimal('0'), (
+        'realized_pnl still 0; transient unrealized must not have ratcheted'
+    )
+    assert rs.max_drawdown_pct == Decimal('0')
+    assert rs.max_total_drawdown == Decimal('300'), (
+        'max_total_drawdown stays at the lifetime peak even after recovery'
+    )
+    assert rs.max_total_drawdown_pct == Decimal('0.3')
 
 
 def test_update_cumulative_realized_pnl_triggers_recompute() -> None:

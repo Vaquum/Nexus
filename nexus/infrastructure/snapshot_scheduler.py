@@ -73,6 +73,40 @@ class SnapshotScheduler:
             msg = 'SnapshotScheduler.interval_seconds must be a positive number'
             raise ValueError(msg)
 
+        if positions_lock is not None and (
+            not hasattr(state.risk, 'lock')
+            or state.risk.lock is not positions_lock
+        ):
+            risk_lock = getattr(state.risk, 'lock', '<missing>')
+            msg = (
+                'SnapshotScheduler requires `state.risk.lock is positions_lock` '
+                'whenever `positions_lock` is supplied. `checkpoint()` → '
+                '`serialize_state()` iterates `state.risk.per_strategy` and '
+                '`state.capital.per_strategy_deployed` under positions_lock; '
+                'consistency with OutcomeProcessor (writes per_strategy under '
+                '`state.risk.lock_cm()`) requires the same lock object. Without '
+                'identity-equal locks the serializer iterates `per_strategy` '
+                'unguarded against new-strategy inserts (FINAL-MAJOR-05 race). '
+                f'Got positions_lock={positions_lock!r}, '
+                f'state.risk.lock={risk_lock!r}.'
+            )
+            raise RuntimeError(msg)
+
+        if positions_lock is not None and capital_lock_cm is None:
+            msg = (
+                'SnapshotScheduler requires `capital_lock_cm` whenever '
+                '`positions_lock` is supplied. `checkpoint()` → '
+                '`serialize_state()` iterates `state.capital.per_strategy_deployed` '
+                'and the capital aggregate notional fields; without holding '
+                "CapitalController._lock the capital-side `dictionary changed "
+                'size during iteration` race against a still-alive '
+                'OutcomeProcessor worker remains reachable. The positions_lock '
+                'and capital_lock_cm form a lock-cluster — partial wiring is '
+                'a silent miswire. Mirrors '
+                '`shutdown_sequencer.py:206-216` enforcement.'
+            )
+            raise RuntimeError(msg)
+
         self._state_store = state_store
         self._state = state
         self._interval_seconds = float(interval_seconds)

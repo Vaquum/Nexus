@@ -80,6 +80,28 @@ class MtmLoop:
             msg = 'MtmLoop.interval_seconds must be a positive number'
             raise ValueError(msg)
 
+        if positions_lock is not None and (
+            not hasattr(state.risk, 'lock')
+            or state.risk.lock is not positions_lock
+        ):
+            risk_lock = getattr(state.risk, 'lock', '<missing>')
+            msg = (
+                'MtmLoop requires `state.risk.lock is positions_lock` whenever '
+                '`positions_lock` is supplied. The loop mutates '
+                '`state.risk.per_strategy` (creates StrategyRiskState, writes '
+                'strategy_unrealized_pnl) and calls `state.risk.update_unrealized_pnl` '
+                '(which writes equity, equity_hwm, total_drawdown, max_drawdown, ...) '
+                'while holding only positions_lock. The validator hot path '
+                '(risk_stage.py → to_risk_check_metrics) reads those same fields '
+                'under `state.risk.lock`, and OutcomeProcessor writes them under '
+                '`state.risk.lock_cm()`. A non-identical lock would re-open the '
+                'FINAL-MAJOR-02 `dictionary changed size during iteration` / '
+                'lost-update race that the codebase closed. '
+                f'Got positions_lock={positions_lock!r}, '
+                f'state.risk.lock={risk_lock!r}.'
+            )
+            raise RuntimeError(msg)
+
         self._state = state
         self._mark_price_provider = mark_price_provider
         self._interval_seconds = float(interval_seconds)

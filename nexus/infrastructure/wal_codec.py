@@ -236,6 +236,8 @@ def _encode_risk_state(rs: RiskState) -> dict[str, Any]:
         'unrealized_drawdown': str(rs.unrealized_drawdown),
         'max_drawdown': str(rs.max_drawdown),
         'max_drawdown_pct': str(rs.max_drawdown_pct),
+        'max_total_drawdown': str(rs.max_total_drawdown),
+        'max_total_drawdown_pct': str(rs.max_total_drawdown_pct),
         'per_strategy': {
             k: _encode_strategy_risk_state(v) for k, v in per_strategy_snapshot.items()
         },
@@ -271,6 +273,8 @@ def _decode_risk_state(d: dict[str, Any]) -> RiskState:
         unrealized_drawdown=Decimal(d.get('unrealized_drawdown', '0')),
         max_drawdown=Decimal(d.get('max_drawdown', '0')),
         max_drawdown_pct=Decimal(d.get('max_drawdown_pct', '0')),
+        max_total_drawdown=Decimal(d.get('max_total_drawdown', '0')),
+        max_total_drawdown_pct=Decimal(d.get('max_total_drawdown_pct', '0')),
         per_strategy={
             k: _decode_strategy_risk_state(v) for k, v in d['per_strategy'].items()
         },

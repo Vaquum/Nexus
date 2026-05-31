@@ -9,6 +9,7 @@ timer thread and reaches checkpoint().
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
 
@@ -34,6 +35,76 @@ def test_invalid_interval_rejected(tmp_path: Path) -> None:
             state=state,
             interval_seconds=0,
         )
+
+
+def test_lock_identity_mismatch_rejected_at_construction(tmp_path: Path) -> None:
+    '''When positions_lock is supplied, state.risk.lock must be the
+    SAME object. A mis-wired launcher passing a different lock would
+    let SnapshotScheduler iterate state.risk.per_strategy unguarded
+    against OutcomeProcessor's new-strategy inserts (FINAL-MAJOR-05
+    race). Mirrors ShutdownSequencer's identical guard at
+    shutdown_sequencer.py:188-204.
+    '''
+
+    state = _make_state()
+    store = StateStore(base_path=tmp_path)
+    positions_lock = threading.Lock()
+    state.risk.lock = threading.Lock()
+
+    with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
+        SnapshotScheduler(
+            state_store=store,
+            state=state,
+            positions_lock=positions_lock,
+        )
+
+
+def test_lock_identity_match_accepted(tmp_path: Path) -> None:
+    state = _make_state()
+    store = StateStore(base_path=tmp_path)
+    positions_lock = threading.Lock()
+    state.risk.lock = positions_lock
+
+    SnapshotScheduler(
+        state_store=store,
+        state=state,
+        positions_lock=positions_lock,
+        capital_lock_cm=lambda: nullcontext(),
+    )
+
+
+def test_capital_lock_cm_required_when_positions_lock_supplied(tmp_path: Path) -> None:
+    '''Mirrors ShutdownSequencer's lock-cluster invariant
+    (`shutdown_sequencer.py:206-216`): positions_lock and
+    capital_lock_cm form a pair — supplying only one is a silent
+    miswire that leaves the capital-side `dictionary changed size
+    during iteration` race against a still-alive OutcomeProcessor
+    reachable.
+    '''
+
+    state = _make_state()
+    store = StateStore(base_path=tmp_path)
+    positions_lock = threading.Lock()
+    state.risk.lock = positions_lock
+
+    with pytest.raises(RuntimeError, match=r'capital_lock_cm'):
+        SnapshotScheduler(
+            state_store=store,
+            state=state,
+            positions_lock=positions_lock,
+        )
+
+
+def test_no_positions_lock_accepts_any_risk_lock(tmp_path: Path) -> None:
+    '''Single-threaded test paths don't supply positions_lock; the
+    identity guard must not fire when positions_lock is None.
+    '''
+
+    state = _make_state()
+    store = StateStore(base_path=tmp_path)
+    state.risk.lock = threading.Lock()
+
+    SnapshotScheduler(state_store=store, state=state)
 
 
 def test_bool_interval_rejected(tmp_path: Path) -> None:
@@ -72,6 +143,7 @@ def test_tick_once_holds_positions_and_capital_locks(tmp_path: Path) -> None:
     state = _make_state()
     store = StateStore(base_path=tmp_path)
     positions_lock = threading.Lock()
+    state.risk.lock = positions_lock
 
     capital_lock_acquired = threading.Event()
     capital_lock_released = threading.Event()

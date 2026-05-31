@@ -55,6 +55,51 @@ def test_invalid_interval_rejected() -> None:
         )
 
 
+def test_lock_identity_mismatch_rejected_at_construction() -> None:
+    '''When positions_lock is supplied, state.risk.lock must be the
+    SAME object. MtmLoop mutates state.risk.per_strategy and writes
+    RiskState fields whose mutual exclusion against OutcomeProcessor +
+    validator depends on the identity. Mirrors ShutdownSequencer's
+    guard at shutdown_sequencer.py:188-204.
+    '''
+
+    import threading
+
+    state = _make_state()
+    positions_lock = threading.Lock()
+    state.risk.lock = threading.Lock()
+
+    with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
+        MtmLoop(
+            state=state,
+            mark_price_provider=lambda _s: Decimal('70000'),
+            positions_lock=positions_lock,
+        )
+
+
+def test_lock_identity_match_accepted() -> None:
+    import threading
+
+    state = _make_state()
+    positions_lock = threading.Lock()
+    state.risk.lock = positions_lock
+
+    MtmLoop(
+        state=state,
+        mark_price_provider=lambda _s: Decimal('70000'),
+        positions_lock=positions_lock,
+    )
+
+
+def test_no_positions_lock_accepts_any_risk_lock() -> None:
+    import threading
+
+    state = _make_state()
+    state.risk.lock = threading.Lock()
+
+    MtmLoop(state=state, mark_price_provider=lambda _s: Decimal('70000'))
+
+
 def test_bool_interval_rejected() -> None:
     state = _make_state()
 
@@ -224,6 +269,7 @@ def test_tick_holds_positions_lock() -> None:
     state = _make_state()
     state.positions['t1'] = _make_position('t1', OrderSide.BUY, '1.0', '70000')
     positions_lock = threading.Lock()
+    state.risk.lock = positions_lock
 
     lock_held_during_provider: list[bool] = []
 

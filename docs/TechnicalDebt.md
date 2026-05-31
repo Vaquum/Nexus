@@ -1138,3 +1138,20 @@ The lock chain (`command_registry_lock -> positions_lock -> CapitalController._l
 Option 1 is the right long-term shape (matches `Signal`'s `frozen=True` discipline); option 2 is the contained hotfix if a torn-read incident surfaces before option 1 is ready.
 
 **Scope note (PR #75 review)**: the same shallow-snapshot caveat applies to the v0.53.1 follow-up snapshots in [`_encode_capital_state`](nexus/infrastructure/wal_codec.py) (`per_strategy_deployed: dict[str, Decimal]`) and [`_encode_risk_state`](nexus/infrastructure/wal_codec.py) (`per_strategy: dict[str, StrategyRiskState]`). `Decimal` is immutable so the capital values cannot tear field-wise; `StrategyRiskState` is a non-frozen dataclass and is in scope for the same migration as `Position` / `StrategyModeState`.
+
+## TD-091: `SnapshotScheduler` periodic checkpoint inherits TD-073 latency-spike class, now recurring during live trading
+
+**Origin**: zero-bang PR #77 review of `feat/snapshot-scheduler-and-mtm-loop` (v0.54.0 periodic snapshot scheduler)
+**Severity**: Medium (cadence-driven validator stalls at 5-min intervals during live trading, vs only at shutdown pre-PR)
+**Related**: [TD-073](#td-073-staterisklock-held-across-wal-fsync--full-scan-creates-validator-latency-spikes)
+**Module**: [`nexus/infrastructure/snapshot_scheduler.py`](nexus/infrastructure/snapshot_scheduler.py) `_checkpoint`
+
+[`SnapshotScheduler._checkpoint`](nexus/infrastructure/snapshot_scheduler.py) holds `positions_lock` (which by invariant equals `state.risk.lock`) and `CapitalController._lock` around [`state_store.checkpoint(state)`](nexus/infrastructure/state_store.py). `checkpoint()` then calls `save_snapshot(state, self._snapshot_path, self._wal)` under `wal_lock`, which serializes the full state (msgpack pack of every position, per-strategy risk row, capital row), writes the snapshot file, fsyncs it, then truncates the WAL (also fsynced). All of that happens while `positions_lock` is held, which is the same lock the validator's per-action path acquires (`risk_stage.py` → `to_risk_check_metrics`).
+
+Pre-v0.54.0 this only happened at graceful shutdown — a one-time stall that didn't matter operationally. With the periodic scheduler defaulting to 300s, the same stall now repeats during live trading: every 5 minutes the validator's hot path blocks for the full serialize + fsync + truncate duration. On the prod evidence from PR #76's diagnostic recovery (4,162 open positions, ~600 KB encoded state, 12 GB peak WAL replay), the per-checkpoint stall is non-trivial — the population is exactly the state size where serialization is no longer free.
+
+**When to fix**: When the prod box reports a validator-action-latency spike that correlates with the checkpoint cadence, OR when adding any feature that meaningfully increases the per-checkpoint serialize size (multi-account, more positions per strategy, additional per-strategy fields).
+
+**Migration**: Restructure [`state_store.checkpoint`](nexus/infrastructure/state_store.py) so the serialize step runs under positions_lock to capture a consistent point-in-time view, then the lock is released BEFORE the snapshot file write + fsync + WAL truncate. The disk-write phase doesn't read live state — it operates on the already-serialized bytes — so it doesn't need the lock chain. Concretely: split `save_snapshot(state, path, wal)` into `serialize(state) -> bytes` (under lock) + `persist(payload, path, wal)` (lock-free, fsync-bound). Same atomicity guarantee preserved because `wal_lock` (innermost) still wraps the persist+truncate pair so concurrent `append_mutation` cannot interleave.
+
+Tunable mitigation in the meantime: raise the default `NEXUS_SNAPSHOT_INTERVAL_SECONDS` from 300s upward to trade WAL replay time for fewer validator stalls per hour, or wire the scheduler to a longer interval only after live signs of contention.
