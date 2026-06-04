@@ -908,6 +908,113 @@ class TestOrderFill:
         post_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
         assert post_deployed == pre_deployed + Decimal('3')
 
+    def test_order_fill_terminal_with_residual_releases_to_zero(self) -> None:
+        '''Pin Vaquum/Nexus#78: terminal=True with new_remaining > 0
+        releases the unfilled residual from working_order_notional and
+        per_strategy_deployed.
+
+        Scenario: reserve 1000+10, fill 400+4 with terminal=True. Pre-fix:
+        working stays at 606, deployed stays at 1010 - fee_delta, order
+        stays in _orders. Post-fix: working drops to 0, deployed drops to
+        404 (the actual cost basis of the filled portion), order is popped.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill(
+            'ORD-001', Decimal('400'), Decimal('4'), terminal=True,
+        )
+
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.position_notional == Decimal('404')
+        assert 'ORD-001' not in ctrl._orders
+        assert ctrl._state.per_strategy_deployed.get('strat_a') == Decimal('404')
+
+    def test_order_fill_non_terminal_keeps_residual(self) -> None:
+        '''Pin Vaquum/Nexus#78: terminal=False (default) preserves the
+        pre-existing partial-fill behavior — the order stays in _orders
+        with reduced remaining and capital aggregates keep the residual.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
+
+        assert ctrl._state.working_order_notional == Decimal('606')
+        assert ctrl._state.position_notional == Decimal('404')
+        assert 'ORD-001' in ctrl._orders
+        assert ctrl._orders['ORD-001'].remaining_notional == Decimal('600')
+
+    def test_order_fill_terminal_exact_match_matches_non_terminal_exact(
+        self,
+    ) -> None:
+        '''Pin Vaquum/Nexus#78: terminal=True with new_remaining == 0 is
+        a no-op relative to the existing exact-match branch (same state
+        as the prior code path).
+        '''
+
+        ctrl_terminal = _make_controller()
+        ctrl_legacy = _make_controller()
+
+        for ctrl in (ctrl_terminal, ctrl_legacy):
+            result = _reserve(ctrl, notional='100', fees='1')
+            assert result.reservation is not None
+            ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+            ctrl.order_ack('ORD-001')
+
+        ctrl_terminal.order_fill(
+            'ORD-001', Decimal('100'), Decimal('1'), terminal=True,
+        )
+        ctrl_legacy.order_fill('ORD-001', Decimal('100'), Decimal('1'))
+
+        assert (
+            ctrl_terminal._state.working_order_notional
+            == ctrl_legacy._state.working_order_notional
+        )
+        assert (
+            ctrl_terminal._state.position_notional
+            == ctrl_legacy._state.position_notional
+        )
+        assert (
+            ctrl_terminal._state.per_strategy_deployed
+            == ctrl_legacy._state.per_strategy_deployed
+        )
+        assert 'ORD-001' not in ctrl_terminal._orders
+        assert 'ORD-001' not in ctrl_legacy._orders
+
+    def test_order_fill_terminal_residual_includes_proportional_fees(
+        self,
+    ) -> None:
+        '''Pin Vaquum/Nexus#78: the residual released on terminal includes
+        the proportional residual estimated_fees, not just remaining_notional.
+
+        Reservation: 1000+10 (1010 total, 10 estimated fees on 1000
+        notional). After a terminal fill of 400+4: pre-fix per_strategy
+        deployed = 404 + 6 fees-residual = 410 → 6 leaked. Post-fix the
+        6 is released back; deployed lands at 404 exactly.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill(
+            'ORD-001', Decimal('400'), Decimal('4'), terminal=True,
+        )
+
+        assert ctrl._state.per_strategy_deployed.get('strat_a') == Decimal('404')
+        assert ctrl._state.working_order_notional == _ZERO
+
 
 class TestOrderCancel:
     def test_order_cancel_success(self) -> None:

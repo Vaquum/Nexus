@@ -801,6 +801,8 @@ class CapitalController:
         order_id: str,
         fill_notional: Decimal,
         actual_fees: Decimal,
+        *,
+        terminal: bool = False,
     ) -> LifecycleResult:
         '''Handle a fill (partial or full) on a working order.
 
@@ -809,10 +811,33 @@ class CapitalController:
         cost (fill_notional + actual_fees). Fee variance is reconciled against
         fee_reserve: surplus adds, deficit draws.
 
+        When the upstream venue marks the order as terminally FILLED but the
+        cumulative `fill_notional` is strictly less than the order's reserved
+        notional (e.g., execution VWAP below the reservation reference price,
+        or stepSize-driven quantity snap), the reservation residual sits in
+        `working_order_notional` and `per_strategy_deployed` forever unless
+        explicitly released. The `terminal` flag tells the controller to
+        release that residual:
+
+            terminal=True  AND new_remaining > 0  →  release the residual
+                from `working_order_notional` and `per_strategy_deployed`;
+                pop the order from `_orders`.
+            terminal=True  AND new_remaining == 0 →  same as before; the
+                exact-match branch already pops the order.
+            terminal=False                        →  pre-existing partial-
+                fill behavior; order stays in `_orders` with the reduced
+                remaining_notional / remaining_total.
+
+        The caller (`OutcomeProcessor._handle_fill`) derives `terminal` from
+        the upstream `TradeOutcomeType` — `FILLED` is terminal, `PARTIAL`
+        is not.
+
         Args:
             order_id: ID of the filled order.
             fill_notional: Quote capital filled (excluding fees).
             actual_fees: Actual fees charged by venue for this fill.
+            terminal: Whether this fill is the order's terminal status
+                upstream. When True, any unfilled residual is released.
 
         Returns:
             LifecycleResult with reason on failure.
@@ -897,7 +922,7 @@ class CapitalController:
                     category=FailureCategory.EXPECTED_MISS,
                 )
 
-            if new_remaining == _ZERO:
+            if new_remaining == _ZERO or terminal:
                 self._orders.pop(order_id)
             else:
                 self._orders[order_id] = updated
@@ -914,6 +939,11 @@ class CapitalController:
 
             if fee_delta != _ZERO:
                 self._adjust_strategy_deployed(order.strategy_id, -fee_delta)
+
+            if terminal and new_remaining > _ZERO:
+                residual = updated.remaining_total
+                self._state.working_order_notional -= residual
+                self._adjust_strategy_deployed(order.strategy_id, -residual)
 
             return LifecycleResult(success=True)
 
