@@ -1155,3 +1155,41 @@ Pre-v0.54.0 this only happened at graceful shutdown — a one-time stall that di
 **Migration**: Restructure [`state_store.checkpoint`](nexus/infrastructure/state_store.py) so the serialize step runs under positions_lock to capture a consistent point-in-time view, then the lock is released BEFORE the snapshot file write + fsync + WAL truncate. The disk-write phase doesn't read live state — it operates on the already-serialized bytes — so it doesn't need the lock chain. Concretely: split `save_snapshot(state, path, wal)` into `serialize(state) -> bytes` (under lock) + `persist(payload, path, wal)` (lock-free, fsync-bound). Same atomicity guarantee preserved because `wal_lock` (innermost) still wraps the persist+truncate pair so concurrent `append_mutation` cannot interleave.
 
 Tunable mitigation in the meantime: raise the default `NEXUS_SNAPSHOT_INTERVAL_SECONDS` from 300s upward to trade WAL replay time for fewer validator stalls per hour, or wire the scheduler to a longer interval only after live signs of contention.
+
+## TD-092: `order_fill` honors caller-supplied `terminal` flag without verifying fill_notional reached order.notional
+
+**Origin**: Greybeard pre-PR review of `fix/order-fill-terminal-residual-release` (v0.55.0 entry-fill residual release for [#78](https://github.com/Vaquum/Nexus/issues/78))
+**Severity**: Low today (single production caller derives `terminal` from `outcome.outcome_type == TradeOutcomeType.FILLED`; no observed upstream misclassification), elevated the day a translator/venue-adapter bug marks an under-filled order FILLED
+**Module**: [`nexus/core/capital_controller/capital_controller.py`](nexus/core/capital_controller/capital_controller.py) `order_fill` terminal-release branch
+
+When `terminal=True` AND `new_remaining > _ZERO`, [`order_fill`](nexus/core/capital_controller/capital_controller.py) releases `updated.remaining_total` (the unfilled reservation residual) from `working_order_notional` and `per_strategy_deployed`. The controller trusts the caller's terminal classification verbatim and does NOT cross-check that the cumulative `fill_notional` reached `order.notional` (or got within a tolerance of it). If a future translator/adapter bug marks an under-filled order as terminal FILLED — e.g., a venue WS bug, a translator path that misreads the order's terminal status — the residual would drain even though more fills could have legitimately been expected.
+
+The over-fill direction is already protected (existing line 854 invariant: `fill_notional > order.remaining_notional` rejects with `INVARIANT_BREACH`). The under-fill-and-terminal case is the new exposure.
+
+**When to fix**: When a translator/adapter bug surfaces that produces FILLED outcomes on objectively under-filled orders (e.g., the cumulative `fill_notional` is meaningfully less than `order.notional` at terminal time), OR when adding a second non-Praxis caller of `order_fill` whose classification logic is less battle-tested.
+
+**Migration**: Add a soft invariant inside the `terminal and new_remaining > _ZERO` branch: if `new_remaining > order.notional * <under_fill_tolerance>` (e.g., 5%), log a WARN with `order_id`, `order.notional`, `new_remaining`, and the call-site identifier, but still release (because the upstream's terminal claim is authoritative for the order's lifecycle). Operators get an early signal of misclassification without the capital path itself making the trust decision.
+
+## TD-093: `order_fill` pop-branch combines two semantically different reasons into one boolean
+
+**Origin**: Greybeard pre-PR review of `fix/order-fill-terminal-residual-release` (v0.55.0)
+**Severity**: Low (readability only; no behavioural impact)
+**Module**: [`nexus/core/capital_controller/capital_controller.py`](nexus/core/capital_controller/capital_controller.py) `order_fill`
+
+The branch `if new_remaining == _ZERO or terminal: self._orders.pop(order_id)` collapses two semantically distinct reasons to remove the tracked order: (a) the fill exactly closed the remaining notional (filled-to-completion), and (b) the upstream venue declared the order terminal with residual unfilled (terminal-with-residual). Both paths pop the order, but they have different downstream invariants — (a) leaves no residual to release, (b) triggers the new release-residual block. Any reader has to re-derive the truth table to confirm which case is being handled.
+
+**When to fix**: When somebody next touches the order_fill branch logic and gets confused by the combined `or` clause — the cost is small (extracting two named ifs with one-line comments each) and only worth doing if a real reader misreads it. Otherwise leave it.
+
+**Migration**: Split the combined `if` into two named branches with one-line comments explaining each pop reason. Cosmetic refactor.
+
+## TD-094: `order_fill` terminal-release performs two sequential `_adjust_strategy_deployed` calls under the same lock
+
+**Origin**: Greybeard pre-PR review of `fix/order-fill-terminal-residual-release` (v0.55.0)
+**Severity**: Low (micro-optimization; no correctness impact)
+**Module**: [`nexus/core/capital_controller/capital_controller.py`](nexus/core/capital_controller/capital_controller.py) `order_fill`
+
+Inside the terminal-release path, `order_fill` calls `_adjust_strategy_deployed(strategy_id, -fee_delta)` (existing fee-delta reconciliation) followed by `_adjust_strategy_deployed(strategy_id, -residual)` (new residual release) back-to-back under the same lock. Both mutate the same `per_strategy_deployed[strategy_id]` dict entry. A combined single delta (`-fee_delta - residual`) would do one dict mutation instead of two, with no semantic change.
+
+**When to fix**: Never on its own. Roll into TD-093 if/when the branch is being touched anyway; otherwise the two-call shape mirrors the natural read order (apply fee delta, then apply residual release) and is easier to reason about.
+
+**Migration**: Combine the two `_adjust_strategy_deployed` calls in the terminal-release branch into one with the summed delta. Strictly cosmetic.

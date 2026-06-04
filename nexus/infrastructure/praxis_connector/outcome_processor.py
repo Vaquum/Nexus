@@ -181,6 +181,7 @@ class OutcomeProcessor:
                 outcome.command_id,
                 outcome.fill_notional,
                 outcome.actual_fees,
+                terminal=outcome.outcome_type == TradeOutcomeType.FILLED,
             )
 
             if not result.success:

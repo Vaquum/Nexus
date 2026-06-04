@@ -796,7 +796,7 @@ class TestOrderFill:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
-        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('1'))
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('1'), terminal=False)
         assert filled.success is True
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('101')
@@ -809,7 +809,7 @@ class TestOrderFill:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
-        filled = ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
+        filled = ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'), terminal=False)
         assert filled.success is True
         assert ctrl._state.working_order_notional == Decimal('606')
         assert ctrl._state.position_notional == Decimal('404')
@@ -823,14 +823,14 @@ class TestOrderFill:
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
 
-        filled = ctrl.order_fill('ORD-001', Decimal('200'), Decimal('2'))
+        filled = ctrl.order_fill('ORD-001', Decimal('200'), Decimal('2'), terminal=False)
         assert filled.success is False
         assert ctrl._state.working_order_notional == Decimal('101')
         assert ctrl._state.position_notional == _ZERO
 
     def test_order_fill_not_found(self) -> None:
         ctrl = _make_controller()
-        filled = ctrl.order_fill('nonexistent', Decimal('100'), Decimal('1'))
+        filled = ctrl.order_fill('nonexistent', Decimal('100'), Decimal('1'), terminal=False)
         assert filled.success is False
 
     def test_order_fill_wrong_state(self) -> None:
@@ -839,7 +839,7 @@ class TestOrderFill:
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
 
-        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('1'))
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('1'), terminal=False)
         assert filled.success is False
 
     def test_order_fill_invalid_notional(self) -> None:
@@ -850,7 +850,7 @@ class TestOrderFill:
         ctrl.order_ack('ORD-001')
 
         with pytest.raises(ValueError, match='positive'):
-            ctrl.order_fill('ORD-001', Decimal('0'), Decimal('0'))
+            ctrl.order_fill('ORD-001', Decimal('0'), Decimal('0'), terminal=False)
 
     def test_order_fill_invalid_actual_fees(self) -> None:
         ctrl = _make_controller()
@@ -860,7 +860,7 @@ class TestOrderFill:
         ctrl.order_ack('ORD-001')
 
         with pytest.raises(ValueError, match='non-negative'):
-            ctrl.order_fill('ORD-001', Decimal('100'), Decimal('-1'))
+            ctrl.order_fill('ORD-001', Decimal('100'), Decimal('-1'), terminal=False)
 
     def test_order_fill_fee_reserve_insufficiency_rejected(self) -> None:
         ctrl = _make_controller()
@@ -873,7 +873,7 @@ class TestOrderFill:
         pre_position = ctrl._state.position_notional
         pre_reserve = ctrl._state.fee_reserve
 
-        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('10'))
+        filled = ctrl.order_fill('ORD-001', Decimal('100'), Decimal('10'), terminal=False)
         assert filled.success is False
         assert ctrl._state.working_order_notional == pre_working
         assert ctrl._state.position_notional == pre_position
@@ -888,7 +888,7 @@ class TestOrderFill:
 
         pre_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
 
-        ctrl.order_fill('ORD-001', Decimal('100'), Decimal('5'))
+        ctrl.order_fill('ORD-001', Decimal('100'), Decimal('5'), terminal=False)
 
         post_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
         assert post_deployed == pre_deployed - Decimal('5')
@@ -903,10 +903,118 @@ class TestOrderFill:
         ctrl._state.fee_reserve = Decimal('10')
         pre_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
 
-        ctrl.order_fill('ORD-001', Decimal('100'), Decimal('8'))
+        ctrl.order_fill('ORD-001', Decimal('100'), Decimal('8'), terminal=False)
 
         post_deployed = ctrl._state.per_strategy_deployed.get('strat_a', Decimal(0))
         assert post_deployed == pre_deployed + Decimal('3')
+
+    def test_order_fill_terminal_with_residual_releases_to_zero(self) -> None:
+        '''Pin Vaquum/Nexus#78: terminal=True with new_remaining > 0
+        releases the unfilled residual from working_order_notional and
+        per_strategy_deployed.
+
+        Scenario: reserve 1000+10, fill 400+4 with terminal=True. Pre-fix:
+        working stays at 606, deployed stays at 1010 - fee_delta, order
+        stays in _orders. Post-fix: working drops to 0, deployed drops to
+        404 (the actual cost basis of the filled portion), order is popped.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill(
+            'ORD-001', Decimal('400'), Decimal('4'), terminal=True,
+        )
+
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.position_notional == Decimal('404')
+        assert 'ORD-001' not in ctrl._orders
+        assert ctrl._state.per_strategy_deployed.get('strat_a') == Decimal('404')
+
+    def test_order_fill_non_terminal_keeps_residual(self) -> None:
+        '''Pin Vaquum/Nexus#78: an explicit terminal=False call preserves
+        partial-fill behavior — the order stays in _orders with reduced
+        remaining and capital aggregates keep the residual. terminal is a
+        required kwarg on order_fill; this test exercises the False branch.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'), terminal=False)
+
+        assert ctrl._state.working_order_notional == Decimal('606')
+        assert ctrl._state.position_notional == Decimal('404')
+        assert 'ORD-001' in ctrl._orders
+        assert ctrl._orders['ORD-001'].remaining_notional == Decimal('600')
+
+    def test_order_fill_terminal_exact_match_matches_non_terminal_exact(
+        self,
+    ) -> None:
+        '''Pin Vaquum/Nexus#78: terminal=True with new_remaining == 0 is
+        a no-op relative to the existing exact-match branch (same state
+        as the prior code path).
+        '''
+
+        ctrl_terminal = _make_controller()
+        ctrl_legacy = _make_controller()
+
+        for ctrl in (ctrl_terminal, ctrl_legacy):
+            result = _reserve(ctrl, notional='100', fees='1')
+            assert result.reservation is not None
+            ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+            ctrl.order_ack('ORD-001')
+
+        ctrl_terminal.order_fill(
+            'ORD-001', Decimal('100'), Decimal('1'), terminal=True,
+        )
+        ctrl_legacy.order_fill('ORD-001', Decimal('100'), Decimal('1'), terminal=False)
+
+        assert (
+            ctrl_terminal._state.working_order_notional
+            == ctrl_legacy._state.working_order_notional
+        )
+        assert (
+            ctrl_terminal._state.position_notional
+            == ctrl_legacy._state.position_notional
+        )
+        assert (
+            ctrl_terminal._state.per_strategy_deployed
+            == ctrl_legacy._state.per_strategy_deployed
+        )
+        assert 'ORD-001' not in ctrl_terminal._orders
+        assert 'ORD-001' not in ctrl_legacy._orders
+
+    def test_order_fill_terminal_residual_includes_proportional_fees(
+        self,
+    ) -> None:
+        '''Pin Vaquum/Nexus#78: the residual released on terminal includes
+        the proportional residual estimated_fees, not just remaining_notional.
+
+        Reservation: 1000+10 (1010 total, 10 estimated fees on 1000
+        notional). After a terminal fill of 400+4: pre-fix per_strategy
+        deployed = 404 + 6 fees-residual = 410 → 6 leaked. Post-fix the
+        6 is released back; deployed lands at 404 exactly.
+        '''
+
+        ctrl = _make_controller()
+        result = _reserve(ctrl, notional='1000', fees='10')
+        assert result.reservation is not None
+        ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
+        ctrl.order_ack('ORD-001')
+
+        ctrl.order_fill(
+            'ORD-001', Decimal('400'), Decimal('4'), terminal=True,
+        )
+
+        assert ctrl._state.per_strategy_deployed.get('strat_a') == Decimal('404')
+        assert ctrl._state.working_order_notional == _ZERO
 
 
 class TestOrderCancel:
@@ -930,7 +1038,7 @@ class TestOrderCancel:
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
-        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
+        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'), terminal=False)
 
         canceled = ctrl.order_cancel('ORD-001')
         assert canceled.success is True
@@ -1038,7 +1146,7 @@ class TestRecoverOrphanedOrder:
         assert result.reservation is not None
         ctrl.send_order(result.reservation.reservation_id, 'ORD-001')
         ctrl.order_ack('ORD-001')
-        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'))
+        ctrl.order_fill('ORD-001', Decimal('400'), Decimal('4'), terminal=False)
         assert ctrl._state.position_notional == Decimal('404')
         assert ctrl._state.working_order_notional == Decimal('606')
 
@@ -1188,7 +1296,7 @@ class TestLifecycleHappyPath:
         assert ctrl._state.in_flight_order_notional == _ZERO
         assert ctrl._state.working_order_notional == Decimal('505')
 
-        ctrl.order_fill('ORD-001', Decimal('500'), Decimal('5'))
+        ctrl.order_fill('ORD-001', Decimal('500'), Decimal('5'), terminal=False)
         assert ctrl._state.working_order_notional == _ZERO
         assert ctrl._state.position_notional == Decimal('505')
         assert ctrl._state.per_strategy_deployed['strat_a'] == Decimal('505')
@@ -1235,13 +1343,16 @@ class TestNonTerminatingFeeRatio:
         ctrl.order_ack('ORD-001')
 
         ctrl.order_fill(
-            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333')
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333'),
+            terminal=False,
         )
         ctrl.order_fill(
-            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333')
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333'),
+            terminal=False,
         )
         ctrl.order_fill(
-            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333334')
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333334'),
+            terminal=False,
         )
 
         assert ctrl._state.working_order_notional == _ZERO
@@ -1256,7 +1367,8 @@ class TestNonTerminatingFeeRatio:
         ctrl.order_ack('ORD-001')
 
         ctrl.order_fill(
-            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333')
+            'ORD-001', Decimal('1'), Decimal('0.333333333333333333333333333'),
+            terminal=False,
         )
         ctrl.order_cancel('ORD-001')
 
@@ -1286,7 +1398,8 @@ class TestLifecycleConcurrency:
                     if sent.success:
                         acked = ctrl.order_ack(f'ORD-{idx}')
                         filled = ctrl.order_fill(
-                            f'ORD-{idx}', Decimal('500'), Decimal('5')
+                            f'ORD-{idx}', Decimal('500'), Decimal('5'),
+                            terminal=False,
                         )
                         if not acked.success or not filled.success:
                             msg = (
@@ -1369,7 +1482,7 @@ class TestPerStrategyDeployedInvariants:
 
         ctrl.send_order(res_a.reservation.reservation_id, 'ORD-A')
         ctrl.order_ack('ORD-A')
-        ctrl.order_fill('ORD-A', Decimal('150'), Decimal('1.5'))
+        ctrl.order_fill('ORD-A', Decimal('150'), Decimal('1.5'), terminal=False)
         ctrl.order_cancel('ORD-A')
 
         ctrl.send_order(res_b.reservation.reservation_id, 'ORD-B')
@@ -2026,6 +2139,7 @@ class TestFinalMajor09OrderFillAttributionLockstep:
         for _ in range(7):
             ctrl.order_fill(
                 'ORD-001', Decimal('1'), actual_fee_per_fill,
+                terminal=False,
             )
 
         assert ctrl._state.working_order_notional == _ZERO, (
@@ -2068,6 +2182,7 @@ class TestFinalMajor09OrderFillAttributionLockstep:
         for _ in range(100):
             ctrl.order_fill(
                 'ORD-001', Decimal('1'), actual_fee_per_fill,
+                terminal=False,
             )
             total_deployed = (
                 ctrl._state.position_notional
@@ -2114,6 +2229,7 @@ class TestFeeReserveSubUlpClampToZero:
 
         ctrl.order_fill(
             'ORD-001', Decimal('100'), Decimal('1'),
+            terminal=False,
         )
         assert ctrl._state.fee_reserve == _ZERO
 
@@ -2128,6 +2244,7 @@ class TestFeeReserveSubUlpClampToZero:
         sub_ulp_extra_fee = Decimal('1E-13')
         fill_result = ctrl.order_fill(
             'ORD-002', Decimal('100'), sub_ulp_extra_fee,
+            terminal=False,
         )
         assert fill_result.success, fill_result.reason
         assert ctrl._state.fee_reserve == _ZERO, (

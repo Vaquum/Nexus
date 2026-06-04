@@ -801,6 +801,8 @@ class CapitalController:
         order_id: str,
         fill_notional: Decimal,
         actual_fees: Decimal,
+        *,
+        terminal: bool,
     ) -> LifecycleResult:
         '''Handle a fill (partial or full) on a working order.
 
@@ -809,10 +811,35 @@ class CapitalController:
         cost (fill_notional + actual_fees). Fee variance is reconciled against
         fee_reserve: surplus adds, deficit draws.
 
+        When the upstream venue marks the order as terminally FILLED but the
+        cumulative `fill_notional` is strictly less than the order's reserved
+        notional (e.g., execution VWAP below the reservation reference price,
+        or stepSize-driven quantity snap), the reservation residual sits in
+        `working_order_notional` and `per_strategy_deployed` forever unless
+        explicitly released. The `terminal` flag tells the controller to
+        release that residual:
+
+            terminal=True  AND new_remaining > 0  →  release the residual
+                from `working_order_notional` and `per_strategy_deployed`;
+                pop the order from `_orders`.
+            terminal=True  AND new_remaining == 0 →  same as the exact-match
+                branch; the order is popped, no residual to release.
+            terminal=False                        →  partial-fill behavior;
+                the order stays in `_orders` with the reduced
+                remaining_notional / remaining_total for the next fill.
+
+        The caller (`OutcomeProcessor._handle_fill`) derives `terminal` from
+        the upstream `TradeOutcomeType` — `FILLED` is terminal, `PARTIAL`
+        is not. `terminal` is keyword-only and required: callers must make
+        an explicit choice every time. Defaulting it would let any future
+        caller silently recreate the v0.55.0 residual-leak bug by omission.
+
         Args:
             order_id: ID of the filled order.
             fill_notional: Quote capital filled (excluding fees).
             actual_fees: Actual fees charged by venue for this fill.
+            terminal: Whether this fill is the order's terminal status
+                upstream. When True, any unfilled residual is released.
 
         Returns:
             LifecycleResult with reason on failure.
@@ -867,6 +894,7 @@ class CapitalController:
             if new_remaining == _ZERO:
                 fill_with_estimated = pre_fill_remaining
                 proportional_estimated = pre_fill_remaining - order.remaining_notional
+                terminal_residual = _ZERO
             else:
                 updated = TrackedOrder(
                     order_id=order.order_id,
@@ -880,6 +908,7 @@ class CapitalController:
                 )
                 fill_with_estimated = pre_fill_remaining - updated.remaining_total
                 proportional_estimated = fill_with_estimated - fill_notional
+                terminal_residual = updated.remaining_total
 
             fee_delta = proportional_estimated - actual_fees
 
@@ -897,7 +926,17 @@ class CapitalController:
                     category=FailureCategory.EXPECTED_MISS,
                 )
 
-            if new_remaining == _ZERO:
+            if terminal and new_remaining > _ZERO and terminal_residual < _ZERO:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'order {order_id!r} residual remaining_total '
+                        f'{terminal_residual} is negative; cannot release'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
+                )
+
+            if new_remaining == _ZERO or terminal:
                 self._orders.pop(order_id)
             else:
                 self._orders[order_id] = updated
@@ -914,6 +953,10 @@ class CapitalController:
 
             if fee_delta != _ZERO:
                 self._adjust_strategy_deployed(order.strategy_id, -fee_delta)
+
+            if terminal and new_remaining > _ZERO:
+                self._state.working_order_notional -= terminal_residual
+                self._adjust_strategy_deployed(order.strategy_id, -terminal_residual)
 
             return LifecycleResult(success=True)
 
