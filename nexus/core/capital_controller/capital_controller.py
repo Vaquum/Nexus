@@ -894,6 +894,7 @@ class CapitalController:
             if new_remaining == _ZERO:
                 fill_with_estimated = pre_fill_remaining
                 proportional_estimated = pre_fill_remaining - order.remaining_notional
+                terminal_residual = _ZERO
             else:
                 updated = TrackedOrder(
                     order_id=order.order_id,
@@ -907,6 +908,7 @@ class CapitalController:
                 )
                 fill_with_estimated = pre_fill_remaining - updated.remaining_total
                 proportional_estimated = fill_with_estimated - fill_notional
+                terminal_residual = updated.remaining_total
 
             fee_delta = proportional_estimated - actual_fees
 
@@ -922,6 +924,16 @@ class CapitalController:
                         f'(tolerance {_SUB_ULP_TOLERANCE})'
                     ),
                     category=FailureCategory.EXPECTED_MISS,
+                )
+
+            if terminal and new_remaining > _ZERO and terminal_residual < _ZERO:
+                return LifecycleResult(
+                    success=False,
+                    reason=(
+                        f'order {order_id!r} residual remaining_total '
+                        f'{terminal_residual} is negative; cannot release'
+                    ),
+                    category=FailureCategory.INVARIANT_BREACH,
                 )
 
             if new_remaining == _ZERO or terminal:
@@ -943,18 +955,8 @@ class CapitalController:
                 self._adjust_strategy_deployed(order.strategy_id, -fee_delta)
 
             if terminal and new_remaining > _ZERO:
-                residual = updated.remaining_total
-                if residual < _ZERO:
-                    return LifecycleResult(
-                        success=False,
-                        reason=(
-                            f'order {order_id!r} residual remaining_total '
-                            f'{residual} is negative; cannot release'
-                        ),
-                        category=FailureCategory.INVARIANT_BREACH,
-                    )
-                self._state.working_order_notional -= residual
-                self._adjust_strategy_deployed(order.strategy_id, -residual)
+                self._state.working_order_notional -= terminal_residual
+                self._adjust_strategy_deployed(order.strategy_id, -terminal_residual)
 
             return LifecycleResult(success=True)
 

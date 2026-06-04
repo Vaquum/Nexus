@@ -935,9 +935,10 @@ class TestOrderFill:
         assert ctrl._state.per_strategy_deployed.get('strat_a') == Decimal('404')
 
     def test_order_fill_non_terminal_keeps_residual(self) -> None:
-        '''Pin Vaquum/Nexus#78: terminal=False (default) preserves the
-        pre-existing partial-fill behavior — the order stays in _orders
-        with reduced remaining and capital aggregates keep the residual.
+        '''Pin Vaquum/Nexus#78: an explicit terminal=False call preserves
+        partial-fill behavior — the order stays in _orders with reduced
+        remaining and capital aggregates keep the residual. terminal is a
+        required kwarg on order_fill; this test exercises the False branch.
         '''
 
         ctrl = _make_controller()
