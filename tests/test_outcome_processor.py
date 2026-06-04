@@ -489,6 +489,91 @@ class TestPositionGrowth:
             proc.process(outcome, _entry_context())
 
 
+class TestEntryFillTerminalThreading:
+    '''Pin Vaquum/Nexus#78: OutcomeProcessor → CapitalController contract.
+
+    The fix at PR-prep round-1 added a `terminal` keyword to
+    `CapitalController.order_fill`. The OutcomeProcessor derives it as
+    `outcome.outcome_type == TradeOutcomeType.FILLED` so the capital layer
+    can release the unfilled reservation residual when the upstream venue
+    declares the order terminal. These tests pin the cross-component
+    contract: removing or mis-mapping the kwarg at the call site re-opens
+    the v0.55.0 ghost-residual leak.
+    '''
+
+    def test_fill_outcome_terminal_releases_residual(self) -> None:
+        '''FILLED outcome with `fill_notional < reservation.notional`
+        releases the residual from `working_order_notional` and
+        `per_strategy_deployed` (zero working, deployed equals actual
+        cost basis of the filled portion).
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.001'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('50'),
+            actual_fees=Decimal('0.5'),
+        )
+
+        proc.process(outcome, _entry_context())
+
+        assert ctrl._state.working_order_notional == _ZERO
+        assert ctrl._state.per_strategy_deployed.get('strat_001') == Decimal('50.5')
+        assert 'cmd_001' not in ctrl._orders
+
+    def test_partial_outcome_non_terminal_keeps_residual(self) -> None:
+        '''PARTIAL outcome with `fill_notional < reservation.notional`
+        retains the order in `_orders` with reduced `remaining_notional`;
+        the residual stays in `working_order_notional` because more
+        fills are still expected.
+        '''
+
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.PARTIAL,
+            timestamp=_now(),
+            fill_size=Decimal('0.001'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('50'),
+            actual_fees=Decimal('0.5'),
+        )
+
+        proc.process(outcome, _entry_context())
+
+        assert ctrl._state.working_order_notional > _ZERO
+        assert 'cmd_001' in ctrl._orders
+        assert ctrl._orders['cmd_001'].remaining_notional == Decimal('50')
+
+
 class TestPositionReduction:
     def test_exit_fill_reduces_position(self) -> None:
         proc, ctrl, state, _, _tmp = _make_processor()

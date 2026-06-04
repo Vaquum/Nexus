@@ -802,7 +802,7 @@ class CapitalController:
         fill_notional: Decimal,
         actual_fees: Decimal,
         *,
-        terminal: bool = False,
+        terminal: bool,
     ) -> LifecycleResult:
         '''Handle a fill (partial or full) on a working order.
 
@@ -822,15 +822,17 @@ class CapitalController:
             terminal=True  AND new_remaining > 0  →  release the residual
                 from `working_order_notional` and `per_strategy_deployed`;
                 pop the order from `_orders`.
-            terminal=True  AND new_remaining == 0 →  same as before; the
-                exact-match branch already pops the order.
-            terminal=False                        →  pre-existing partial-
-                fill behavior; order stays in `_orders` with the reduced
-                remaining_notional / remaining_total.
+            terminal=True  AND new_remaining == 0 →  same as the exact-match
+                branch; the order is popped, no residual to release.
+            terminal=False                        →  partial-fill behavior;
+                the order stays in `_orders` with the reduced
+                remaining_notional / remaining_total for the next fill.
 
         The caller (`OutcomeProcessor._handle_fill`) derives `terminal` from
         the upstream `TradeOutcomeType` — `FILLED` is terminal, `PARTIAL`
-        is not.
+        is not. `terminal` is keyword-only and required: callers must make
+        an explicit choice every time. Defaulting it would let any future
+        caller silently recreate the v0.55.0 residual-leak bug by omission.
 
         Args:
             order_id: ID of the filled order.
@@ -942,6 +944,15 @@ class CapitalController:
 
             if terminal and new_remaining > _ZERO:
                 residual = updated.remaining_total
+                if residual < _ZERO:
+                    return LifecycleResult(
+                        success=False,
+                        reason=(
+                            f'order {order_id!r} residual remaining_total '
+                            f'{residual} is negative; cannot release'
+                        ),
+                        category=FailureCategory.INVARIANT_BREACH,
+                    )
                 self._state.working_order_notional -= residual
                 self._adjust_strategy_deployed(order.strategy_id, -residual)
 
