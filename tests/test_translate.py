@@ -472,9 +472,13 @@ def test_quote_native_enter_translation() -> None:
 
 
 def test_exit_translation_omits_quote_qty() -> None:
-    '''EXIT NEW_ORDER never carries `quote_qty` — the Action invariant
-    rejects it upstream, and the connector sets it explicitly to None
-    in the non-NEW_ORDER and exit branches.
+    '''EXIT NEW_ORDER never carries `quote_qty`.
+
+    EXIT actions go through the NEW_ORDER translation arm of
+    `translate_to_trade_command`, which forwards `action.quote_qty`
+    verbatim. `Action.__post_init__` enforces `quote_qty is None`
+    on EXIT, so the forwarded value is always None — no exit-specific
+    branch in the translator is required.
     '''
 
     action = _exit_action()

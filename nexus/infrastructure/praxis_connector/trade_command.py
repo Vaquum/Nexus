@@ -35,10 +35,17 @@ class TradeCommand:
             on NEW_ORDER (exactly one required). None for AMEND_ORDER /
             CANCEL_ORDER.
         quote_qty: Quote-asset spend (e.g. USDT) for quote-native
-            MARKET BUY NEW_ORDERs. The venue determines the executed
-            base quantity from live liquidity. Mutually exclusive with
-            `size` on NEW_ORDER. None for AMEND_ORDER / CANCEL_ORDER
-            and EXIT.
+            MARKET BUY ENTER NEW_ORDERs. The venue determines the
+            executed base quantity from live liquidity. Mutually
+            exclusive with `size` on NEW_ORDER. `__post_init__`
+            enforces `None` on AMEND_ORDER / CANCEL_ORDER (no
+            enter/exit discriminator exists at the TradeCommand
+            layer). EXIT NEW_ORDERs do not carry `quote_qty`
+            either, but that is enforced upstream by
+            `Action.__post_init__` (EXIT must not set quote_qty)
+            rather than by this dataclass — only the translator
+            sees the EXIT vs ENTER distinction and forwards the
+            already-`None` Action field through.
         stp_mode: Self-trade prevention; required for NEW_ORDER, None otherwise.
         trade_id: Position reference for EXIT actions.
         reservation_id: Capital lock reference for ENTER and size-increasing MODIFY.
