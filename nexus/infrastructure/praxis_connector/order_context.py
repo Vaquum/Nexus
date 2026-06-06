@@ -28,7 +28,10 @@ class OrderContext:
         side: Order direction at the venue (BUY/SELL). Independent of
             entry-vs-exit semantics: a short-position EXIT is a BUY at
             the venue, and a short-position ENTER is a SELL.
-        order_size: Original order size in base asset.
+        order_size: Original order size in base asset. Required for
+            EXIT; may be `None` for quote-native ENTER (the venue
+            determines the base quantity from `quote_qty` and live
+            liquidity).
         order_notional: Original order notional in quote asset.
         estimated_fees: Estimated fees at reservation time for reconciliation.
         is_entry: True when this order grows a position (ENTER), False
@@ -46,7 +49,7 @@ class OrderContext:
     strategy_id: str
     trade_id: str | None
     side: OrderSide
-    order_size: Decimal
+    order_size: Decimal | None
     order_notional: Decimal
     estimated_fees: Decimal
     is_entry: bool
@@ -72,13 +75,25 @@ class OrderContext:
             msg = 'OrderContext.side must be an OrderSide member'
             raise ValueError(msg)
 
-        if not isinstance(self.order_size, Decimal) or not self.order_size.is_finite():
-            msg = 'OrderContext.order_size must be a finite Decimal'
+        if not isinstance(self.is_entry, bool):
+            msg = 'OrderContext.is_entry must be a bool'
             raise ValueError(msg)
 
-        if self.order_size <= _ZERO:
-            msg = 'OrderContext.order_size must be positive'
-            raise ValueError(msg)
+        if self.order_size is None:
+
+            if not self.is_entry:
+                msg = 'OrderContext.order_size is required for EXIT orders'
+                raise ValueError(msg)
+
+        else:
+
+            if not isinstance(self.order_size, Decimal) or not self.order_size.is_finite():
+                msg = 'OrderContext.order_size must be a finite Decimal'
+                raise ValueError(msg)
+
+            if self.order_size <= _ZERO:
+                msg = 'OrderContext.order_size must be positive'
+                raise ValueError(msg)
 
         if (
             not isinstance(self.order_notional, Decimal)
@@ -100,10 +115,6 @@ class OrderContext:
 
         if self.estimated_fees < _ZERO:
             msg = 'OrderContext.estimated_fees must be non-negative'
-            raise ValueError(msg)
-
-        if not isinstance(self.is_entry, bool):
-            msg = 'OrderContext.is_entry must be a bool'
             raise ValueError(msg)
 
     @property

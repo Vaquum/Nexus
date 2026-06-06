@@ -427,3 +427,97 @@ def test_missing_command_id_rejected() -> None:
 
     with pytest.raises(ValueError, match='non-empty command_id'):
         translate_to_trade_command(action, context, decision, config, now)
+
+
+def test_quote_native_enter_translation() -> None:
+    '''ENTER with `quote_qty` translates to NEW_ORDER carrying
+    `quote_qty` and `size=None` — the venue determines the executed
+    base from the spend cap, so no client-side size is shipped.
+    '''
+
+    action = Action(
+        action_type=ActionType.ENTER,
+        direction=OrderSide.BUY,
+        quote_qty=Decimal('100'),
+        execution_mode=ExecutionMode.SINGLE_SHOT,
+        order_type=OrderType.MARKET,
+        deadline=300,
+        maker_preference=MakerPreference.NO_PREFERENCE,
+        reference_price=Decimal('100000'),
+    )
+    context = ValidationRequestContext(
+        strategy_id='strat_001',
+        action=ValidationAction.ENTER,
+        symbol='BTCUSDT',
+        order_side=OrderSide.BUY,
+        order_size=None,
+        command_id='cmd_001',
+        order_notional=Decimal('100'),
+        estimated_fees=Decimal('0.1'),
+        strategy_budget=Decimal('5000'),
+        state=_state(),
+        config=_config(),
+    )
+    decision = ValidationDecision(allowed=True, reservation=_reservation())
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.command_type == TradeCommandType.NEW_ORDER
+    assert cmd.side == OrderSide.BUY
+    assert cmd.quote_qty == Decimal('100')
+    assert cmd.size is None
+    assert cmd.notional == Decimal('100')
+
+
+def test_exit_translation_omits_quote_qty() -> None:
+    '''EXIT NEW_ORDER never carries `quote_qty`.
+
+    EXIT actions go through the NEW_ORDER translation arm of
+    `translate_to_trade_command`, which forwards `action.quote_qty`
+    verbatim. `Action.__post_init__` enforces `quote_qty is None`
+    on EXIT, so the forwarded value is always None — no exit-specific
+    branch in the translator is required.
+    '''
+
+    action = _exit_action()
+    context = _exit_context()
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.quote_qty is None
+    assert cmd.size == Decimal('0.01')
+
+
+def test_modify_translation_omits_quote_qty() -> None:
+    '''AMEND_ORDER never carries quote_qty (TradeCommand invariant).'''
+
+    action = _modify_action()
+    context = _modify_context()
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.quote_qty is None
+    assert cmd.size is None
+
+
+def test_cancel_translation_omits_quote_qty() -> None:
+    '''CANCEL_ORDER never carries quote_qty (TradeCommand invariant).'''
+
+    action = _cancel_action()
+    context = _cancel_context()
+    decision = ValidationDecision(allowed=True)
+    config = _config()
+    now = _now()
+
+    cmd = translate_to_trade_command(action, context, decision, config, now)
+
+    assert cmd.quote_qty is None
+    assert cmd.size is None

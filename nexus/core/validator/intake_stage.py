@@ -211,7 +211,7 @@ def make_reference_integrity_hook(
                     reason_code='INTAKE_SPOT_DIRECTION_INVALID',
                     message='ENTER actions must use BUY side for spot direction rules',
                 )
-            elif context.order_size is None or context.order_size <= _ZERO:
+            elif context.order_size is not None and context.order_size <= _ZERO:
                 decision = ValidationDecision(
                     allowed=False,
                     failed_stage=ValidationStage.INTAKE,

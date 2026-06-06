@@ -39,7 +39,13 @@ class Action:
     Args:
         action_type: Type of action requested.
         direction: BUY or SELL. Required for ENTER.
-        size: Base asset quantity. Required for ENTER and EXIT.
+        size: Base asset quantity. Required for EXIT, and for ENTER
+            when `quote_qty` is not set. Mutually exclusive with
+            `quote_qty` on ENTER.
+        quote_qty: Quote-asset spend (e.g. USDT). Optional alternative
+            to `size` for ENTER MARKET BUY orders — the venue determines
+            the resulting base quantity from live liquidity. Mutually
+            exclusive with `size` on ENTER; must be unset for EXIT.
         execution_mode: How to execute (e.g. SingleShot). Required for ENTER.
         order_type: Order type (e.g. Market, Limit). Required for ENTER.
         execution_params: Mode-specific parameters. Optional.
@@ -53,6 +59,7 @@ class Action:
     action_type: ActionType
     direction: OrderSide | None = None
     size: Decimal | None = None
+    quote_qty: Decimal | None = None
     execution_mode: ExecutionMode | None = None
     order_type: OrderType | None = None
     execution_params: Mapping[str, object] | None = None
@@ -77,6 +84,14 @@ class Action:
             or self.size <= _ZERO
         ):
             msg = 'size must be a finite positive Decimal or None'
+            raise ValueError(msg)
+
+        if self.quote_qty is not None and (
+            not isinstance(self.quote_qty, Decimal)
+            or not self.quote_qty.is_finite()
+            or self.quote_qty <= _ZERO
+        ):
+            msg = 'quote_qty must be a finite positive Decimal or None'
             raise ValueError(msg)
 
         if self.execution_mode is not None and not isinstance(
@@ -144,8 +159,8 @@ class Action:
             missing = []
             if self.direction is None:
                 missing.append('direction')
-            if self.size is None:
-                missing.append('size')
+            if self.size is None and self.quote_qty is None:
+                missing.append('size or quote_qty')
             if self.execution_mode is None:
                 missing.append('execution_mode')
             if self.order_type is None:
@@ -156,6 +171,29 @@ class Action:
                 msg = f"ENTER requires: {', '.join(missing)}"
                 raise ValueError(msg)
 
+            if self.size is not None and self.quote_qty is not None:
+                msg = 'ENTER requires exactly one of size or quote_qty, not both'
+                raise ValueError(msg)
+
+            if self.quote_qty is not None:
+
+                assert self.direction is not None
+                assert self.order_type is not None
+
+                if self.direction != OrderSide.BUY:
+                    msg = (
+                        f'ENTER with quote_qty is only valid for BUY, '
+                        f'got direction={self.direction.value}'
+                    )
+                    raise ValueError(msg)
+
+                if self.order_type != OrderType.MARKET:
+                    msg = (
+                        f'ENTER with quote_qty is only valid for MARKET, '
+                        f'got order_type={self.order_type.value}'
+                    )
+                    raise ValueError(msg)
+
         elif self.action_type == ActionType.EXIT:
             missing = []
             if self.trade_id is None:
@@ -164,6 +202,10 @@ class Action:
                 missing.append('size')
             if missing:
                 msg = f"EXIT requires: {', '.join(missing)}"
+                raise ValueError(msg)
+
+            if self.quote_qty is not None:
+                msg = 'EXIT must not set quote_qty (use size)'
                 raise ValueError(msg)
 
         elif self.action_type == ActionType.MODIFY:

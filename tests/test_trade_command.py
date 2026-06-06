@@ -577,3 +577,97 @@ def test_cancel_order_with_strategy_id_rejected() -> None:
             strategy_id='momentum',
         )
 
+
+def test_new_order_with_quote_qty_succeeds() -> None:
+    cmd = TradeCommand(
+        command_id='cmd_015',
+        command_type=TradeCommandType.NEW_ORDER,
+        account_id='acc_001',
+        venue='binance_spot',
+        symbol='BTCUSDT',
+        notional=Decimal('100'),
+        created_at=_now(),
+        side=OrderSide.BUY,
+        quote_qty=Decimal('100'),
+        stp_mode=STPMode.CANCEL_TAKER,
+    )
+
+    assert cmd.quote_qty == Decimal('100')
+    assert cmd.size is None
+
+
+def test_new_order_with_size_and_quote_qty_rejected() -> None:
+    with pytest.raises(ValueError, match='NEW_ORDER requires exactly one of size or quote_qty'):
+        TradeCommand(
+            command_id='cmd_016',
+            command_type=TradeCommandType.NEW_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('100'),
+            created_at=_now(),
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            quote_qty=Decimal('100'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+
+
+def test_new_order_without_size_or_quote_qty_rejected() -> None:
+    with pytest.raises(ValueError, match='NEW_ORDER requires size or quote_qty'):
+        TradeCommand(
+            command_id='cmd_017',
+            command_type=TradeCommandType.NEW_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('100'),
+            created_at=_now(),
+            side=OrderSide.BUY,
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+
+
+def test_amend_order_with_quote_qty_rejected() -> None:
+    with pytest.raises(ValueError, match='AMEND_ORDER must not have quote_qty'):
+        TradeCommand(
+            command_id='cmd_018',
+            command_type=TradeCommandType.AMEND_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('100'),
+            created_at=_now(),
+            quote_qty=Decimal('100'),
+        )
+
+
+def test_cancel_order_with_quote_qty_rejected() -> None:
+    with pytest.raises(ValueError, match='CANCEL_ORDER must not have quote_qty'):
+        TradeCommand(
+            command_id='cmd_019',
+            command_type=TradeCommandType.CANCEL_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('0'),
+            created_at=_now(),
+            quote_qty=Decimal('100'),
+        )
+
+
+def test_quote_qty_must_be_positive_decimal() -> None:
+    with pytest.raises(ValueError, match='quote_qty must be a finite positive Decimal'):
+        TradeCommand(
+            command_id='cmd_020',
+            command_type=TradeCommandType.NEW_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('100'),
+            created_at=_now(),
+            side=OrderSide.BUY,
+            quote_qty=Decimal('0'),
+            stp_mode=STPMode.CANCEL_TAKER,
+        )
+
