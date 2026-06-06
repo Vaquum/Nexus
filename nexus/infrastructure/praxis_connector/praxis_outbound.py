@@ -76,24 +76,28 @@ class PraxisOutbound:
             if command.deadline is not None
             else max(1, round(self._timeout))
         )
+        submit_kwargs: dict[str, Any] = {
+            'trade_id': command.trade_id or command.command_id,
+            'account_id': command.account_id,
+            'symbol': command.symbol,
+            'side': command.side,
+            'qty': command.size,
+            'order_type': command.order_type,
+            'execution_mode': command.execution_mode,
+            'execution_params': command.execution_params,
+            'timeout': order_timeout,
+            'reference_price': command.reference_price,
+            'maker_preference': command.maker_preference,
+            'stp_mode': command.stp_mode,
+            'created_at': command.created_at,
+            'strategy_id': command.strategy_id,
+        }
+
+        if command.quote_qty is not None:
+            submit_kwargs['quote_qty'] = command.quote_qty
+
         future: concurrent.futures.Future[str] = asyncio.run_coroutine_threadsafe(
-            self._submit_fn(
-                trade_id=command.trade_id or command.command_id,
-                account_id=command.account_id,
-                symbol=command.symbol,
-                side=command.side,
-                qty=command.size,
-                quote_qty=command.quote_qty,
-                order_type=command.order_type,
-                execution_mode=command.execution_mode,
-                execution_params=command.execution_params,
-                timeout=order_timeout,
-                reference_price=command.reference_price,
-                maker_preference=command.maker_preference,
-                stp_mode=command.stp_mode,
-                created_at=command.created_at,
-                strategy_id=command.strategy_id,
-            ),
+            self._submit_fn(**submit_kwargs),
             self._loop,
         )
 

@@ -180,6 +180,74 @@ class TestPraxisOutbound:
         with pytest.raises(ValueError, match='account not registered'):
             outbound.send_command(command)
 
+    def test_quote_qty_omitted_when_unset(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_command omits `quote_qty` when `TradeCommand.quote_qty` is None.
+
+        Older Praxis `submit_command` signatures may not accept the
+        kwarg; always passing it would raise `TypeError` and break
+        every submission. Conditional inclusion keeps backward
+        compatibility with paired Praxis versions that lack quote_qty.
+        '''
+
+        loop, _ = event_loop_thread
+        received_kwargs: dict[str, object] = {}
+
+        async def capture_submit(**kwargs: object) -> str:
+            received_kwargs.update(kwargs)
+            return 'cmd_id'
+
+        outbound = PraxisOutbound(submit_fn=capture_submit, loop=loop)
+        outbound.send_command(_make_command())
+
+        assert 'quote_qty' not in received_kwargs
+
+    def test_quote_qty_passed_when_set(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''send_command passes `quote_qty` when `TradeCommand.quote_qty` is set.
+
+        Quote-native MARKET BUY commands carry no `size` (the venue
+        determines base from the quote spend cap); this test pins the
+        wire-level signal that triggers the Praxis adapter's
+        quote-native branch.
+        '''
+
+        loop, _ = event_loop_thread
+        received_kwargs: dict[str, object] = {}
+
+        async def capture_submit(**kwargs: object) -> str:
+            received_kwargs.update(kwargs)
+            return 'cmd_id'
+
+        command = TradeCommand(
+            command_id='cmd_002',
+            command_type=TradeCommandType.NEW_ORDER,
+            account_id='acc_001',
+            venue='binance_spot',
+            symbol='BTCUSDT',
+            notional=Decimal('100'),
+            created_at=datetime.now(tz=timezone.utc),
+            side=OrderSide.BUY,
+            quote_qty=Decimal('100'),
+            stp_mode=STPMode.CANCEL_TAKER,
+            trade_id='trade_002',
+            execution_mode=ExecutionMode.SINGLE_SHOT,
+            order_type=OrderType.MARKET,
+            deadline=300,
+            maker_preference=MakerPreference.NO_PREFERENCE,
+            strategy_id='momentum',
+        )
+
+        outbound = PraxisOutbound(submit_fn=capture_submit, loop=loop)
+        outbound.send_command(command)
+
+        assert received_kwargs['quote_qty'] == Decimal('100')
+        assert received_kwargs['qty'] is None
+
 
 class TestPraxisOutboundSendAbort:
 

@@ -164,10 +164,14 @@ class Strategy(Strategy):
         return actions
 
     def _reference_price(self, signal: Signal) -> Decimal | None:
-        '''Read `close` from the signal payload; returns None if absent or unparseable.
+        '''Read `close` from the signal payload as a positive finite Decimal.
 
-        `_enter` short-circuits to no action when this returns None, so
-        the launcher's poller-fallback path is not exercised.
+        Returns `None` when the value is absent, unparseable, non-finite
+        (`NaN` / `Infinity`), or non-positive. As of v0.56.0, `_enter`
+        forwards the result directly to `Action.reference_price`
+        (observational only — the order is sized in quote units), so
+        guarding here keeps malformed signal data from raising in
+        `Action.__post_init__` and suppressing the ENTER.
         '''
 
         candidate = signal.get('close')
@@ -176,6 +180,11 @@ class Strategy(Strategy):
             return None
 
         try:
-            return Decimal(str(candidate))
+            value = Decimal(str(candidate))
         except (TypeError, ArithmeticError, ValueError):
             return None
+
+        if not value.is_finite() or value <= 0:
+            return None
+
+        return value
