@@ -177,6 +177,9 @@ class Action:
 
             if self.quote_qty is not None:
 
+                assert self.direction is not None
+                assert self.order_type is not None
+
                 if self.direction != OrderSide.BUY:
                     msg = (
                         f'ENTER with quote_qty is only valid for BUY, '

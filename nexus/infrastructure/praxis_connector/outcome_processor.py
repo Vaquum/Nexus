@@ -261,6 +261,7 @@ class OutcomeProcessor:
 
         position_updated = False
         if context.is_exit:
+            assert context.order_size is not None
             position_updated = self._clear_pending_exit(context, context.order_size)
 
         if not result.success and not context.is_exit:
@@ -286,6 +287,7 @@ class OutcomeProcessor:
 
         position_updated = False
         if context.is_exit:
+            assert context.order_size is not None
             clear_size = min(
                 outcome.remaining_size
                 if outcome.remaining_size is not None
