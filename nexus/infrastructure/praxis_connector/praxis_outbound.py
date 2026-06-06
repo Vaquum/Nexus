@@ -83,6 +83,7 @@ class PraxisOutbound:
                 symbol=command.symbol,
                 side=command.side,
                 qty=command.size,
+                quote_qty=command.quote_qty,
                 order_type=command.order_type,
                 execution_mode=command.execution_mode,
                 execution_params=command.execution_params,

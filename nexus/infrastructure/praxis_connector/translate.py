@@ -96,6 +96,13 @@ def translate_to_trade_command(
             if deadline is None:
                 deadline = _EXIT_DEFAULT_DEADLINE_SECONDS
 
+    if is_new_order:
+        size = None if action.quote_qty is not None else context.order_size
+        quote_qty = action.quote_qty
+    else:
+        size = None
+        quote_qty = None
+
     return TradeCommand(
         command_id=context.command_id,
         command_type=command_type,
@@ -105,7 +112,8 @@ def translate_to_trade_command(
         notional=context.order_notional,
         created_at=now,
         side=context.order_side if is_new_order else None,
-        size=context.order_size if is_new_order else None,
+        size=size,
+        quote_qty=quote_qty,
         stp_mode=config.stp_mode if is_new_order else None,
         trade_id=context.trade_id,
         reservation_id=reservation_id,

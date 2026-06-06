@@ -614,6 +614,19 @@ class TestRfcStageOneHooks:
         assert decision.allowed is False
         assert decision.reason_code == 'INTAKE_ENTER_SIZE_INVALID'
 
+    def test_enter_quote_native_passes_with_none_size(self) -> None:
+        ref_hook = make_reference_integrity_hook(active_command_ids=set())
+        decision = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.ENTER,
+                order_size=None,
+                order_notional=Decimal('100'),
+            ),
+            hooks=(ref_hook,),
+        )
+
+        assert decision.allowed is True
+
     def test_default_hooks_use_config_duplicate_window_ms(self) -> None:
         config = InstanceConfig(
             account_id='acc_001',

@@ -31,7 +31,14 @@ class TradeCommand:
         notional: Quote asset amount.
         created_at: Command creation timestamp.
         side: BUY/SELL direction; None for AMEND_ORDER/CANCEL_ORDER.
-        size: Base asset quantity; None for AMEND_ORDER/CANCEL_ORDER.
+        size: Base asset quantity. Mutually exclusive with `quote_qty`
+            on NEW_ORDER (exactly one required). None for AMEND_ORDER /
+            CANCEL_ORDER.
+        quote_qty: Quote-asset spend (e.g. USDT) for quote-native
+            MARKET BUY NEW_ORDERs. The venue determines the executed
+            base quantity from live liquidity. Mutually exclusive with
+            `size` on NEW_ORDER. None for AMEND_ORDER / CANCEL_ORDER
+            and EXIT.
         stp_mode: Self-trade prevention; required for NEW_ORDER, None otherwise.
         trade_id: Position reference for EXIT actions.
         reservation_id: Capital lock reference for ENTER and size-increasing MODIFY.
@@ -79,6 +86,7 @@ class TradeCommand:
     maker_preference: MakerPreference | None = None
     reference_price: Decimal | None = None
     strategy_id: str | None = None
+    quote_qty: Decimal | None = None
 
     def __post_init__(self) -> None:
         '''Validate command invariants at construction time.'''
@@ -129,6 +137,14 @@ class TradeCommand:
             or self.size <= _ZERO
         ):
             msg = 'TradeCommand.size must be a finite positive Decimal or None'
+            raise ValueError(msg)
+
+        if self.quote_qty is not None and (
+            not isinstance(self.quote_qty, Decimal)
+            or not self.quote_qty.is_finite()
+            or self.quote_qty <= _ZERO
+        ):
+            msg = 'TradeCommand.quote_qty must be a finite positive Decimal or None'
             raise ValueError(msg)
 
         if self.stp_mode is not None and not isinstance(self.stp_mode, STPMode):
@@ -204,8 +220,11 @@ class TradeCommand:
             if self.side is None:
                 msg = 'TradeCommand: NEW_ORDER requires side'
                 raise ValueError(msg)
-            if self.size is None:
-                msg = 'TradeCommand: NEW_ORDER requires size'
+            if self.size is None and self.quote_qty is None:
+                msg = 'TradeCommand: NEW_ORDER requires size or quote_qty'
+                raise ValueError(msg)
+            if self.size is not None and self.quote_qty is not None:
+                msg = 'TradeCommand: NEW_ORDER requires exactly one of size or quote_qty'
                 raise ValueError(msg)
             if self.stp_mode is None:
                 msg = 'TradeCommand: NEW_ORDER requires stp_mode'
@@ -217,6 +236,9 @@ class TradeCommand:
                 raise ValueError(msg)
             if self.size is not None:
                 msg = 'TradeCommand: AMEND_ORDER must not have size'
+                raise ValueError(msg)
+            if self.quote_qty is not None:
+                msg = 'TradeCommand: AMEND_ORDER must not have quote_qty'
                 raise ValueError(msg)
             if self.stp_mode is not None:
                 msg = 'TradeCommand: AMEND_ORDER must not have stp_mode'
@@ -249,6 +271,9 @@ class TradeCommand:
                 raise ValueError(msg)
             if self.size is not None:
                 msg = 'TradeCommand: CANCEL_ORDER must not have size'
+                raise ValueError(msg)
+            if self.quote_qty is not None:
+                msg = 'TradeCommand: CANCEL_ORDER must not have quote_qty'
                 raise ValueError(msg)
             if self.stp_mode is not None:
                 msg = 'TradeCommand: CANCEL_ORDER must not have stp_mode'

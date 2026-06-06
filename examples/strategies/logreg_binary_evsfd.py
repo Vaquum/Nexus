@@ -99,36 +99,35 @@ class Strategy(Strategy):
     def _enter(self, signal: Signal, context: StrategyContext) -> list[Action]:
         '''Build a single ENTER action sized as a fixed fraction of available capital.
 
-        Returns no action when `_reference_price` cannot derive a price
-        from the signal payload (capital sizing requires a price up
-        front; the launcher's poller-fallback path is not exercised).
+        Uses `quote_qty` (quote-asset spend) so the venue determines the
+        executed base quantity from live liquidity. This eliminates the
+        kline-staleness slippage gap that the qty-native path exposed:
+        the reservation matches the spend cap exactly, with no
+        reference-price multiplication.
         '''
 
-        reference_price = self._reference_price(signal)
-
-        if reference_price is None or context.capital_available <= 0:
+        if context.capital_available <= 0:
             return []
 
-        if not reference_price.is_finite() or reference_price <= 0:
+        quote_qty = context.capital_available * _ENTER_CAPITAL_FRACTION
+
+        if not quote_qty.is_finite() or quote_qty <= 0:
             _log.warning(
-                'logreg_binary_evsfd: non-positive or non-finite reference_price (%s); '
+                'logreg_binary_evsfd: non-positive or non-finite quote_qty (%s); '
                 'skipping ENTER',
-                reference_price,
+                quote_qty,
             )
             return []
-
-        notional = context.capital_available * _ENTER_CAPITAL_FRACTION
-        size = notional / reference_price
 
         return [
             Action(
                 action_type=ActionType.ENTER,
                 direction=OrderSide.BUY,
-                size=size,
+                quote_qty=quote_qty,
                 execution_mode=ExecutionMode.SINGLE_SHOT,
                 order_type=OrderType.MARKET,
                 deadline=_EXECUTION_DEADLINE_SECONDS,
-                reference_price=reference_price,
+                reference_price=self._reference_price(signal),
             ),
         ]
 

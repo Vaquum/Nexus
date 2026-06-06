@@ -384,6 +384,85 @@ class TestAction:
         with pytest.raises(ValueError, match=r'EXIT requires:.*size'):
             Action(action_type=ActionType.EXIT, trade_id='t-1')
 
+    def test_enter_with_quote_qty_succeeds(self) -> None:
+        '''ENTER with quote_qty (and no size) is a valid quote-native MARKET BUY.'''
+
+        action = Action(
+            action_type=ActionType.ENTER,
+            direction=OrderSide.BUY,
+            quote_qty=Decimal('100'),
+            execution_mode=ExecutionMode.SINGLE_SHOT,
+            order_type=OrderType.MARKET,
+            deadline=300,
+        )
+
+        assert action.quote_qty == Decimal('100')
+        assert action.size is None
+
+    def test_enter_quote_qty_and_size_mutually_exclusive(self) -> None:
+        '''ENTER raises when both size and quote_qty are set.'''
+
+        with pytest.raises(ValueError, match='exactly one of size or quote_qty'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                size=Decimal('1'),
+                quote_qty=Decimal('100'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_enter_quote_qty_requires_buy(self) -> None:
+        '''ENTER with quote_qty raises when direction is SELL.'''
+
+        with pytest.raises(ValueError, match='quote_qty is only valid for BUY'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.SELL,
+                quote_qty=Decimal('100'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
+    def test_enter_quote_qty_requires_market(self) -> None:
+        '''ENTER with quote_qty raises when order_type is not MARKET.'''
+
+        with pytest.raises(ValueError, match='quote_qty is only valid for MARKET'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                quote_qty=Decimal('100'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.LIMIT,
+                deadline=300,
+            )
+
+    def test_exit_rejects_quote_qty(self) -> None:
+        '''EXIT raises when quote_qty is set.'''
+
+        with pytest.raises(ValueError, match='EXIT must not set quote_qty'):
+            Action(
+                action_type=ActionType.EXIT,
+                trade_id='t-1',
+                size=Decimal('1'),
+                quote_qty=Decimal('100'),
+            )
+
+    def test_quote_qty_must_be_positive_decimal(self) -> None:
+        '''quote_qty raises on zero / negative / non-finite Decimal.'''
+
+        with pytest.raises(ValueError, match='quote_qty must be a finite positive Decimal'):
+            Action(
+                action_type=ActionType.ENTER,
+                direction=OrderSide.BUY,
+                quote_qty=Decimal('0'),
+                execution_mode=ExecutionMode.SINGLE_SHOT,
+                order_type=OrderType.MARKET,
+                deadline=300,
+            )
+
     def test_execution_mode_must_be_enum(self) -> None:
         '''execution_mode must be an ExecutionMode member when provided.'''
 
