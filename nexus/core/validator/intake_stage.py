@@ -218,19 +218,6 @@ def make_reference_integrity_hook(
                     reason_code='INTAKE_ENTER_SIZE_INVALID',
                     message='ENTER requires order_size greater than zero',
                 )
-            elif context.order_size is None and (
-                context.order_notional is None
-                or context.order_notional <= _ZERO
-            ):
-                decision = ValidationDecision(
-                    allowed=False,
-                    failed_stage=ValidationStage.INTAKE,
-                    reason_code='INTAKE_ENTER_SIZE_INVALID',
-                    message=(
-                        'ENTER without order_size requires positive order_notional '
-                        '(quote-native MARKET BUY)'
-                    ),
-                )
 
         elif context.action == ValidationAction.EXIT:
             if context.order_side != OrderSide.SELL:
