@@ -208,6 +208,34 @@ class TestOrderContextNumericValidation:
                 is_entry=True,
             )
 
+    def test_entry_order_size_none_allowed(self) -> None:
+        ctx = OrderContext(
+            command_id='cmd_001',
+            strategy_id='strat_001',
+            trade_id=None,
+            side=OrderSide.BUY,
+            order_size=None,
+            order_notional=Decimal('500'),
+            estimated_fees=Decimal('0.5'),
+            is_entry=True,
+        )
+
+        assert ctx.order_size is None
+        assert ctx.is_entry is True
+
+    def test_exit_order_size_none_rejected(self) -> None:
+        with pytest.raises(ValueError, match='order_size is required for EXIT orders'):
+            OrderContext(
+                command_id='cmd_002',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.SELL,
+                order_size=None,
+                order_notional=Decimal('510'),
+                estimated_fees=Decimal('0.51'),
+                is_entry=False,
+            )
+
     def test_order_notional_zero_rejected(self) -> None:
         with pytest.raises(ValueError, match='order_notional must be positive'):
             OrderContext(
