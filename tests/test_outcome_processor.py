@@ -2868,3 +2868,56 @@ class TestDustClose:
         )
 
         assert state.account_dust['BTCUSD'] == Decimal('0.00001142')
+
+    def test_close_as_dust_concurrent_calls_same_id_no_double_credit(self) -> None:
+        '''Concurrent callers with the same dust_close_id must not double-credit.
+
+        Regression for PR #83 review (round 1): the check + add on
+        `_processed_dust_close_ids` must be atomic inside a single
+        `_dedup_lock` acquisition. Otherwise two threads both pass
+        the check before either commits the add, both proceed to
+        `_positions_cm`, and (when the processor is constructed
+        without a `positions_lock`, i.e., `_positions_cm = nullcontext`)
+        both read `position.size` and credit `account_dust` twice.
+        '''
+
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000842'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        results: list[bool] = []
+        results_lock = threading.Lock()
+        gate = threading.Event()
+
+        def call() -> None:
+            gate.wait()
+            r = proc.close_as_dust(
+                trade_id='trade_001',
+                reason='r',
+                dust_close_id='dust-cmd_001',
+            )
+            with results_lock:
+                results.append(r)
+
+        threads = [threading.Thread(target=call) for _ in range(8)]
+
+        for t in threads:
+            t.start()
+
+        gate.set()
+
+        for t in threads:
+            t.join()
+
+        assert results.count(True) == 1
+        assert results.count(False) == 7
+        assert 'trade_001' not in state.positions
+        assert state.account_dust['BTCUSD'] == Decimal('0.00000842')

@@ -520,6 +520,15 @@ class OutcomeProcessor:
                 and context.intended_full_close
                 and position.size > _ZERO
             ):
+                # Capital-aggregate seam: `order_exit` (called earlier in
+                # `_handle_fill`) decremented `position_notional` /
+                # `per_strategy_deployed` by `avg_cost_basis * fill_size` —
+                # only the sold qty. The residue's cost basis
+                # (`avg_cost_basis * residue`) stays in the deployed
+                # aggregates with no backing position until the next
+                # `reconcile_at_boot` rebuilds from live positions.
+                # `account_dust` is base-asset only; the quote-side
+                # residue is intentionally left to reconcile.
                 residue = position.size
                 self._state.account_dust[position.symbol] = (
                     self._state.account_dust.get(position.symbol, _ZERO) + residue
@@ -579,6 +588,17 @@ class OutcomeProcessor:
         Idempotent on `dust_close_id`. Replay from WAL or a launcher
         retry with the same id is a no-op.
 
+        Capital-aggregate seam: no `order_exit` is called here because
+        no venue order was placed. The full `avg_cost_basis * size`
+        for this position remains in `position_notional` /
+        `per_strategy_deployed` until the next `reconcile_at_boot`
+        rebuilds from live positions. The position is sub-lot by
+        construction (B2 only fires when the lot-snapped exit qty is
+        below `LOT_SIZE.minQty`), so the dust-sized cost-basis residue
+        self-corrects at the next reconcile. Callers must rely on
+        `reconcile_at_boot` for the quote-side true-up; `account_dust`
+        is intentionally base-asset only.
+
         Args:
             trade_id: Position identifier to close. If the position is
                 not present in `state.positions` (already closed via
@@ -617,6 +637,8 @@ class OutcomeProcessor:
                 )
                 return False
 
+            self._processed_dust_close_ids.add(dust_close_id)
+
         with self._positions_cm:
             position = self._state.positions.get(trade_id)
 
@@ -625,9 +647,6 @@ class OutcomeProcessor:
                     'dust close for missing position; treating as already-closed',
                     extra={'trade_id': trade_id, 'dust_close_id': dust_close_id},
                 )
-
-                with self._dedup_lock:
-                    self._processed_dust_close_ids.add(dust_close_id)
 
                 return False
 
@@ -638,9 +657,6 @@ class OutcomeProcessor:
             )
             position.size = _ZERO
             del self._state.positions[trade_id]
-
-            with self._dedup_lock:
-                self._processed_dust_close_ids.add(dust_close_id)
 
         _log.info(
             'position closed as dust (no venue order)',
