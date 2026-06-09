@@ -2640,3 +2640,231 @@ class TestOutcomeIdIdempotency:
         assert ack_result.success is True
         assert fill_result.success is True
         assert fill_result.position_updated is True
+
+
+def _full_close_exit_context(
+    trade_id: str = 'trade_001',
+    order_size: Decimal = Decimal('0.01'),
+) -> OrderContext:
+    return OrderContext(
+        command_id='cmd_001',
+        strategy_id='strat_001',
+        trade_id=trade_id,
+        side=OrderSide.SELL,
+        order_size=order_size,
+        order_notional=Decimal('100'),
+        estimated_fees=Decimal('1'),
+        is_entry=False,
+        intended_full_close=True,
+    )
+
+
+class TestDustClose:
+    '''Dust handling via `intended_full_close` and `close_as_dust`.
+
+    Covers Vaquum/Nexus#82 — sub-lot residue from snapped EXIT fills
+    must move to `state.account_dust`, and intake-rejected full-close
+    EXITs must close via `close_as_dust`.
+    '''
+
+    def test_full_close_exit_fill_with_residue_moves_to_account_dust(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01000842'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.01000842'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01000000'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        proc.process(outcome, _full_close_exit_context())
+
+        assert 'trade_001' not in state.positions
+        assert state.account_dust['BTCUSD'] == Decimal('0.00000842')
+
+    def test_full_close_exit_fill_no_residue_no_dust(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        proc.process(outcome, _full_close_exit_context())
+
+        assert 'trade_001' not in state.positions
+        assert state.account_dust == {}
+
+    def test_partial_exit_fill_does_not_move_residue_to_dust(self) -> None:
+        proc, ctrl, state, _, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.02'),
+            entry_price=Decimal('50000'),
+            pending_exit=Decimal('0.01'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('51000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        proc.process(outcome, _exit_context())
+
+        assert state.positions['trade_001'].size == Decimal('0.01')
+        assert state.account_dust == {}
+
+    def test_close_as_dust_removes_position_and_credits_dust(self) -> None:
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000842'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        closed = proc.close_as_dust(
+            trade_id='trade_001',
+            reason='INTAKE_BELOW_MIN_QTY qty=0.00000842 lot_min=0.00001',
+            dust_close_id='dust-cmd_001',
+        )
+
+        assert closed is True
+        assert 'trade_001' not in state.positions
+        assert state.account_dust['BTCUSD'] == Decimal('0.00000842')
+
+    def test_close_as_dust_idempotent_under_same_dedup_key(self) -> None:
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000842'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        first = proc.close_as_dust(
+            trade_id='trade_001',
+            reason='r',
+            dust_close_id='dust-cmd_001',
+        )
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00009999'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        second = proc.close_as_dust(
+            trade_id='trade_001',
+            reason='r',
+            dust_close_id='dust-cmd_001',
+        )
+
+        assert first is True
+        assert second is False
+        assert 'trade_001' in state.positions
+        assert state.account_dust['BTCUSD'] == Decimal('0.00000842')
+
+    def test_close_as_dust_missing_position_returns_false_no_op(self) -> None:
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        closed = proc.close_as_dust(
+            trade_id='trade_missing',
+            reason='r',
+            dust_close_id='dust-cmd_missing',
+        )
+
+        assert closed is False
+        assert state.account_dust == {}
+
+    def test_close_as_dust_accumulates_residue_per_symbol(self) -> None:
+        proc, _ctrl, state, _, _tmp = _make_processor()
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000842'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        proc.close_as_dust(
+            trade_id='trade_001',
+            reason='r',
+            dust_close_id='dust-cmd_001',
+        )
+
+        state.positions['trade_002'] = Position(
+            trade_id='trade_002',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000300'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        proc.close_as_dust(
+            trade_id='trade_002',
+            reason='r',
+            dust_close_id='dust-cmd_002',
+        )
+
+        assert state.account_dust['BTCUSD'] == Decimal('0.00001142')

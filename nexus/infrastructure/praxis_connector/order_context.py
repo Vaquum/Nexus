@@ -43,6 +43,18 @@ class OrderContext:
             uses this flag exclusively to route fills between the
             entry path (capital `order_fill` + `_grow_position`) and
             the exit path (`_reduce_position`).
+        intended_full_close: True only on EXIT orders where the
+            strategy emitted `Action.size == position.size -
+            position.pending_exit` at the launcher boundary, i.e.
+            the intent was to close the trade completely. The
+            launcher's `_build_order_context` re-runs `build_context`
+            to reconstruct `ValidationRequestContext`, so this flag
+            must be copied across explicitly — a field only on
+            `ValidationRequestContext` would be lost on the rebuild.
+            `OutcomeProcessor._reduce_position` reads this flag to
+            decide whether to route sub-lot residue into
+            `state.account_dust` (`True`) or leave it as a partial
+            position (`False`). See Vaquum/Nexus#82.
     '''
 
     command_id: str
@@ -53,6 +65,7 @@ class OrderContext:
     order_notional: Decimal
     estimated_fees: Decimal
     is_entry: bool
+    intended_full_close: bool = False
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -115,6 +128,14 @@ class OrderContext:
 
         if self.estimated_fees < _ZERO:
             msg = 'OrderContext.estimated_fees must be non-negative'
+            raise ValueError(msg)
+
+        if not isinstance(self.intended_full_close, bool):
+            msg = 'OrderContext.intended_full_close must be a bool'
+            raise ValueError(msg)
+
+        if self.intended_full_close and self.is_entry:
+            msg = 'OrderContext.intended_full_close is only valid on EXIT orders'
             raise ValueError(msg)
 
     @property

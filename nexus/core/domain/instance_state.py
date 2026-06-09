@@ -29,6 +29,18 @@ class InstanceState:
         positions: Open positions keyed by trade_id.
         mode: Instance-level operational mode.
         strategy_modes: Per-strategy operational modes keyed by strategy_id.
+        account_dust: Per-symbol base-asset residue from sub-lot
+            position closes, keyed by symbol. Populated by
+            `OutcomeProcessor._reduce_position` when a terminal
+            full-close EXIT fill leaves residue (the venue snapped
+            the qty and the remainder is below the venue's lot
+            step) and by `OutcomeProcessor.close_as_dust` when the
+            launcher's intake-time quantization rejects a
+            full-close EXIT as sub-lot. Tracked symbol-keyed
+            because the base-asset identity is unambiguous from the
+            symbol (e.g., BTCUSDT → BTC residue). Persisted via WAL
+            replay + snapshot save/load so dust survives restarts.
+            See Vaquum/Nexus#82.
     '''
 
     capital: CapitalState
@@ -36,6 +48,7 @@ class InstanceState:
     positions: dict[str, Position] = field(default_factory=dict)
     mode: ModeState = field(default_factory=ModeState)
     strategy_modes: dict[str, StrategyModeState] = field(default_factory=dict)
+    account_dust: dict[str, Decimal] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         '''Validate that dict keys match their value identifiers.'''
@@ -56,6 +69,21 @@ class InstanceState:
                 raise ValueError(msg)
             if key != sms.strategy_id:
                 msg = f'InstanceState.strategy_modes key {key!r} does not match strategy_id {sms.strategy_id!r}'
+                raise ValueError(msg)
+
+        for symbol, residue in self.account_dust.items():
+            if not isinstance(symbol, str) or not symbol.strip():
+                msg = f'InstanceState.account_dust key {symbol!r} must be a non-empty string'
+                raise ValueError(msg)
+            if (
+                not isinstance(residue, Decimal)
+                or not residue.is_finite()
+                or residue < Decimal(0)
+            ):
+                msg = (
+                    f'InstanceState.account_dust[{symbol!r}] must be a finite '
+                    'non-negative Decimal'
+                )
                 raise ValueError(msg)
 
     @classmethod

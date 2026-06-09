@@ -66,6 +66,7 @@ class OutcomeProcessor:
             positions_lock if positions_lock is not None else nullcontext()
         )
         self._processed_outcome_ids: set[str] = set()
+        self._processed_dust_close_ids: set[str] = set()
         self._dedup_lock = threading.Lock()
 
     def process(
@@ -514,6 +515,29 @@ class OutcomeProcessor:
             position.size = position.size - fill_size
             position.pending_exit = max(_ZERO, position.pending_exit - fill_size)
 
+            if (
+                outcome.outcome_type == TradeOutcomeType.FILLED
+                and context.intended_full_close
+                and position.size > _ZERO
+            ):
+                residue = position.size
+                self._state.account_dust[position.symbol] = (
+                    self._state.account_dust.get(position.symbol, _ZERO) + residue
+                )
+                position.size = _ZERO
+                _log.info(
+                    'sub-lot residue moved to account_dust after full-close EXIT fill',
+                    extra={
+                        'command_id': outcome.command_id,
+                        'trade_id': context.trade_id,
+                        'symbol': position.symbol,
+                        'residue_qty': str(residue),
+                        'account_dust_total': str(
+                            self._state.account_dust[position.symbol],
+                        ),
+                    },
+                )
+
             if position.is_closed:
                 del self._state.positions[context.trade_id]
 
@@ -531,6 +555,104 @@ class OutcomeProcessor:
                 return False
 
             position.pending_exit = max(_ZERO, position.pending_exit - size)
+
+        return True
+
+    def close_as_dust(
+        self,
+        trade_id: str,
+        reason: str,
+        dust_close_id: str,
+    ) -> bool:
+        '''Close a position as dust without venue interaction.
+
+        Called by the Praxis launcher when intake-time venue quantization
+        rejects a full-close EXIT as sub-lot (the position is so small
+        that even the lot-snapped exit qty falls below `LOT_SIZE.minQty`).
+        Removes the position from `state.positions` and adds the residual
+        `position.size` to `state.account_dust[position.symbol]` so the
+        base-asset residue stays accounted for. Unlike the post-fill
+        residue path in `_reduce_position`, no venue order ever
+        existed — no `TradeClosed` / `TradeOutcomeProduced` is emitted
+        here.
+
+        Idempotent on `dust_close_id`. Replay from WAL or a launcher
+        retry with the same id is a no-op.
+
+        Args:
+            trade_id: Position identifier to close. If the position is
+                not present in `state.positions` (already closed via
+                replay or a prior call), returns `False` without raising.
+            reason: Free-form reason string for the audit log
+                (e.g., `'INTAKE_BELOW_MIN_QTY qty=0.00000842 lot_min=0.00001'`).
+            dust_close_id: Deterministic dedup key. Convention is
+                `f'dust-{command_id}'` where `command_id` is the EXIT
+                action's command id at the launcher; that keeps the
+                key stable across WAL replay.
+
+        Returns:
+            True if the position was found and closed as dust;
+            False on dedup hit or missing position.
+        '''
+
+        if not isinstance(trade_id, str) or not trade_id.strip():
+            msg = 'close_as_dust.trade_id must be a non-empty string'
+            raise ValueError(msg)
+
+        if not isinstance(reason, str) or not reason.strip():
+            msg = 'close_as_dust.reason must be a non-empty string'
+            raise ValueError(msg)
+
+        if not isinstance(dust_close_id, str) or not dust_close_id.strip():
+            msg = 'close_as_dust.dust_close_id must be a non-empty string'
+            raise ValueError(msg)
+
+        with self._dedup_lock:
+
+            if dust_close_id in self._processed_dust_close_ids:
+                _log.debug(
+                    'duplicate dust close dropped: dust_close_id=%s trade_id=%s',
+                    dust_close_id,
+                    trade_id,
+                )
+                return False
+
+        with self._positions_cm:
+            position = self._state.positions.get(trade_id)
+
+            if position is None:
+                _log.debug(
+                    'dust close for missing position; treating as already-closed',
+                    extra={'trade_id': trade_id, 'dust_close_id': dust_close_id},
+                )
+
+                with self._dedup_lock:
+                    self._processed_dust_close_ids.add(dust_close_id)
+
+                return False
+
+            residue = position.size
+            symbol = position.symbol
+            self._state.account_dust[symbol] = (
+                self._state.account_dust.get(symbol, _ZERO) + residue
+            )
+            position.size = _ZERO
+            del self._state.positions[trade_id]
+
+            with self._dedup_lock:
+                self._processed_dust_close_ids.add(dust_close_id)
+
+        _log.info(
+            'position closed as dust (no venue order)',
+            extra={
+                'trade_id': trade_id,
+                'symbol': symbol,
+                'residue_qty': str(residue),
+                'account_dust_total': str(self._state.account_dust[symbol]),
+                'reason': reason,
+                'dust_close_id': dust_close_id,
+            },
+        )
 
         return True
 

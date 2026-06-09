@@ -913,3 +913,45 @@ class TestSerializeStateConcurrentMutation:
             'strat_b': Decimal('7890.12'),
             'strat_c': Decimal('0'),
         }
+
+
+class TestAccountDustRoundtrip:
+    '''Verify `InstanceState.account_dust` roundtrips through WAL codec.
+
+    Covers Vaquum/Nexus#82 — sub-lot residue accumulated via
+    `_reduce_position` or `close_as_dust` must survive WAL replay and
+    snapshot reload.
+    '''
+
+    def test_empty_account_dust_roundtrips(self) -> None:
+        state = _make_minimal_state()
+        data = serialize_state(state)
+        restored = deserialize_state(data)
+        assert restored.account_dust == {}
+
+    def test_populated_account_dust_roundtrips(self) -> None:
+        state = _make_minimal_state()
+        state.account_dust['BTCUSDT'] = Decimal('0.00000842')
+        state.account_dust['ETHUSDT'] = Decimal('0.00012345')
+
+        data = serialize_state(state)
+        restored = deserialize_state(data)
+
+        assert restored.account_dust == {
+            'BTCUSDT': Decimal('0.00000842'),
+            'ETHUSDT': Decimal('0.00012345'),
+        }
+
+    def test_old_snapshot_without_account_dust_defaults_empty(self) -> None:
+        '''Simulate an old snapshot by serializing a fresh state and then
+        stripping the `account_dust` field — the codec should then default
+        the missing field to `{}` on deserialize.'''
+
+        state = _make_minimal_state()
+        data = serialize_state(state)
+        d = cast(dict[str, Any], msgpack.unpackb(data, raw=False))
+        d.pop('account_dust', None)
+        legacy_data: bytes = cast(bytes, msgpack.packb(d))
+
+        restored = deserialize_state(legacy_data)
+        assert restored.account_dust == {}

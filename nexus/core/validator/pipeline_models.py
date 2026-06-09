@@ -76,6 +76,17 @@ class ValidationRequestContext:
         strategy_budget: Current strategy budget ceiling (quote units).
         state: Current runtime instance state snapshot.
         config: Runtime instance configuration.
+        intended_full_close: True only on EXIT actions where the
+            strategy emitted `Action.size == position.size -
+            position.pending_exit` at the launcher boundary, i.e.
+            the intent was to close the trade completely. Carried
+            through to `OrderContext.intended_full_close` so
+            `OutcomeProcessor._reduce_position` can route post-fill
+            sub-lot residue into `state.account_dust` instead of
+            leaving it as a stuck position. Also gates the launcher's
+            sub-lot-rejection branch from invoking
+            `OutcomeProcessor.close_as_dust` instead of dropping the
+            command silently. See Vaquum/Nexus#82 + Vaquum/Praxis#142.
     '''
 
     strategy_id: str
@@ -91,6 +102,7 @@ class ValidationRequestContext:
     trade_id: str | None = None
     command_id: str | None = 'cmd_default'
     current_order_notional: Decimal | None = None
+    intended_full_close: bool = False
 
     def __post_init__(self) -> None:
         '''Validate context invariants at construction time.'''
@@ -169,6 +181,10 @@ class ValidationRequestContext:
 
         if not isinstance(self.config, InstanceConfig):
             msg = 'ValidationRequestContext.config must be an InstanceConfig instance'
+            raise ValueError(msg)
+
+        if not isinstance(self.intended_full_close, bool):
+            msg = 'ValidationRequestContext.intended_full_close must be a bool'
             raise ValueError(msg)
 
 

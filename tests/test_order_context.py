@@ -313,3 +313,61 @@ class TestOrderContextNumericValidation:
                 estimated_fees=Decimal('0.5'),
                 is_entry='yes',  # type: ignore[arg-type]
             )
+
+    def test_intended_full_close_default_false(self) -> None:
+        ctx = OrderContext(
+            command_id='cmd_001',
+            strategy_id='strat_001',
+            trade_id=None,
+            side=OrderSide.BUY,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('500'),
+            estimated_fees=Decimal('0.5'),
+            is_entry=True,
+        )
+        assert ctx.intended_full_close is False
+
+    def test_intended_full_close_true_on_exit(self) -> None:
+        ctx = OrderContext(
+            command_id='cmd_001',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('500'),
+            estimated_fees=Decimal('0.5'),
+            is_entry=False,
+            intended_full_close=True,
+        )
+        assert ctx.intended_full_close is True
+
+    def test_intended_full_close_non_bool_rejected(self) -> None:
+        with pytest.raises(ValueError, match='intended_full_close must be a bool'):
+            OrderContext(
+                command_id='cmd_001',
+                strategy_id='strat_001',
+                trade_id='trade_001',
+                side=OrderSide.SELL,
+                order_size=Decimal('0.01'),
+                order_notional=Decimal('500'),
+                estimated_fees=Decimal('0.5'),
+                is_entry=False,
+                intended_full_close='yes',  # type: ignore[arg-type]
+            )
+
+    def test_intended_full_close_with_is_entry_rejected(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match='intended_full_close is only valid on EXIT orders',
+        ):
+            OrderContext(
+                command_id='cmd_001',
+                strategy_id='strat_001',
+                trade_id=None,
+                side=OrderSide.BUY,
+                order_size=Decimal('0.01'),
+                order_notional=Decimal('500'),
+                estimated_fees=Decimal('0.5'),
+                is_entry=True,
+                intended_full_close=True,
+            )
