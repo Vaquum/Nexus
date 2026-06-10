@@ -144,6 +144,72 @@ class TestOutcomeProcessorAck:
         assert result.error_reason is not None
         assert 'order_ack failed' in result.error_reason
 
+    def test_exit_ack_noop_success(self) -> None:
+        proc, _, _, _, _tmp = _make_processor()
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=_now(),
+        )
+
+        result = proc.process(outcome, _exit_context())
+        assert result.success is True
+        assert result.outcome_type == TradeOutcomeType.ACK
+        assert result.capital_updated is False
+        assert result.position_updated is False
+
+    def test_exit_ack_does_not_touch_capital(self) -> None:
+        proc, ctrl, _, _, _tmp = _make_processor()
+        _setup_in_flight_order(ctrl, 'cmd_enter')
+
+        in_flight_before = ctrl._state.in_flight_order_notional
+        working_before = ctrl._state.working_order_notional
+
+        outcome = TradeOutcome(
+            outcome_id='out_exit_ack',
+            command_id='cmd_exit',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=_now(),
+        )
+
+        ctx = OrderContext(
+            command_id='cmd_exit',
+            strategy_id='strat_001',
+            trade_id='trade_001',
+            side=OrderSide.SELL,
+            order_size=Decimal('0.01'),
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            is_entry=False,
+        )
+
+        result = proc.process(outcome, ctx)
+        assert result.success is True
+        assert ctrl._state.in_flight_order_notional == in_flight_before
+        assert ctrl._state.working_order_notional == working_before
+
+    def test_entry_ack_still_transitions_capital(self) -> None:
+        proc, ctrl, _, _, _tmp = _make_processor()
+        _setup_in_flight_order(ctrl)
+
+        in_flight_before = ctrl._state.in_flight_order_notional
+        assert in_flight_before > _ZERO
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.ACK,
+            timestamp=_now(),
+        )
+
+        result = proc.process(outcome, _entry_context())
+        assert result.success is True
+        assert result.capital_updated is True
+        assert ctrl._state.in_flight_order_notional == _ZERO
+        assert ctrl._state.working_order_notional == in_flight_before
+
 
 class TestOutcomeProcessorFill:
     def test_fill_success(self) -> None:
