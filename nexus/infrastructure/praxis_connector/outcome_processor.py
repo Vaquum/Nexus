@@ -133,7 +133,7 @@ class OutcomeProcessor:
             )
 
         if outcome.outcome_type == TradeOutcomeType.ACK:
-            result = self._handle_ack(outcome)
+            result = self._handle_ack(outcome, context)
         elif outcome.outcome_type in (
             TradeOutcomeType.PARTIAL, TradeOutcomeType.FILLED,
         ):
@@ -149,7 +149,34 @@ class OutcomeProcessor:
 
         return result
 
-    def _handle_ack(self, outcome: TradeOutcome) -> ProcessResult:
+    def _handle_ack(
+        self,
+        outcome: TradeOutcome,
+        context: OrderContext,
+    ) -> ProcessResult:
+        '''Acknowledge a venue-accepted order against the capital lifecycle.
+
+        ENTER orders carry a capital reservation that `send_order` converted
+        into an IN_FLIGHT `TrackedOrder`; their ACK transitions that order to
+        WORKING via `CapitalController.order_ack`. EXIT orders never reserve
+        capital, so no `TrackedOrder` exists for them — their ACK is a
+        no-op success rather than a structural `order not found` failure.
+
+        Args:
+            outcome: Inbound ACK outcome from the Trading sub-system.
+            context: Metadata identifying the order side.
+
+        Returns:
+            ProcessResult with `capital_updated=True` only when an ENTER
+            order transitioned IN_FLIGHT to WORKING.
+        '''
+
+        if not context.is_entry:
+            return ProcessResult(
+                success=True,
+                outcome_type=outcome.outcome_type,
+            )
+
         result = self._capital.order_ack(outcome.command_id)
 
         if not result.success:

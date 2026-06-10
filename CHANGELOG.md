@@ -714,3 +714,17 @@
 ### Fix
 
 - Closes [Vaquum/Nexus#82](https://github.com/Vaquum/Nexus/issues/82). Companion Praxis-side fix at [Vaquum/Praxis#142](https://github.com/Vaquum/Praxis/issues/142) — the launcher changes that compute `intended_full_close`, carry it through `_build_order_context`, and call `OutcomeProcessor.close_as_dust` in the rejection branch ship there. Nexus alone is dormant until that companion lands (the new field defaults to `False` so behavior is unchanged on every existing caller).
+
+## v0.58.0 on 10th of June, 2026
+
+### NOTE
+
+- During the Praxis v0.76.0 paper-trade validation (epoch 22, 2026-06-10), once outcome processing kept pace with strategy ticks, every EXIT ACK surfaced as `order_ack failed: order '<command_id>' not found` — 232+ failures in under an hour. Root cause: `CapitalController.order_ack` transitions a `TrackedOrder` from IN_FLIGHT to WORKING, but `TrackedOrder`s are only created by `send_order` from a capital reservation, and EXIT commands never reserve capital. The failure is structural — an EXIT ACK can never find an order record. It predates this release; the historical `OutcomeLoop` queue lag simply meant EXIT ACKs were rarely processed promptly enough for the failure to surface in volume.
+
+### Update
+
+- Update [`OutcomeProcessor._handle_ack`](nexus/infrastructure/praxis_connector/outcome_processor.py) to accept the `OrderContext` and return a no-op success for `is_entry=False` outcomes — the venue acknowledged the sell and there is no capital lifecycle to transition. ENTER ACKs are unchanged: they still call `CapitalController.order_ack` and transition IN_FLIGHT to WORKING. The no-op success also restores the normal `OutcomeAcked` spine append on the Praxis side, so EXIT ACK outcomes no longer accumulate un-acked in the event spine and replay cleanly at boot
+
+### Add
+
+- Add 3 tests to [`tests/test_outcome_processor.py::TestOutcomeProcessorAck`](tests/test_outcome_processor.py): EXIT ACK returns success with `capital_updated=False`; EXIT ACK leaves `in_flight_order_notional` and `working_order_notional` untouched while an unrelated ENTER order is in flight; ENTER ACK still transitions the full reserved total from in-flight to working
