@@ -360,6 +360,61 @@ class TestUnresolvedRetry:
 
         assert processed == ['outcome_cmd_mixed', 'outcome_cmd_mixed_filled']
 
+    def test_sibling_unresolved_mid_drain_is_reparked(self) -> None:
+        registry: dict[str, str] = {}
+        blocked: set[str] = {'outcome_cmd_drain_filled'}
+        ack = _ack_outcome('cmd_drain')
+        filled = TradeOutcome(
+            outcome_id='outcome_cmd_drain_filled',
+            command_id='cmd_drain',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime(2026, 4, 22, 12, 0, 1, tzinfo=timezone.utc),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('100'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('0'),
+        )
+
+        def _resolver(outcome: TradeOutcome) -> str | None:
+            if outcome.outcome_id in blocked:
+                return None
+
+            return registry.get(outcome.command_id)
+
+        inbound = _inbound_with(ack, filled)
+        runner = _runner_stub()
+        processed: list[str] = []
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=_resolver,
+            process_outcome=lambda o: processed.append(o.outcome_id),
+        )
+
+        assert loop.tick_once() is True
+        assert loop.tick_once() is True
+
+        registry['cmd_drain'] = 'strat_a'
+
+        deadline = time.monotonic() + 2.0
+
+        while len(processed) < 1 and time.monotonic() < deadline:
+            loop.tick_once()
+
+        assert processed == ['outcome_cmd_drain']
+        assert 'cmd_drain' in loop._unresolved_retries
+
+        blocked.clear()
+
+        while len(processed) < 2 and time.monotonic() < deadline:
+            loop.tick_once()
+
+        assert processed == ['outcome_cmd_drain', 'outcome_cmd_drain_filled']
+        assert loop._unresolved_retries == {}
+
 
 class TestProcessOutcomeHook:
 

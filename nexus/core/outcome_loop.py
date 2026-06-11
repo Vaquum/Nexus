@@ -266,10 +266,7 @@ class OutcomeLoop:
             if self._try_dispatch(head_outcome):
                 del self._unresolved_retries[command_id]
                 del self._retry_due[command_id]
-
-                for sibling, _ in pending[1:]:
-                    self._try_dispatch(sibling)
-
+                self._drain_resolved_queue(command_id, pending[1:], now)
                 continue
 
             if head_attempts >= len(UNRESOLVED_RETRY_DELAYS):
@@ -282,6 +279,46 @@ class OutcomeLoop:
             self._retry_due[command_id] = (
                 now + UNRESOLVED_RETRY_DELAYS[head_attempts]
             )
+
+    def _drain_resolved_queue(
+        self,
+        command_id: str,
+        siblings: list[tuple[TradeOutcome, int]],
+        now: float,
+    ) -> None:
+        '''Dispatch a resolved command's parked siblings in order.
+
+        Resolution can vanish mid-drain — terminal outcome processing
+        pops the strategy registry, so a sibling parked behind a
+        terminal one may no longer resolve. Such a sibling is re-parked
+        as the new queue head (backoff restarted, remaining tail kept
+        behind it in order) instead of being silently dropped, keeping
+        the retry contract intact for every parked outcome.
+
+        Args:
+            command_id: The command whose queue resolved.
+            siblings: Parked entries behind the resolved head, in order.
+            now: Monotonic timestamp of the current service pass.
+        '''
+
+        for index, (sibling, _) in enumerate(siblings):
+            if self._try_dispatch(sibling):
+                continue
+
+            self._unresolved_retries[command_id] = [
+                (sibling, 1),
+                *siblings[index + 1:],
+            ]
+            self._retry_due[command_id] = now + UNRESOLVED_RETRY_DELAYS[0]
+            _log.warning(
+                'sibling unresolved mid-drain; re-parked as queue head',
+                extra={
+                    'command_id': command_id,
+                    'outcome_id': sibling.outcome_id,
+                    'requeued_behind': len(siblings) - index - 1,
+                },
+            )
+            return
 
     def _log_retries_exhausted(
         self,
