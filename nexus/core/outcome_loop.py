@@ -16,15 +16,22 @@ deterministic test harnesses.
 `strategy_id` resolution: `TradeOutcome` carries only `command_id`,
 not a strategy reference. The launcher supplies a
 `resolve_strategy_id(outcome) -> str | None` callable backed by a
-per-account registry populated at submission time. Returning `None`
-makes the loop log and skip the outcome; it never raises.
+per-account registry populated at submission time. Registration is
+visible only after the submitter's post-`send_command` loop runs,
+while a fast venue (binsim fills in ~50ms) can deliver the
+translated outcomes first — so `None` is usually a transient race,
+not an unknown command. The loop therefore retries unresolved
+outcomes on the `UNRESOLVED_RETRY_DELAYS` backoff schedule (~5.9s
+total) before dropping them with an ERROR; it never raises.
 '''
 
 from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
@@ -46,6 +53,18 @@ _log = logging.getLogger(__name__)
 ActionSubmitter = Callable[[list[Action], str], None]
 StrategyIdResolver = Callable[[TradeOutcome], str | None]
 OutcomeProcessorCallback = Callable[[TradeOutcome], None]
+
+UNRESOLVED_RETRY_DELAYS: tuple[float, ...] = (
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+)
 
 
 class OutcomeLoop:
@@ -94,6 +113,7 @@ class OutcomeLoop:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
+        self._unresolved_retries: list[tuple[TradeOutcome, int, float]] = []
 
     @property
     def running(self) -> bool:
@@ -152,13 +172,16 @@ class OutcomeLoop:
                 self._thread = None
 
     def tick_once(self) -> bool:
-        '''Consume at most one outcome and dispatch it.
+        '''Service due unresolved retries, then consume at most one outcome.
 
         Returns:
-            `True` when an outcome was consumed (regardless of whether
-            dispatch succeeded), `False` when the queue was empty within
-            the inbound connector's poll timeout.
+            `True` when a queued outcome was consumed (regardless of
+            whether dispatch succeeded), `False` when the queue was
+            empty within the inbound connector's poll timeout. Retry
+            servicing does not affect the return value.
         '''
+
+        self._service_unresolved_retries()
 
         outcome = self._praxis_inbound.receive_outcome()
 
@@ -168,6 +191,32 @@ class OutcomeLoop:
         self._dispatch(outcome)
         return True
 
+    def _service_unresolved_retries(self) -> None:
+        '''Re-dispatch retry-scheduled outcomes whose backoff has elapsed.
+
+        Entries are kept in arrival order so sibling outcomes of the
+        same command (ACK then FILLED) re-dispatch in their original
+        relative order once the submitter's registration becomes
+        visible. Only the worker thread (or a test harness driving
+        `tick_once`) touches the retry list, so no lock is required.
+        '''
+
+        if not self._unresolved_retries:
+            return
+
+        now = time.monotonic()
+        due = [entry for entry in self._unresolved_retries if entry[2] <= now]
+
+        if not due:
+            return
+
+        self._unresolved_retries = [
+            entry for entry in self._unresolved_retries if entry[2] > now
+        ]
+
+        for outcome, attempts, _ in due:
+            self._dispatch(outcome, attempts)
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -175,15 +224,40 @@ class OutcomeLoop:
             except Exception:  # noqa: BLE001 - worker must never die
                 _log.exception('outcome loop tick failed')
 
-    def _dispatch(self, outcome: TradeOutcome) -> None:
+    def _dispatch(self, outcome: TradeOutcome, attempts: int = 0) -> None:
         strategy_id = self._resolve_strategy_id(outcome)
 
         if strategy_id is None:
-            _log.warning(
-                'outcome with unresolved strategy_id; skipping',
+            if attempts < len(UNRESOLVED_RETRY_DELAYS):
+                self._unresolved_retries.append((
+                    outcome,
+                    attempts + 1,
+                    time.monotonic() + UNRESOLVED_RETRY_DELAYS[attempts],
+                ))
+                _log.warning(
+                    'outcome with unresolved strategy_id; retry scheduled',
+                    extra={
+                        'command_id': outcome.command_id,
+                        'outcome_id': outcome.outcome_id,
+                        'attempt': attempts + 1,
+                        'max_attempts': len(UNRESOLVED_RETRY_DELAYS),
+                    },
+                )
+                return
+
+            _log.error(
+                'outcome strategy_id unresolved after retries exhausted; '
+                'dropping — the command was never registered and its '
+                'accounting will only recover via boot replay',
                 extra={
                     'command_id': outcome.command_id,
                     'outcome_id': outcome.outcome_id,
+                    'outcome_type': outcome.outcome_type.value,
+                    'attempts': attempts,
+                    'retry_window_seconds': sum(UNRESOLVED_RETRY_DELAYS),
+                    'outcome_age_seconds': (
+                        datetime.now(tz=timezone.utc) - outcome.timestamp
+                    ).total_seconds(),
                 },
             )
             return

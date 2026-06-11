@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+import pytest
+
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.outcome_loop import OutcomeLoop
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
@@ -216,6 +218,97 @@ class TestStartStop:
             assert runner.dispatch_outcome.call_count == 1
         finally:
             loop.stop()
+
+
+class TestUnresolvedRetry:
+
+    def test_retry_dispatches_once_registration_lands(self) -> None:
+        registry: dict[str, str] = {}
+        inbound = _inbound_with(_ack_outcome('cmd_raced'))
+        runner = _runner_stub()
+        processed: list[str] = []
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda o: registry.get(o.command_id),
+            process_outcome=lambda o: processed.append(o.outcome_id),
+        )
+
+        assert loop.tick_once() is True
+        runner.dispatch_outcome.assert_not_called()
+        assert processed == []
+
+        registry['cmd_raced'] = 'strat_a'
+        time.sleep(0.06)
+
+        assert loop.tick_once() is False
+        assert runner.dispatch_outcome.call_count == 1
+        assert processed == ['outcome_cmd_raced']
+
+    def test_retry_exhaustion_drops_outcome(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            'nexus.core.outcome_loop.UNRESOLVED_RETRY_DELAYS',
+            (0.0, 0.0),
+        )
+        inbound = _inbound_with(_ack_outcome('cmd_orphan'))
+        runner = _runner_stub()
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda _o: None,
+        )
+
+        assert loop.tick_once() is True
+        assert loop.tick_once() is False
+        assert loop.tick_once() is False
+
+        assert loop._unresolved_retries == []
+        runner.dispatch_outcome.assert_not_called()
+
+    def test_retry_preserves_sibling_order(self) -> None:
+        registry: dict[str, str] = {}
+        ack = _ack_outcome('cmd_pair')
+        filled = TradeOutcome(
+            outcome_id='outcome_cmd_pair_filled',
+            command_id='cmd_pair',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime(2026, 4, 22, 12, 0, 1, tzinfo=timezone.utc),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('100'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('0'),
+        )
+        inbound = _inbound_with(ack, filled)
+        runner = _runner_stub()
+        processed: list[str] = []
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda o: registry.get(o.command_id),
+            process_outcome=lambda o: processed.append(o.outcome_id),
+        )
+
+        assert loop.tick_once() is True
+        assert loop.tick_once() is True
+        assert processed == []
+
+        registry['cmd_pair'] = 'strat_a'
+        time.sleep(0.06)
+
+        assert loop.tick_once() is False
+        assert processed == ['outcome_cmd_pair', 'outcome_cmd_pair_filled']
 
 
 class TestProcessOutcomeHook:
