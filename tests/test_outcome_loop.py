@@ -242,9 +242,12 @@ class TestUnresolvedRetry:
         assert processed == []
 
         registry['cmd_raced'] = 'strat_a'
-        time.sleep(0.06)
 
-        assert loop.tick_once() is False
+        deadline = time.monotonic() + 2.0
+
+        while runner.dispatch_outcome.call_count == 0 and time.monotonic() < deadline:
+            loop.tick_once()
+
         assert runner.dispatch_outcome.call_count == 1
         assert processed == ['outcome_cmd_raced']
 
@@ -271,7 +274,7 @@ class TestUnresolvedRetry:
         assert loop.tick_once() is False
         assert loop.tick_once() is False
 
-        assert loop._unresolved_retries == []
+        assert loop._unresolved_retries == {}
         runner.dispatch_outcome.assert_not_called()
 
     def test_retry_preserves_sibling_order(self) -> None:
@@ -305,10 +308,57 @@ class TestUnresolvedRetry:
         assert processed == []
 
         registry['cmd_pair'] = 'strat_a'
-        time.sleep(0.06)
 
-        assert loop.tick_once() is False
+        deadline = time.monotonic() + 2.0
+
+        while len(processed) < 2 and time.monotonic() < deadline:
+            loop.tick_once()
+
         assert processed == ['outcome_cmd_pair', 'outcome_cmd_pair_filled']
+
+    def test_fresh_sibling_funnels_behind_parked_outcome(self) -> None:
+        registry: dict[str, str] = {}
+        ack = _ack_outcome('cmd_mixed')
+        filled = TradeOutcome(
+            outcome_id='outcome_cmd_mixed_filled',
+            command_id='cmd_mixed',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=datetime(2026, 4, 22, 12, 0, 1, tzinfo=timezone.utc),
+            fill_size=Decimal('1'),
+            fill_price=Decimal('100'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('0'),
+        )
+        q: queue.Queue[TradeOutcome] = queue.Queue()
+        inbound = PraxisInbound(outcome_queue=q, poll_timeout=0.01)
+        runner = _runner_stub()
+        processed: list[str] = []
+
+        loop = OutcomeLoop(
+            runner=runner,
+            praxis_inbound=inbound,
+            state=_state(),
+            context_provider=_context,
+            resolve_strategy_id=lambda o: registry.get(o.command_id),
+            process_outcome=lambda o: processed.append(o.outcome_id),
+        )
+
+        q.put(ack)
+        assert loop.tick_once() is True
+        assert processed == []
+
+        registry['cmd_mixed'] = 'strat_a'
+        q.put(filled)
+
+        assert loop.tick_once() is True
+        assert processed == []
+
+        deadline = time.monotonic() + 2.0
+
+        while len(processed) < 2 and time.monotonic() < deadline:
+            loop.tick_once()
+
+        assert processed == ['outcome_cmd_mixed', 'outcome_cmd_mixed_filled']
 
 
 class TestProcessOutcomeHook:

@@ -113,7 +113,8 @@ class OutcomeLoop:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._unresolved_retries: list[tuple[TradeOutcome, int, float]] = []
+        self._unresolved_retries: dict[str, list[tuple[TradeOutcome, int]]] = {}
+        self._retry_due: dict[str, float] = {}
 
     @property
     def running(self) -> bool:
@@ -174,6 +175,14 @@ class OutcomeLoop:
     def tick_once(self) -> bool:
         '''Service due unresolved retries, then consume at most one outcome.
 
+        A fresh outcome whose command already has parked unresolved
+        siblings is funnelled behind them instead of dispatched inline:
+        dispatching it directly would reorder the pair (e.g. FILLED
+        before its raced ACK, which `CapitalController.order_fill`
+        rejects because only the ACK transitions the order to WORKING).
+        All of a command's outcomes drain through the single ordered
+        retry path until the command resolves or exhausts.
+
         Returns:
             `True` when a queued outcome was consumed (regardless of
             whether dispatch succeeded), `False` when the queue was
@@ -188,63 +197,105 @@ class OutcomeLoop:
         if outcome is None:
             return False
 
-        self._dispatch(outcome)
+        siblings = self._unresolved_retries.get(outcome.command_id)
+
+        if siblings is not None:
+            siblings.append((outcome, 0))
+            _log.warning(
+                'outcome queued behind unresolved sibling',
+                extra={
+                    'command_id': outcome.command_id,
+                    'outcome_id': outcome.outcome_id,
+                    'queued_behind': len(siblings) - 1,
+                },
+            )
+            return True
+
+        if not self._try_dispatch(outcome):
+            self._park(outcome, attempts=0)
+
         return True
 
-    def _service_unresolved_retries(self) -> None:
-        '''Re-dispatch retry-scheduled outcomes whose backoff has elapsed.
+    def _park(self, outcome: TradeOutcome, attempts: int) -> None:
+        '''Open a per-command retry queue headed by an unresolved outcome.
 
-        Entries are kept in arrival order so sibling outcomes of the
-        same command (ACK then FILLED) re-dispatch in their original
-        relative order once the submitter's registration becomes
-        visible. Only the worker thread (or a test harness driving
-        `tick_once`) touches the retry list, so no lock is required.
+        Args:
+            outcome: The unresolved outcome becoming the queue head.
+            attempts: Resolution attempts already made for it.
+        '''
+
+        self._unresolved_retries[outcome.command_id] = [(outcome, attempts + 1)]
+        self._retry_due[outcome.command_id] = (
+            time.monotonic() + UNRESOLVED_RETRY_DELAYS[attempts]
+        )
+        _log.warning(
+            'outcome with unresolved strategy_id; retry scheduled',
+            extra={
+                'command_id': outcome.command_id,
+                'outcome_id': outcome.outcome_id,
+                'attempt': attempts + 1,
+                'max_attempts': len(UNRESOLVED_RETRY_DELAYS),
+            },
+        )
+
+    def _service_unresolved_retries(self) -> None:
+        '''Drive the per-command retry queues whose backoff has elapsed.
+
+        Only each command's head outcome attempts resolution — its
+        siblings stay parked behind it regardless of their own arrival
+        times, so a command's outcomes can never reorder across the
+        retry detour. A resolved head drains the remainder of its queue
+        in order; an exhausted head drops the whole queue (every parked
+        sibling is equally orphaned when the command never registers).
+        Only the worker thread (or a test harness driving `tick_once`)
+        touches these structures, so no lock is required.
         '''
 
         if not self._unresolved_retries:
             return
 
         now = time.monotonic()
-        due = [entry for entry in self._unresolved_retries if entry[2] <= now]
 
-        if not due:
-            return
+        for command_id in list(self._unresolved_retries):
+            if self._retry_due[command_id] > now:
+                continue
 
-        self._unresolved_retries = [
-            entry for entry in self._unresolved_retries if entry[2] > now
-        ]
+            pending = self._unresolved_retries[command_id]
+            head_outcome, head_attempts = pending[0]
 
-        for outcome, attempts, _ in due:
-            self._dispatch(outcome, attempts)
+            if self._try_dispatch(head_outcome):
+                del self._unresolved_retries[command_id]
+                del self._retry_due[command_id]
 
-    def _run(self) -> None:
-        while not self._stop_event.is_set():
-            try:
-                self.tick_once()
-            except Exception:  # noqa: BLE001 - worker must never die
-                _log.exception('outcome loop tick failed')
+                for sibling, _ in pending[1:]:
+                    self._try_dispatch(sibling)
 
-    def _dispatch(self, outcome: TradeOutcome, attempts: int = 0) -> None:
-        strategy_id = self._resolve_strategy_id(outcome)
+                continue
 
-        if strategy_id is None:
-            if attempts < len(UNRESOLVED_RETRY_DELAYS):
-                self._unresolved_retries.append((
-                    outcome,
-                    attempts + 1,
-                    time.monotonic() + UNRESOLVED_RETRY_DELAYS[attempts],
-                ))
-                _log.warning(
-                    'outcome with unresolved strategy_id; retry scheduled',
-                    extra={
-                        'command_id': outcome.command_id,
-                        'outcome_id': outcome.outcome_id,
-                        'attempt': attempts + 1,
-                        'max_attempts': len(UNRESOLVED_RETRY_DELAYS),
-                    },
-                )
-                return
+            if head_attempts >= len(UNRESOLVED_RETRY_DELAYS):
+                del self._unresolved_retries[command_id]
+                del self._retry_due[command_id]
+                self._log_retries_exhausted(pending, head_attempts)
+                continue
 
+            pending[0] = (head_outcome, head_attempts + 1)
+            self._retry_due[command_id] = (
+                now + UNRESOLVED_RETRY_DELAYS[head_attempts]
+            )
+
+    def _log_retries_exhausted(
+        self,
+        pending: list[tuple[TradeOutcome, int]],
+        attempts: int,
+    ) -> None:
+        '''Log the terminal drop of a command's entire retry queue.
+
+        Args:
+            pending: The dropped queue, head first.
+            attempts: Resolution attempts made for the head.
+        '''
+
+        for outcome, _ in pending:
             _log.error(
                 'outcome strategy_id unresolved after retries exhausted; '
                 'dropping — the command was never registered and its '
@@ -258,9 +309,31 @@ class OutcomeLoop:
                     'outcome_age_seconds': (
                         datetime.now(tz=timezone.utc) - outcome.timestamp
                     ).total_seconds(),
+                    'dropped_queue_size': len(pending),
                 },
             )
-            return
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self.tick_once()
+            except Exception:  # noqa: BLE001 - worker must never die
+                _log.exception('outcome loop tick failed')
+
+    def _try_dispatch(self, outcome: TradeOutcome) -> bool:
+        '''Dispatch when the strategy resolves; report whether it did.
+
+        Returns:
+            `False` when `resolve_strategy_id` returned `None` (the
+            caller decides parking/exhaustion), `True` otherwise —
+            including dispatches whose downstream stages failed, which
+            are logged and not retried.
+        '''
+
+        strategy_id = self._resolve_strategy_id(outcome)
+
+        if strategy_id is None:
+            return False
 
         if self._process_outcome is not None:
             try:
@@ -278,7 +351,7 @@ class OutcomeLoop:
                 'context_provider raised for strategy %s',
                 strategy_id,
             )
-            return
+            return True
 
         try:
             actions = self._runner.dispatch_outcome(
@@ -292,10 +365,10 @@ class OutcomeLoop:
                 'dispatch_outcome raised for strategy %s',
                 strategy_id,
             )
-            return
+            return True
 
         if self._action_submit is None or not actions:
-            return
+            return True
 
         try:
             self._action_submit(actions, strategy_id)
@@ -304,3 +377,5 @@ class OutcomeLoop:
                 'action_submit raised for outcome strategy %s',
                 strategy_id,
             )
+
+        return True
