@@ -237,7 +237,7 @@ class OutcomeLoop:
                 'command_id': outcome.command_id,
                 'outcome_id': outcome.outcome_id,
                 'attempt': 1,
-                'max_attempts': len(UNRESOLVED_RETRY_DELAYS),
+                'max_attempts': len(UNRESOLVED_RETRY_DELAYS) + 1,
             },
         )
 
@@ -275,7 +275,7 @@ class OutcomeLoop:
             if head_attempts >= len(UNRESOLVED_RETRY_DELAYS):
                 del self._unresolved_retries[command_id]
                 del self._retry_due[command_id]
-                self._log_retries_exhausted(pending, head_attempts)
+                self._log_retries_exhausted(pending, head_attempts + 1)
                 continue
 
             pending[0] = (head_outcome, head_attempts + 1)
@@ -332,7 +332,8 @@ class OutcomeLoop:
 
         Args:
             pending: The dropped queue, head first.
-            attempts: Resolution attempts made for the head.
+            attempts: Total resolution attempts made for the head,
+                including the inline first attempt.
         '''
 
         for outcome, _ in pending:
