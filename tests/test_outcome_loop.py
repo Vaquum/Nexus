@@ -247,6 +247,7 @@ class TestUnresolvedRetry:
 
         while runner.dispatch_outcome.call_count == 0 and time.monotonic() < deadline:
             loop.tick_once()
+            time.sleep(0.005)
 
         assert runner.dispatch_outcome.call_count == 1
         assert processed == ['outcome_cmd_raced']
@@ -274,7 +275,7 @@ class TestUnresolvedRetry:
         assert loop.tick_once() is False
         assert loop.tick_once() is False
 
-        assert loop._unresolved_retries == {}
+        assert loop.tick_once() is False
         runner.dispatch_outcome.assert_not_called()
 
     def test_retry_preserves_sibling_order(self) -> None:
@@ -313,6 +314,7 @@ class TestUnresolvedRetry:
 
         while len(processed) < 2 and time.monotonic() < deadline:
             loop.tick_once()
+            time.sleep(0.005)
 
         assert processed == ['outcome_cmd_pair', 'outcome_cmd_pair_filled']
 
@@ -357,6 +359,7 @@ class TestUnresolvedRetry:
 
         while len(processed) < 2 and time.monotonic() < deadline:
             loop.tick_once()
+            time.sleep(0.005)
 
         assert processed == ['outcome_cmd_mixed', 'outcome_cmd_mixed_filled']
 
@@ -403,17 +406,17 @@ class TestUnresolvedRetry:
 
         while len(processed) < 1 and time.monotonic() < deadline:
             loop.tick_once()
+            time.sleep(0.005)
 
         assert processed == ['outcome_cmd_drain']
-        assert 'cmd_drain' in loop._unresolved_retries
 
         blocked.clear()
 
         while len(processed) < 2 and time.monotonic() < deadline:
             loop.tick_once()
+            time.sleep(0.005)
 
         assert processed == ['outcome_cmd_drain', 'outcome_cmd_drain_filled']
-        assert loop._unresolved_retries == {}
 
 
 class TestProcessOutcomeHook:

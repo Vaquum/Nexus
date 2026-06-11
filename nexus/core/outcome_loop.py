@@ -31,6 +31,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from nexus.core.domain.instance_state import InstanceState
@@ -65,6 +66,22 @@ UNRESOLVED_RETRY_DELAYS: tuple[float, ...] = (
     1.0,
     1.0,
 )
+
+
+@dataclass
+class _CommandRetryQueue:
+    '''Retry state for one command of unresolved outcomes.
+
+    Args:
+        due: Monotonic timestamp when the head may next attempt
+            resolution.
+        pending: The command's parked outcomes in arrival order, each
+            with the resolution attempts made for it (only the head's
+            count drives backoff and exhaustion).
+    '''
+
+    due: float
+    pending: list[tuple[TradeOutcome, int]]
 
 
 class OutcomeLoop:
@@ -113,8 +130,7 @@ class OutcomeLoop:
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        self._unresolved_retries: dict[str, list[tuple[TradeOutcome, int]]] = {}
-        self._retry_due: dict[str, float] = {}
+        self._unresolved_retries: dict[str, _CommandRetryQueue] = {}
 
     @property
     def running(self) -> bool:
@@ -197,16 +213,16 @@ class OutcomeLoop:
         if outcome is None:
             return False
 
-        siblings = self._unresolved_retries.get(outcome.command_id)
+        retry_queue = self._unresolved_retries.get(outcome.command_id)
 
-        if siblings is not None:
-            siblings.append((outcome, 0))
+        if retry_queue is not None:
+            retry_queue.pending.append((outcome, 0))
             _log.warning(
                 'outcome queued behind unresolved sibling',
                 extra={
                     'command_id': outcome.command_id,
                     'outcome_id': outcome.outcome_id,
-                    'queued_behind': len(siblings) - 1,
+                    'queued_behind': len(retry_queue.pending) - 1,
                 },
             )
             return True
@@ -227,9 +243,9 @@ class OutcomeLoop:
             outcome: The unresolved outcome becoming the queue head.
         '''
 
-        self._unresolved_retries[outcome.command_id] = [(outcome, 1)]
-        self._retry_due[outcome.command_id] = (
-            time.monotonic() + UNRESOLVED_RETRY_DELAYS[0]
+        self._unresolved_retries[outcome.command_id] = _CommandRetryQueue(
+            due=time.monotonic() + UNRESOLVED_RETRY_DELAYS[0],
+            pending=[(outcome, 1)],
         )
         _log.warning(
             'outcome with unresolved strategy_id; retry scheduled',
@@ -260,28 +276,32 @@ class OutcomeLoop:
         now = time.monotonic()
 
         for command_id in list(self._unresolved_retries):
-            if self._retry_due[command_id] > now:
+            retry_queue = self._unresolved_retries[command_id]
+
+            if retry_queue.due > now:
                 continue
 
-            pending = self._unresolved_retries[command_id]
-            head_outcome, head_attempts = pending[0]
+            head_outcome, head_attempts = retry_queue.pending[0]
 
             if self._try_dispatch(head_outcome):
                 del self._unresolved_retries[command_id]
-                del self._retry_due[command_id]
-                self._drain_resolved_queue(command_id, pending[1:], now)
+                self._drain_resolved_queue(
+                    command_id,
+                    retry_queue.pending[1:],
+                    now,
+                )
                 continue
 
             if head_attempts >= len(UNRESOLVED_RETRY_DELAYS):
                 del self._unresolved_retries[command_id]
-                del self._retry_due[command_id]
-                self._log_retries_exhausted(pending, head_attempts + 1)
+                self._log_retries_exhausted(
+                    retry_queue.pending,
+                    head_attempts + 1,
+                )
                 continue
 
-            pending[0] = (head_outcome, head_attempts + 1)
-            self._retry_due[command_id] = (
-                now + UNRESOLVED_RETRY_DELAYS[head_attempts]
-            )
+            retry_queue.pending[0] = (head_outcome, head_attempts + 1)
+            retry_queue.due = now + UNRESOLVED_RETRY_DELAYS[head_attempts]
 
     def _drain_resolved_queue(
         self,
@@ -308,11 +328,10 @@ class OutcomeLoop:
             if self._try_dispatch(sibling):
                 continue
 
-            self._unresolved_retries[command_id] = [
-                (sibling, 1),
-                *siblings[index + 1:],
-            ]
-            self._retry_due[command_id] = now + UNRESOLVED_RETRY_DELAYS[0]
+            self._unresolved_retries[command_id] = _CommandRetryQueue(
+                due=now + UNRESOLVED_RETRY_DELAYS[0],
+                pending=[(sibling, 1), *siblings[index + 1:]],
+            )
             _log.warning(
                 'sibling unresolved mid-drain; re-parked as queue head',
                 extra={
@@ -347,9 +366,12 @@ class OutcomeLoop:
                     'outcome_type': outcome.outcome_type.value,
                     'attempts': attempts,
                     'retry_window_seconds': sum(UNRESOLVED_RETRY_DELAYS),
-                    'outcome_age_seconds': (
-                        datetime.now(tz=timezone.utc) - outcome.timestamp
-                    ).total_seconds(),
+                    'outcome_age_seconds': max(
+                        0.0,
+                        (
+                            datetime.now(tz=timezone.utc) - outcome.timestamp
+                        ).total_seconds(),
+                    ),
                     'dropped_queue_size': len(pending),
                 },
             )
