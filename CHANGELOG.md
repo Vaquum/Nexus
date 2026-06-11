@@ -728,3 +728,17 @@
 ### Add
 
 - Add 3 tests to [`tests/test_outcome_processor.py::TestOutcomeProcessorAck`](tests/test_outcome_processor.py): EXIT ACK returns success with `capital_updated=False`; EXIT ACK leaves `in_flight_order_notional` and `working_order_notional` untouched while an unrelated ENTER order is in flight; ENTER ACK still transitions the full reserved total from in-flight to working
+
+## v0.59.0 on 11th of June, 2026
+
+### NOTE
+
+- During the Praxis v0.77.0 paper-trade validation (epoch 24, 2026-06-11), two commands lost their fill accounting entirely: binsim fills in ~50ms, and the launcher's submitter registers `command_strategy_ids` / `command_contexts` only after `send_command` returns for the whole batch — so the translated ACK and FILLED outcomes reached the `OutcomeLoop` ~1ms before registration became visible. The synchronous accounting path skips on missing `OrderContext` (by design, deferring to the async path), and the `OutcomeLoop` dropped the outcomes terminally on the `resolve_strategy_id` miss. Net effect: a venue-filled EXIT whose position reduction never ran, leaving the position stuck until boot replay (the outcomes were never acked, so replay heals it by accident). The drop is the defect: an unresolved strategy id at outcome time is almost always this transient registration race, not an unknown command
+
+### Update
+
+- Update [`OutcomeLoop.tick_once`](nexus/core/outcome_loop.py) and the new `_try_dispatch` / `_park` / `_service_unresolved_retries` internals so an unresolved `strategy_id` is retried instead of dropped: the outcome opens a per-command FIFO retry queue scheduled on the new module constant `UNRESOLVED_RETRY_DELAYS` (50ms, 100ms, 250ms, 500ms, then 1s steps — ~5.9s total window; the ramp catches the ~1ms registration race on the first retry, and the 1s cap bounds heal latency since the retry is an in-process dict lookup with no resource pressure to back off from). A fresh outcome whose command already has a parked queue is funnelled behind its siblings instead of dispatched inline — only the head attempts resolution and consumes attempts, a resolved head drains its whole queue in order, so a command's outcomes can never reorder across the retry detour (FILLED before its raced ACK would fail `CapitalController.order_fill`'s WORKING requirement and lose the fill via a failure result nothing retries). A successful retry runs the full dispatch chain (`process_outcome`, strategy callback, `action_submit`), so the raced fill is accounted, persisted, and acked normally. Exhaustion drops the whole command queue, logging each outcome at ERROR with `command_id`, `outcome_id`, `outcome_type`, attempts, the retry window, the outcome age, and the dropped queue size, replacing the previous silent warning-and-skip
+
+### Add
+
+- Add 5 tests to [`tests/test_outcome_loop.py`](tests/test_outcome_loop.py) (`TestUnresolvedRetry`): a raced outcome dispatches exactly once after registration lands; retry exhaustion drops with an empty retry map and no dispatch; sibling ACK/FILLED order is preserved when both raced; a fresh resolvable FILLED funnels behind its parked raced ACK instead of dispatching inline, and the pair drains in original order; a sibling whose resolution vanishes mid-drain is re-parked as the new queue head and drains in order once it resolves again
