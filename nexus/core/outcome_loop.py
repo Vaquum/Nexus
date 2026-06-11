@@ -212,28 +212,31 @@ class OutcomeLoop:
             return True
 
         if not self._try_dispatch(outcome):
-            self._park(outcome, attempts=0)
+            self._park(outcome)
 
         return True
 
-    def _park(self, outcome: TradeOutcome, attempts: int) -> None:
+    def _park(self, outcome: TradeOutcome) -> None:
         '''Open a per-command retry queue headed by an unresolved outcome.
+
+        Called immediately after the outcome's first (inline)
+        resolution attempt failed: the head enters with one attempt
+        recorded and the first backoff delay scheduled.
 
         Args:
             outcome: The unresolved outcome becoming the queue head.
-            attempts: Resolution attempts already made for it.
         '''
 
-        self._unresolved_retries[outcome.command_id] = [(outcome, attempts + 1)]
+        self._unresolved_retries[outcome.command_id] = [(outcome, 1)]
         self._retry_due[outcome.command_id] = (
-            time.monotonic() + UNRESOLVED_RETRY_DELAYS[attempts]
+            time.monotonic() + UNRESOLVED_RETRY_DELAYS[0]
         )
         _log.warning(
             'outcome with unresolved strategy_id; retry scheduled',
             extra={
                 'command_id': outcome.command_id,
                 'outcome_id': outcome.outcome_id,
-                'attempt': attempts + 1,
+                'attempt': 1,
                 'max_attempts': len(UNRESOLVED_RETRY_DELAYS),
             },
         )

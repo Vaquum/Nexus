@@ -741,4 +741,4 @@
 
 ### Add
 
-- Add 4 tests to [`tests/test_outcome_loop.py`](tests/test_outcome_loop.py) (`TestUnresolvedRetry`): a raced outcome dispatches exactly once after registration lands; retry exhaustion drops with an empty retry map and no dispatch; sibling ACK/FILLED order is preserved when both raced; a fresh resolvable FILLED funnels behind its parked raced ACK instead of dispatching inline, and the pair drains in original order
+- Add 5 tests to [`tests/test_outcome_loop.py`](tests/test_outcome_loop.py) (`TestUnresolvedRetry`): a raced outcome dispatches exactly once after registration lands; retry exhaustion drops with an empty retry map and no dispatch; sibling ACK/FILLED order is preserved when both raced; a fresh resolvable FILLED funnels behind its parked raced ACK instead of dispatching inline, and the pair drains in original order; a sibling whose resolution vanishes mid-drain is re-parked as the new queue head and drains in order once it resolves again
