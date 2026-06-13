@@ -122,6 +122,45 @@ class StateStore:
 
         return self._base_path
 
+    def attach_snapshot_locks(self, snapshot_locks: StateSnapshotLocks) -> None:
+        '''Attach the snapshot-serialization lock bundle after construction.
+
+        The store must exist before the locks do: it is built first so
+        `StartupSequencer` can recover `InstanceState`, and only then do
+        `positions_lock` / `capital_lock` (and the recovered `state`) come
+        into being. Once attached, `append_mutation` and `checkpoint`
+        acquire the bundle around `serialize_state`, exactly as if it had
+        been passed to `__init__`. Attach before any concurrent mutator
+        starts; recovery itself is single-threaded and needs no locking.
+
+        One-shot: a store may own exactly one bundle for its lifetime.
+        The check-and-set runs under `_wal_lock` (innermost in the chain,
+        no other lock held here) so the one-shot guarantee holds even if
+        a caller violates the single-threaded-attach contract.
+
+        Args:
+            snapshot_locks: The `positions_lock` + `capital_lock` bundle.
+
+        Raises:
+            RuntimeError: If a bundle is already attached — checked first,
+                so a second attach is rejected regardless of the argument
+                (a re-attach would silently swap the locks the live
+                mutators rely on).
+            TypeError: If `snapshot_locks` is not a `StateSnapshotLocks`
+                (a `None` would leave serialization silently unguarded).
+        '''
+
+        with self._wal_lock:
+            if self._snapshot_locks is not None:
+                msg = 'snapshot locks already attached'
+                raise RuntimeError(msg)
+
+            if not isinstance(snapshot_locks, StateSnapshotLocks):
+                msg = 'snapshot_locks must be a StateSnapshotLocks instance'
+                raise TypeError(msg)
+
+            self._snapshot_locks = snapshot_locks
+
     def checkpoint(self, state: InstanceState) -> None:
         '''Save a full snapshot and truncate the WAL.
 

@@ -771,3 +771,14 @@
 ### Add
 
 - Add tests to [`tests/test_shutdown_sequencer.py`](tests/test_shutdown_sequencer.py): a real `StateStore` built with the `StateSnapshotLocks` bundle completes `_final_checkpoint` without deadlocking (the store acquires the locks the method no longer wraps); `_final_checkpoint` holds no external `positions_lock` during the store call; and the sequencer accepts `positions_lock` without enforcing the `state.risk.lock` identity
+
+## v0.62.0 on 13th of June, 2026
+
+### NOTE
+
+- Enables the v0.61.0 snapshot-lock ownership move to be wired from the Praxis launcher, which could not pass the `StateSnapshotLocks` bundle at `StateStore` construction: the store must exist first so `StartupSequencer` can recover `InstanceState`, and only after recovery do the `positions_lock` / `capital_lock` and the recovered `state` exist. The recovery-then-runtime split is a legitimate `StateStore` lifecycle, so the store now exposes a post-construction attach point rather than forcing the launcher to reach into a private attribute
+
+### Add
+
+- Add [`StateStore.attach_snapshot_locks`](nexus/infrastructure/state_store.py): a one-shot setter that attaches the `StateSnapshotLocks` bundle after construction, so `append_mutation` / `checkpoint` acquire it around `serialize_state` exactly as if it had been passed to `__init__`. Behaviorally identical to construction-time injection because `_state_read_guard` reads the bundle per call; the caller attaches after recovery and before any concurrent mutator starts. Raises `RuntimeError` on a second attach (a re-attach would silently swap the locks live mutators rely on) and `TypeError` on a non-`StateSnapshotLocks` argument (a `None` would leave serialization silently unguarded)
+- Add 4 tests to [`tests/test_state_store.py::TestStateSnapshotLocks`](tests/test_state_store.py): a late `attach_snapshot_locks` engages the lock guard on the next `append_mutation` / `checkpoint` (and not before); a second attach raises `RuntimeError`; a non-bundle argument raises `TypeError`; a second attach with a non-bundle argument still raises `RuntimeError` (the already-attached guard is checked before the type check)

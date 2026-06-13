@@ -7,6 +7,8 @@ from decimal import Decimal
 import threading
 from pathlib import Path
 
+import pytest
+
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
@@ -109,6 +111,75 @@ class TestStateSnapshotLocks:
 
         recovered = store.recover()
         assert recovered is not None
+
+    def test_attach_snapshot_locks_engages_guard_on_append_and_checkpoint(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        trace: list[str] = []
+        store = StateStore(tmp_path)
+
+        store.checkpoint(_make_state())
+        assert trace == []
+
+        store.attach_snapshot_locks(
+            StateSnapshotLocks(
+                positions_lock=_RecordingLock('positions', trace),
+                capital_lock=_RecordingLock('capital', trace),
+            ),
+        )
+
+        store.append_mutation(_make_state())
+        store.checkpoint(_make_state())
+
+        assert trace == [
+            'positions:acquire',
+            'capital:acquire',
+            'capital:release',
+            'positions:release',
+            'positions:acquire',
+            'capital:acquire',
+            'capital:release',
+            'positions:release',
+        ]
+
+    def test_attach_snapshot_locks_rejects_second_attach(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = StateStore(tmp_path)
+        bundle = StateSnapshotLocks(
+            positions_lock=threading.Lock(),
+            capital_lock=threading.Lock(),
+        )
+        store.attach_snapshot_locks(bundle)
+
+        with pytest.raises(RuntimeError, match='already attached'):
+            store.attach_snapshot_locks(bundle)
+
+    def test_attach_snapshot_locks_rejects_non_bundle(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = StateStore(tmp_path)
+
+        with pytest.raises(TypeError, match='StateSnapshotLocks'):
+            store.attach_snapshot_locks(None)  # type: ignore[arg-type]
+
+    def test_attach_snapshot_locks_second_attach_wins_over_type_check(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = StateStore(tmp_path)
+        store.attach_snapshot_locks(
+            StateSnapshotLocks(
+                positions_lock=threading.Lock(),
+                capital_lock=threading.Lock(),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match='already attached'):
+            store.attach_snapshot_locks(None)  # type: ignore[arg-type]
 
 
 class TestDirectoryLayout:
