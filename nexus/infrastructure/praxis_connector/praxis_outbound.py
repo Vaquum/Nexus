@@ -113,16 +113,21 @@ class PraxisOutbound:
 
     @property
     def supports_command_id(self) -> bool:
-        '''Whether the injected submit function honours a deterministic id.
+        '''Whether the submit function authoritatively honours the id.
 
-        The launcher gates pre-registration (and therefore the
-        `SUBMISSION_UNKNOWN` timeout semantics) on this: a transmitted
-        `command_id` is only meaningful when the receiving Praxis
-        `submit_command` accepts it, so a new Nexus paired with an old
-        Praxis falls back to the legacy submit-then-register path.
+        True only for a receiver that declares `command_id` as an
+        explicit parameter — one that contracts to use the transmitted
+        id verbatim. The launcher gates pre-registration (and the
+        `SUBMISSION_UNKNOWN` timeout semantics) on this: pre-registering
+        against `command.command_id` is only safe when the venue command
+        is guaranteed to carry that same id. A `**kwargs`-only receiver
+        is deliberately excluded — it might accept the kwarg yet mint
+        its own id, so the launcher falls back to the legacy
+        submit-then-register path for it, as it does for an old Praxis
+        that lacks the parameter entirely.
         '''
 
-        return self._submit_supports_command_id
+        return self._submit_command_id_authoritative
 
     def send_command(self, command: TradeCommand) -> str:
         '''Submit TradeCommand to Praxis via async bridge.

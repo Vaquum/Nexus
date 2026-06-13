@@ -60,7 +60,14 @@ class StateSnapshotLocks:
     construction makes every persistence call safe by construction —
     callers MUST NOT additionally wrap `append_mutation` /
     `checkpoint` in these locks (they are not reentrant; the store
-    acquires them itself).
+    acquires them itself). Two existing sites wrap `checkpoint()`
+    externally today — `SnapshotScheduler._tick` and
+    `ShutdownSequencer._final_checkpoint` — so a caller enabling this
+    bundle MUST drop those external wraps in the same change, or the
+    first checkpoint re-acquires a lock the caller already holds and
+    self-deadlocks. The bundle is opt-in precisely so that wiring it
+    in (and removing the external wraps) happens atomically in the
+    launcher PR, not piecemeal.
 
     Acquire order, matching the documented chain
     (`command_registry_lock -> positions_lock ->

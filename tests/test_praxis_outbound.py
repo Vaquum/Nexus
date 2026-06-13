@@ -175,6 +175,28 @@ class TestPraxisOutbound:
         assert 'command_id' not in received_keys
         assert result == 'praxis_minted_id'
 
+    def test_supports_command_id_true_only_for_explicit_param(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''supports_command_id is True for an explicit param, False for
+        a **kwargs-only or legacy receiver.'''
+
+        loop, _ = event_loop_thread
+
+        async def explicit(*, command_id: str, **_kwargs: object) -> str:
+            return command_id
+
+        async def kwargs_only(**_kwargs: object) -> str:
+            return 'minted'
+
+        async def legacy(*, trade_id: str) -> str:
+            return trade_id
+
+        assert PraxisOutbound(submit_fn=explicit, loop=loop).supports_command_id
+        assert not PraxisOutbound(submit_fn=kwargs_only, loop=loop).supports_command_id
+        assert not PraxisOutbound(submit_fn=legacy, loop=loop).supports_command_id
+
     def test_divergent_returned_id_raises(
         self,
         event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
