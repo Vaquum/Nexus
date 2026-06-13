@@ -7,26 +7,17 @@ capital reconciliation (conditional) and at graceful shutdown, leaving
 the WAL to grow unbounded between restarts and every read of
 `snapshot.bin` between restarts stale.
 
-The checkpoint must observe the same lock chain as the rest of the
-state-mutation path:
-
-    command_registry_lock -> positions_lock -> CapitalController._lock
-                                            -> wal_lock
-
-`state_store.checkpoint()` acquires `wal_lock` internally. This loop
-holds `positions_lock` and `CapitalController._lock` around the call
-so the snapshot captures a consistent point-in-time view of
-`state.positions`, `state.risk.per_strategy`, and
-`state.capital.per_strategy_deployed` (same lock pattern as
-`shutdown_sequencer._checkpoint_state` at `shutdown_sequencer.py:935`).
+The snapshot-serialization locks (`positions_lock` + `capital_lock`)
+are owned by `StateStore` via its `StateSnapshotLocks` bundle and are
+acquired inside `checkpoint()`, so this loop calls `checkpoint()`
+directly — wrapping it would re-acquire the same non-reentrant locks
+and self-deadlock.
 '''
 
 from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
-from contextlib import AbstractContextManager, nullcontext
 
 from nexus.core.domain.instance_state import InstanceState
 from nexus.infrastructure.state_store import StateStore
@@ -46,15 +37,6 @@ class SnapshotScheduler:
             Recommended 60-600s; default 300 (5 min). Smaller intervals
             shrink the WAL replay-on-recovery window at the cost of more
             disk I/O per hour.
-        positions_lock: Optional `threading.Lock` shared with PredictLoop /
-            OutcomeProcessor / ShutdownSequencer (the same object stored
-            at `state.risk.lock`). Held around `checkpoint()` so the
-            snapshot does not capture a partially-mutated state. None
-            falls back to `nullcontext()` for legacy single-threaded
-            test paths.
-        capital_lock_cm: Optional callable returning a context manager
-            for `CapitalController._lock`. Held around `checkpoint()`
-            for the same reason. None falls back to `nullcontext()`.
     '''
 
     def __init__(
@@ -62,8 +44,6 @@ class SnapshotScheduler:
         state_store: StateStore,
         state: InstanceState,
         interval_seconds: float = 300.0,
-        positions_lock: threading.Lock | None = None,
-        capital_lock_cm: Callable[[], AbstractContextManager[None]] | None = None,
     ) -> None:
         if (
             isinstance(interval_seconds, bool)
@@ -73,45 +53,9 @@ class SnapshotScheduler:
             msg = 'SnapshotScheduler.interval_seconds must be a positive number'
             raise ValueError(msg)
 
-        if positions_lock is not None and (
-            not hasattr(state.risk, 'lock')
-            or state.risk.lock is not positions_lock
-        ):
-            risk_lock = getattr(state.risk, 'lock', '<missing>')
-            msg = (
-                'SnapshotScheduler requires `state.risk.lock is positions_lock` '
-                'whenever `positions_lock` is supplied. `checkpoint()` → '
-                '`serialize_state()` iterates `state.risk.per_strategy` and '
-                '`state.capital.per_strategy_deployed` under positions_lock; '
-                'consistency with OutcomeProcessor (writes per_strategy under '
-                '`state.risk.lock_cm()`) requires the same lock object. Without '
-                'identity-equal locks the serializer iterates `per_strategy` '
-                'unguarded against new-strategy inserts (FINAL-MAJOR-05 race). '
-                f'Got positions_lock={positions_lock!r}, '
-                f'state.risk.lock={risk_lock!r}.'
-            )
-            raise RuntimeError(msg)
-
-        if positions_lock is not None and capital_lock_cm is None:
-            msg = (
-                'SnapshotScheduler requires `capital_lock_cm` whenever '
-                '`positions_lock` is supplied. `checkpoint()` → '
-                '`serialize_state()` iterates `state.capital.per_strategy_deployed` '
-                'and the capital aggregate notional fields; without holding '
-                "CapitalController._lock the capital-side `dictionary changed "
-                'size during iteration` race against a still-alive '
-                'OutcomeProcessor worker remains reachable. The positions_lock '
-                'and capital_lock_cm form a lock-cluster — partial wiring is '
-                'a silent miswire. Mirrors '
-                '`shutdown_sequencer.py:206-216` enforcement.'
-            )
-            raise RuntimeError(msg)
-
         self._state_store = state_store
         self._state = state
         self._interval_seconds = float(interval_seconds)
-        self._positions_lock = positions_lock
-        self._capital_lock_cm = capital_lock_cm
         self._timer: threading.Timer | None = None
         self._running = False
         self._lock = threading.Lock()
@@ -179,7 +123,7 @@ class SnapshotScheduler:
             self._schedule_locked()
 
     def _checkpoint(self) -> None:
-        '''Acquire the lock chain and call `state_store.checkpoint()`.
+        '''Call `state_store.checkpoint()`; the store owns the locks.
 
         A failure here must not abort the loop — disk-full, transient
         I/O error, or msgpack failure are all logged at ERROR and the
@@ -187,24 +131,14 @@ class SnapshotScheduler:
         happens on a failed checkpoint) so no state is lost; the next
         successful checkpoint catches up.
 
-        The scheduler's internal `_lock` is intentionally NOT acquired
-        inside the heavy lock chain — that would add `_lock` between
-        `CapitalController._lock` and `wal_lock` in the documented
-        ordering. A racing `stop()` between the `_tick` entry check
-        and the checkpoint completing simply writes one extra
-        snapshot; duplicate checkpoints are harmless (no ratchet
-        semantics to defeat).
+        The snapshot-serialization locks are acquired inside
+        `checkpoint()` (`StateStore`'s `StateSnapshotLocks` bundle), so
+        this loop does not wrap the call — a racing `stop()` between the
+        `_tick` entry check and the checkpoint completing simply writes
+        one extra snapshot; duplicate checkpoints are harmless.
         '''
 
-        positions_cm: AbstractContextManager[bool | None] = (
-            self._positions_lock if self._positions_lock is not None else nullcontext()
-        )
-        capital_cm: AbstractContextManager[bool | None] = (
-            self._capital_lock_cm() if self._capital_lock_cm is not None else nullcontext()
-        )
-
         try:
-            with positions_cm, capital_cm:
-                self._state_store.checkpoint(self._state)
+            self._state_store.checkpoint(self._state)
         except Exception:  # noqa: BLE001 - checkpoint failure must not abort the loop
             _log.exception('snapshot checkpoint failed; next tick will retry')

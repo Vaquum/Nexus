@@ -755,3 +755,19 @@
 ### Fix
 
 - Fix the timing-flaky `test_broken_pool_submit_does_not_kill_scheduler` in [`tests/test_predict_loop.py`](tests/test_predict_loop.py): poll for the IPC refcount drain with a deadline instead of a fixed sleep ([#89](https://github.com/Vaquum/Nexus/issues/89))
+
+## v0.61.0 on 13th of June, 2026
+
+### NOTE
+
+- Completes the snapshot-lock ownership move begun in v0.60.0. v0.60.0 added the opt-in `StateSnapshotLocks` bundle but left it unwired, because enabling it conflicts with the two sites that already wrap `StateStore.checkpoint()` in the same locks: once the store acquires `positions_lock` + `capital_lock` internally, an external wrap re-acquires non-reentrant locks and self-deadlocks. This release moves snapshot-serialization locking fully into `StateStore` and deletes both external checkpoint wraps. `_final_checkpoint` and `SnapshotScheduler._checkpoint` now call `checkpoint()` bare; the store owns the locking when the launcher builds it with the bundle. The `state.risk.lock is positions_lock` identity that the wraps used to enforce (so `positions_lock` also covered `state.risk.per_strategy` serialization) now belongs at the launcher composition point where the bundle is built — not in these loops, which no longer serialize state. `ShutdownSequencer` keeps `positions_lock` only for its direct `state.positions` access (`_dispatch_shutdown`, `_submit_exit`), which the bundle does not cover ([#92](https://github.com/Vaquum/Nexus/issues/92))
+
+### Update
+
+- Update [`ShutdownSequencer._final_checkpoint`](nexus/startup/shutdown_sequencer.py) to call `state_store.checkpoint()` directly with no `positions_lock` / `capital_lock` wrap — `StateStore` owns the snapshot locks via its `StateSnapshotLocks` bundle and acquires them in the same chain order inside `checkpoint()`, so an external wrap would re-acquire the same non-reentrant locks and self-deadlock. FINAL-MAJOR-05 coverage (`state.positions` / `risk.per_strategy` / `capital.per_strategy_deployed` serialization cannot race a live OutcomeLoop worker) is preserved by the bundle plus the launcher's `state.risk.lock is positions_lock` wiring
+- Remove the `capital_controller` parameter from [`ShutdownSequencer`](nexus/startup/shutdown_sequencer.py): it was used only by the deleted `_final_checkpoint` wrap. The `state.risk.lock is positions_lock` and `capital_controller`-required construction guards are removed with it — the identity is now enforced at the launcher where the bundle is built. `positions_lock` stays for the direct `state.positions` iteration sites
+- Remove the `positions_lock` and `capital_lock_cm` parameters from [`SnapshotScheduler`](nexus/infrastructure/snapshot_scheduler.py) and its construction guards: `_checkpoint` now calls `state_store.checkpoint()` bare (the store owns the locks), so the scheduler no longer needs them
+
+### Add
+
+- Add 1 test to [`tests/test_shutdown_sequencer.py`](tests/test_shutdown_sequencer.py): a real `StateStore` built with the `StateSnapshotLocks` bundle completes `_final_checkpoint` without deadlocking (the store acquires the locks the method no longer wraps), plus a test that `_final_checkpoint` holds no external `positions_lock` during the store call and that the sequencer accepts `positions_lock` without enforcing the `state.risk.lock` identity

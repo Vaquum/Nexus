@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import tempfile
+import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -35,6 +36,7 @@ from nexus.strategy.context import StrategyContext
 from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
+_DEADLOCK_TIMEOUT_SECONDS = 5.0
 _EXP_DIR_HANDLE = tempfile.TemporaryDirectory()
 _EXP_DIR = Path(_EXP_DIR_HANDLE.name)
 
@@ -44,7 +46,9 @@ def _make_mock_runner() -> MagicMock:
 
 
 def _make_mock_state_store() -> MagicMock:
-    return MagicMock(spec=StateStore)
+    store = MagicMock(spec=StateStore)
+    store.owns_snapshot_locks = False
+    return store
 
 
 def _make_instance_state() -> InstanceState:
@@ -279,7 +283,6 @@ class TestDispatchShutdown:
             state=state,
             strategy_state_path=_PLACEHOLDER_PATH,
             positions_lock=lock,
-            capital_controller=CapitalController(state.capital),
         )
 
         stop_event = _t.Event()
@@ -610,6 +613,68 @@ class TestFinalCheckpoint:
         sequencer._final_checkpoint()
 
         state_store.checkpoint.assert_called_once_with(state)
+
+    def test_does_not_hold_positions_lock_externally(self) -> None:
+        positions_lock = threading.Lock()
+        state = _make_instance_state()
+        state.risk.lock = positions_lock
+        state_store = _make_mock_state_store()
+
+        held: dict[str, bool] = {}
+        state_store.checkpoint.side_effect = lambda _s: held.update(
+            positions=positions_lock.locked(),
+        )
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=state_store,
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+            positions_lock=positions_lock,
+        )
+
+        sequencer._final_checkpoint()
+
+        state_store.checkpoint.assert_called_once_with(state)
+        assert held == {'positions': False}
+
+    def test_real_store_with_bundle_does_not_deadlock(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        from nexus.infrastructure.state_store import (
+            StateSnapshotLocks,
+            StateStore,
+        )
+
+        positions_lock = threading.Lock()
+        state = _make_instance_state()
+        state.risk.lock = positions_lock
+        capital_controller = CapitalController(state.capital)
+        state_store = StateStore(
+            tmp_path,
+            snapshot_locks=StateSnapshotLocks(
+                positions_lock=positions_lock,
+                capital_lock=capital_controller.lock_cm(),
+            ),
+        )
+
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=state_store,
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+            positions_lock=positions_lock,
+        )
+
+        worker = threading.Thread(target=sequencer._final_checkpoint)
+        worker.start()
+        worker.join(timeout=_DEADLOCK_TIMEOUT_SECONDS)
+
+        assert not worker.is_alive()
+        assert state_store.recover() is not None
 
 
 class TestShutdownSequence:
@@ -1575,7 +1640,6 @@ class TestSubmitExitMissingPositionRace:
             shutdown_timeout=0.01,
             config=config,
             positions_lock=positions_lock,
-            capital_controller=CapitalController(state.capital),
         )
 
         action = Action(
@@ -1984,277 +2048,42 @@ class TestNonPendingOutcomeHandler:
         sequencer._wait_terminal()
 
 
-class TestFinalMajor05CheckpointLockCoverage:
-    '''FINAL-MAJOR-05: `_final_checkpoint` invokes
-    `state_store.checkpoint -> save_snapshot -> serialize_state`
-    which iterates `state.positions`, `state.risk.per_strategy`,
-    `state.capital.per_strategy_deployed`, and reads CapitalState
-    aggregates on the shutdown thread. If `_stop_outcome_loop`
-    join_timeout left the OutcomeLoop alive, those iterations race
-    dict mutations and aggregate writes — `RuntimeError: dictionary
-    changed size during iteration` escapes `_final_checkpoint` and
-    the persisted shutdown HALTED mode is lost.
-
-    Post-fix `_final_checkpoint` acquires positions_lock +
-    CapitalController._lock around the checkpoint call. The
-    StateStore-internal `_wal_lock` is acquired by
-    `state_store.checkpoint` itself (FINAL-MAJOR-04). Lock-order:
-    positions_lock -> CapitalController._lock -> _wal_lock.
+class TestFinalCheckpointLockOwnership:
+    '''The snapshot-serialization locks moved into `StateStore` (the
+    `StateSnapshotLocks` bundle), so `_final_checkpoint` no longer
+    wraps the checkpoint and the sequencer no longer enforces
+    `state.risk.lock is positions_lock` — that identity is asserted at
+    the launcher composition point where the bundle is built. The
+    sequencer keeps `positions_lock` only for its direct
+    `state.positions` access in `_dispatch_shutdown` / `_submit_exit`.
     '''
 
-    def test_final_checkpoint_acquires_positions_and_capital_locks(
+    def test_positions_lock_accepted_without_risk_lock_identity(
         self, tmp_path: Path,
     ) -> None:
-        '''Pin the lock-acquisition: while a held positions_lock and
-        held CapitalController._lock would block other writers, the
-        checkpoint call still runs to completion under both. Verifies
-        that the wrapping is in place by asserting state_store.checkpoint
-        is reached once after the locks are acquired.
-        '''
-
-        import threading
-        from decimal import Decimal
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('10000')),
-        )
-        positions_lock = threading.Lock()
-        state.risk.lock = positions_lock
-        controller = CapitalController(state.capital)
-        state_store = _make_mock_state_store()
-
-        sequencer = ShutdownSequencer(
-            runner=_make_mock_runner(),
-            manifest=_make_manifest(),
-            state_store=state_store,
-            state=state,
-            strategy_state_path=tmp_path,
-            positions_lock=positions_lock,
-            capital_controller=controller,
-        )
-
-        sequencer._final_checkpoint()
-
-        state_store.checkpoint.assert_called_once_with(state)
-
-    def test_final_checkpoint_locks_serialize_no_iteration_error(
-        self, tmp_path: Path,
-    ) -> None:
-        '''A foreground writer thread tight-loops dict mutations on
-        state.positions and state.risk.per_strategy while shutdown
-        thread runs _final_checkpoint. Pre-fix the unprotected
-        serialization would race; post-fix it serialises behind the
-        locks and completes without RuntimeError.
-        '''
-
-        import threading
-        from decimal import Decimal
-
-        from nexus.core.domain.position import Position
-        from nexus.core.domain.risk_state import StrategyRiskState
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('100000')),
-        )
-        positions_lock = threading.Lock()
-        state.risk.lock = positions_lock
-        controller = CapitalController(state.capital)
-        state_store = StateStore(tmp_path)
-
-        sequencer = ShutdownSequencer(
-            runner=_make_mock_runner(),
-            manifest=_make_manifest(),
-            state_store=state_store,
-            state=state,
-            strategy_state_path=tmp_path,
-            positions_lock=positions_lock,
-            capital_controller=controller,
-        )
-
-        stop_event = threading.Event()
-        errors: list[Exception] = []
-
-        def writer() -> None:
-            i = 0
-            try:
-                while not stop_event.is_set():
-                    with positions_lock:
-                        trade_id = f't_{i}'
-                        state.positions[trade_id] = Position(
-                            trade_id=trade_id,
-                            strategy_id='strat_a',
-                            symbol='BTCUSDT',
-                            side=OrderSide.BUY,
-                            size=Decimal('1'),
-                            entry_price=Decimal('100'),
-                            avg_cost_basis=Decimal('100'),
-                        )
-                        state.risk.per_strategy[f's_{i}'] = StrategyRiskState(
-                            strategy_id=f's_{i}',
-                        )
-                    i += 1
-            except Exception as exc:
-                errors.append(exc)
-
-        def checkpointer() -> None:
-            try:
-                for _ in range(10):
-                    sequencer._final_checkpoint()
-            except Exception as exc:
-                errors.append(exc)
-            finally:
-                stop_event.set()
-
-        threads = [
-            threading.Thread(target=writer, daemon=True),
-            threading.Thread(target=checkpointer, daemon=True),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=15)
-
-        alive = [t.name for t in threads if t.is_alive()]
-        assert not alive, f'threads did not finish: {alive}'
-        assert not errors, (
-            f'race during locked checkpoint: {errors[:3]}'
-        )
-
-
-class TestShutdownSequencerLockIdentityGuard:
-    '''PR #55 round-6 review: when `positions_lock` is supplied,
-    `state.risk.lock` MUST be the same object. The earlier guard
-    only rejected the case where `state.risk.lock` was a DIFFERENT
-    lock and let the `state.risk.lock is None` case slip through —
-    leaving `_final_checkpoint` to iterate `state.risk.per_strategy`
-    unguarded against new-strategy inserts from a still-alive
-    OutcomeLoop worker (FINAL-MAJOR-05 race remains reachable).
-    Tightened guard: positions_lock supplied → state.risk.lock IS
-    positions_lock or RuntimeError.
-    '''
-
-    def test_init_rejects_positions_lock_when_risk_lock_is_none(
-        self, tmp_path: Path,
-    ) -> None:
-        '''positions_lock supplied AND state.risk.lock is None →
-        RuntimeError. Pre-fix this slipped through silently.
-        '''
-
-        import threading
-        from decimal import Decimal
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('10000')),
-        )
-        positions_lock = threading.Lock()
-
-        with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
-            ShutdownSequencer(
-                runner=_make_mock_runner(),
-                manifest=_make_manifest(),
-                state_store=_make_mock_state_store(),
-                state=state,
-                strategy_state_path=tmp_path,
-                positions_lock=positions_lock,
-            )
-
-    def test_init_rejects_positions_lock_when_risk_lock_is_different_object(
-        self, tmp_path: Path,
-    ) -> None:
-        '''positions_lock supplied AND state.risk.lock is a different
-        lock object → RuntimeError.
-        '''
-
-        import threading
-        from decimal import Decimal
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('10000')),
-        )
-        positions_lock = threading.Lock()
+        state = _make_instance_state()
         state.risk.lock = threading.Lock()
+        positions_lock = threading.Lock()
 
-        with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
-            ShutdownSequencer(
-                runner=_make_mock_runner(),
-                manifest=_make_manifest(),
-                state_store=_make_mock_state_store(),
-                state=state,
-                strategy_state_path=tmp_path,
-                positions_lock=positions_lock,
-            )
-
-    def test_init_allows_no_positions_lock(self, tmp_path: Path) -> None:
-        '''positions_lock=None bypasses the guard entirely (legacy
-        single-threaded test paths).
-        '''
-
-        from decimal import Decimal
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('10000')),
-        )
-
-        ShutdownSequencer(
+        sequencer = ShutdownSequencer(
             runner=_make_mock_runner(),
             manifest=_make_manifest(),
             state_store=_make_mock_state_store(),
             state=state,
+            strategy_state_path=tmp_path,
+            positions_lock=positions_lock,
+        )
+
+        assert sequencer is not None
+
+    def test_init_allows_no_positions_lock(self, tmp_path: Path) -> None:
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=_make_instance_state(),
             strategy_state_path=tmp_path,
             positions_lock=None,
         )
 
-    def test_init_allows_identity_equal_locks(self, tmp_path: Path) -> None:
-        '''positions_lock supplied AND state.risk.lock IS positions_lock
-        AND capital_controller is supplied → no error. The expected
-        wiring path.
-        '''
-
-        import threading
-        from decimal import Decimal
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('10000')),
-        )
-        positions_lock = threading.Lock()
-        state.risk.lock = positions_lock
-
-        ShutdownSequencer(
-            runner=_make_mock_runner(),
-            manifest=_make_manifest(),
-            state_store=_make_mock_state_store(),
-            state=state,
-            strategy_state_path=tmp_path,
-            positions_lock=positions_lock,
-            capital_controller=CapitalController(state.capital),
-        )
-
-    def test_init_rejects_positions_lock_when_capital_controller_is_none(
-        self, tmp_path: Path,
-    ) -> None:
-        '''PR #55 round-7: positions_lock supplied AND state.risk.lock
-        wired correctly BUT capital_controller is None → RuntimeError.
-        Pre-fix this slipped through; `_final_checkpoint` would then
-        iterate `state.capital.per_strategy_deployed` without the
-        controller lock and the FINAL-MAJOR-05 capital-side race
-        remains reachable.
-        '''
-
-        import threading
-        from decimal import Decimal
-
-        state = InstanceState(
-            capital=CapitalState(capital_pool=Decimal('10000')),
-        )
-        positions_lock = threading.Lock()
-        state.risk.lock = positions_lock
-
-        with pytest.raises(RuntimeError, match=r'capital_controller'):
-            ShutdownSequencer(
-                runner=_make_mock_runner(),
-                manifest=_make_manifest(),
-                state_store=_make_mock_state_store(),
-                state=state,
-                strategy_state_path=tmp_path,
-                positions_lock=positions_lock,
-            )
+        assert sequencer is not None
