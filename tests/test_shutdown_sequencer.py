@@ -669,11 +669,20 @@ class TestFinalCheckpoint:
             positions_lock=positions_lock,
         )
 
-        worker = threading.Thread(target=sequencer._final_checkpoint)
+        errors: list[BaseException] = []
+
+        def run_checkpoint() -> None:
+            try:
+                sequencer._final_checkpoint()
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=run_checkpoint)
         worker.start()
         worker.join(timeout=_DEADLOCK_TIMEOUT_SECONDS)
 
-        assert not worker.is_alive()
+        assert not worker.is_alive(), '_final_checkpoint deadlocked'
+        assert not errors, f'_final_checkpoint raised: {errors}'
         assert state_store.recover() is not None
 
 
