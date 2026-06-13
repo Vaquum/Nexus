@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import threading
 from pathlib import Path
 
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
-from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.state_store import StateSnapshotLocks, StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal import WriteAheadLog
 from nexus.infrastructure.wal_codec import deserialize_event
@@ -22,6 +23,92 @@ def _make_state(pool: str = '10000') -> InstanceState:
     '''Build an InstanceState with the given capital pool.'''
 
     return InstanceState(capital=CapitalState(capital_pool=Decimal(pool)))
+
+
+class _RecordingLock:
+
+    def __init__(self, name: str, trace: list[str]) -> None:
+        self._name = name
+        self._trace = trace
+        self._lock = threading.Lock()
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self._trace.append(f'{self._name}:acquire')
+
+    def __exit__(self, *exc: object) -> None:
+        self._trace.append(f'{self._name}:release')
+        self._lock.release()
+
+
+class TestStateSnapshotLocks:
+
+    def test_append_mutation_acquires_locks_in_chain_order(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        trace: list[str] = []
+        locks = StateSnapshotLocks(
+            positions_lock=_RecordingLock('positions', trace),
+            capital_lock=_RecordingLock('capital', trace),
+        )
+        store = StateStore(tmp_path, snapshot_locks=locks)
+
+        store.append_mutation(_make_state())
+
+        assert trace == [
+            'positions:acquire',
+            'capital:acquire',
+            'capital:release',
+            'positions:release',
+        ]
+
+    def test_checkpoint_acquires_locks_in_chain_order(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        trace: list[str] = []
+        locks = StateSnapshotLocks(
+            positions_lock=_RecordingLock('positions', trace),
+            capital_lock=_RecordingLock('capital', trace),
+        )
+        store = StateStore(tmp_path, snapshot_locks=locks)
+
+        store.checkpoint(_make_state())
+
+        assert trace == [
+            'positions:acquire',
+            'capital:acquire',
+            'capital:release',
+            'positions:release',
+        ]
+
+    def test_append_event_does_not_take_snapshot_locks(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        trace: list[str] = []
+        locks = StateSnapshotLocks(
+            positions_lock=_RecordingLock('positions', trace),
+            capital_lock=_RecordingLock('capital', trace),
+        )
+        store = StateStore(tmp_path, snapshot_locks=locks)
+
+        store.append_event(_make_event())
+
+        assert trace == []
+
+    def test_legacy_construction_without_locks_unchanged(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = StateStore(tmp_path)
+
+        store.append_mutation(_make_state())
+        store.checkpoint(_make_state())
+
+        recovered = store.recover()
+        assert recovered is not None
 
 
 class TestDirectoryLayout:

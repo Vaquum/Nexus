@@ -15,6 +15,8 @@ Directory layout:
 from __future__ import annotations
 
 import threading
+from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -36,7 +38,7 @@ from nexus.infrastructure.wal_codec import (
 )
 from nexus.infrastructure.wal_entry import WALEntry, WALEntryType
 
-__all__ = ['StateStore']
+__all__ = ['StateSnapshotLocks', 'StateStore']
 
 _ZERO = Decimal(0)
 
@@ -46,14 +48,62 @@ _SNAPSHOT_FILENAME = 'snapshot.bin'
 _WAL_FILENAME = 'wal.bin'
 
 
+@dataclass(frozen=True)
+class StateSnapshotLocks:
+    '''Locks serializing InstanceState reads for persistence.
+
+    `serialize_state` iterates `state.positions` / `state.account_dust`
+    and reads the capital fields; without these locks a concurrent
+    mutator (the OutcomeLoop worker, a synchronous accounting path, or
+    the submitter's `pending_exit` writes) can tear the snapshot or
+    raise mid-iteration. Injecting the bundle at `StateStore`
+    construction makes every persistence call safe by construction —
+    callers MUST NOT additionally wrap `append_mutation` /
+    `checkpoint` in these locks (they are not reentrant; the store
+    acquires them itself). Two existing sites wrap `checkpoint()`
+    externally today — `SnapshotScheduler._tick` and
+    `ShutdownSequencer._final_checkpoint` — so a caller enabling this
+    bundle MUST drop those external wraps in the same change, or the
+    first checkpoint re-acquires a lock the caller already holds and
+    self-deadlocks. The bundle is opt-in precisely so that wiring it
+    in (and removing the external wraps) happens atomically in the
+    launcher PR, not piecemeal.
+
+    Acquire order, matching the documented chain
+    (`command_registry_lock -> positions_lock ->
+    CapitalController._lock -> _wal_lock`): `positions_lock`, then
+    `capital_lock`, then the store's internal `_wal_lock`.
+
+    Args:
+        positions_lock: The lock guarding `state.positions` and
+            `state.account_dust` mutations (the launcher's shared
+            positions lock).
+        capital_lock: The `CapitalController` mutation lock, obtained
+            via its public `lock_cm` accessor.
+    '''
+
+    positions_lock: threading.Lock
+    capital_lock: threading.Lock
+
+
 class StateStore:
     '''Unified persistence facade for Manager instance state.
 
     Args:
         base_path: Directory for snapshot and WAL files. Created if absent.
+        snapshot_locks: Optional `StateSnapshotLocks` acquired around
+            every state serialize (`append_mutation`, `checkpoint`) so
+            persistence cannot observe a partially-mutated state. When
+            `None`, serialization is unguarded and thread safety is the
+            caller's responsibility (the legacy contract).
     '''
 
-    def __init__(self, base_path: Path) -> None:
+    def __init__(
+        self,
+        base_path: Path,
+        snapshot_locks: StateSnapshotLocks | None = None,
+    ) -> None:
+        self._snapshot_locks = snapshot_locks
         self._base_path = base_path
         snap_dir = self._base_path / _SNAPSHOTS_DIR
         wal_dir = self._base_path / _WAL_DIR
@@ -86,7 +136,7 @@ class StateStore:
             state: The current instance state to persist.
         '''
 
-        with self._wal_lock:
+        with self._state_read_guard(), self._wal_lock:
             save_snapshot(state, self._snapshot_path, self._wal)
 
     def append_mutation(self, state: InstanceState) -> None:
@@ -106,7 +156,7 @@ class StateStore:
             state: The current instance state after mutation.
         '''
 
-        with self._wal_lock:
+        with self._state_read_guard(), self._wal_lock:
             payload = serialize_state(state)
             entry = WALEntry(
                 sequence=self._sequence,
@@ -116,6 +166,22 @@ class StateStore:
             )
             self._wal.append(entry)
             self._sequence += 1
+
+    def _state_read_guard(self) -> ExitStack:
+        '''Return a context holding the snapshot locks when configured.
+
+        Acquires `positions_lock` then `capital_lock` (the documented
+        chain order); empty when the store was built without a
+        `StateSnapshotLocks` bundle.
+        '''
+
+        stack = ExitStack()
+
+        if self._snapshot_locks is not None:
+            stack.enter_context(self._snapshot_locks.positions_lock)
+            stack.enter_context(self._snapshot_locks.capital_lock)
+
+        return stack
 
     def append_event(self, event: StrategyEvent) -> None:
         '''Append a strategy event entry to the WAL.

@@ -531,6 +531,15 @@ class TestPredictLoopResilience:
             assert loop._scheduler_thread is not None
             assert loop._scheduler_thread.is_alive()
             assert runner.dispatch_signal.called is False
+
+            deadline = time.monotonic() + 2.0
+
+            while (
+                any(count != 0 for count in loop._ipc_refs.values())
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.02)
+
             assert all(count == 0 for count in loop._ipc_refs.values())
 
             loop.stop()

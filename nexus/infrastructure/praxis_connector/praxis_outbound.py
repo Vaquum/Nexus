@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import inspect
 import logging
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
@@ -16,11 +17,60 @@ from typing import Any
 from nexus.core.health_evaluator import HealthSnapshot
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 
-__all__ = ['PraxisOutbound']
+__all__ = ['CommandIdMismatchError', 'PraxisOutbound']
 
 _log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
+
+
+class CommandIdMismatchError(RuntimeError):
+    '''Raised when Praxis returns an id != the transmitted deterministic id.
+
+    Only reachable when passthrough is active (the submit function
+    accepts `command_id`) yet the receiver did not honour it. Treated
+    as a submission failure so the caller rolls back the
+    pre-registration rather than holding a registry keyed on an id the
+    venue command does not carry.
+    '''
+
+
+def _command_id_support(
+    submit_fn: Callable[..., Coroutine[Any, Any, str]],
+) -> tuple[bool, bool]:
+    '''Classify how `submit_fn` accepts a `command_id` keyword argument.
+
+    The injected Praxis `submit_command` gained an optional
+    `command_id` parameter; older Praxis builds did not. Detected once
+    at construction so the deterministic id is passed through only when
+    the receiver can take it.
+
+    Returns:
+        A `(passes, authoritative)` pair. `passes` is True when the id
+        can be supplied at all — an explicit `command_id` parameter or
+        a `**kwargs` catch-all. `authoritative` is True only for an
+        explicit `command_id` parameter: such a receiver contracts to
+        honour the id verbatim, so a divergent returned id is a real
+        violation worth failing on. A `**kwargs`-only receiver might
+        accept the kwarg and still mint its own id (a legacy Praxis
+        wrapped in `**kwargs`), so passthrough there is best-effort and
+        a divergent return is tolerated.
+    '''
+
+    try:
+        parameters = inspect.signature(submit_fn).parameters
+    except (ValueError, TypeError):
+        return False, False
+
+    if 'command_id' in parameters:
+        return True, True
+
+    has_var_keyword = any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in parameters.values()
+    )
+
+    return has_var_keyword, False
 
 
 class PraxisOutbound:
@@ -49,6 +99,10 @@ class PraxisOutbound:
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
+        (
+            self._submit_supports_command_id,
+            self._submit_command_id_authoritative,
+        ) = _command_id_support(submit_fn)
         self._loop = loop
         self._register_fn = register_fn
         self._unregister_fn = unregister_fn
@@ -56,6 +110,24 @@ class PraxisOutbound:
         self._submit_abort_fn = submit_abort_fn
         self._get_health_snapshot_fn = get_health_snapshot_fn
         self._timeout = timeout
+
+    @property
+    def supports_command_id(self) -> bool:
+        '''Whether the submit function authoritatively honours the id.
+
+        True only for a receiver that declares `command_id` as an
+        explicit parameter — one that contracts to use the transmitted
+        id verbatim. The launcher gates pre-registration (and the
+        `SUBMISSION_UNKNOWN` timeout semantics) on this: pre-registering
+        against `command.command_id` is only safe when the venue command
+        is guaranteed to carry that same id. A `**kwargs`-only receiver
+        is deliberately excluded — it might accept the kwarg yet mint
+        its own id, so the launcher falls back to the legacy
+        submit-then-register path for it, as it does for an old Praxis
+        that lacks the parameter entirely.
+        '''
+
+        return self._submit_command_id_authoritative
 
     def send_command(self, command: TradeCommand) -> str:
         '''Submit TradeCommand to Praxis via async bridge.
@@ -68,6 +140,8 @@ class PraxisOutbound:
 
         Raises:
             TimeoutError: If Praxis does not respond within timeout.
+            CommandIdMismatchError: If passthrough is active and Praxis
+                returns a command id other than the transmitted one.
             Exception: Propagates the original exception raised by submit_fn.
         '''
 
@@ -96,6 +170,9 @@ class PraxisOutbound:
         if command.quote_qty is not None:
             submit_kwargs['quote_qty'] = command.quote_qty
 
+        if self._submit_supports_command_id:
+            submit_kwargs['command_id'] = command.command_id
+
         future: concurrent.futures.Future[str] = asyncio.run_coroutine_threadsafe(
             self._submit_fn(**submit_kwargs),
             self._loop,
@@ -110,6 +187,27 @@ class PraxisOutbound:
                 command.command_id,
             )
             raise
+
+        if (
+            self._submit_command_id_authoritative
+            and str(command_id) != command.command_id
+        ):
+            _log.error(
+                'praxis returned a command_id differing from the '
+                'transmitted deterministic id; identity passthrough '
+                'was not honoured — failing the submission so the '
+                'caller rolls back rather than holding a registration '
+                'keyed on an id the venue command does not carry',
+                extra={
+                    'nexus_command_id': command.command_id,
+                    'praxis_command_id': command_id,
+                },
+            )
+            msg = (
+                f'praxis command_id {command_id!r} does not match the '
+                f'transmitted deterministic id {command.command_id!r}'
+            )
+            raise CommandIdMismatchError(msg)
 
         _log.info(
             'command submitted',
