@@ -1373,11 +1373,15 @@ class TestPreRegistration:
         handle.mark_unknown.assert_not_called()
 
     def test_timeout_with_handle_does_not_release_reservation(self) -> None:
-        # submit_actions does NOT release on timeout when a handle owns
-        # rollback; the real launcher handle would have consumed the
-        # reservation into a capital order via send_order before the
-        # timeout, so release ownership has moved to the handle. The mock
-        # handle is inert, so the reservation simply stays untouched here.
+        '''submit_actions does not release the reservation on timeout when
+        a handle owns rollback.
+
+        The real launcher handle consumes the reservation into a capital
+        order via send_order before the timeout, so release ownership
+        has moved to the handle; the inert mock handle here leaves the
+        reservation untouched, which is what this asserts.
+        '''
+
         ctx = _enter_context()
         controller, res, decision = self._allow_with_reservation()
         validator = MagicMock()

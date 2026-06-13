@@ -14,7 +14,10 @@ from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 from nexus.core.health_evaluator import HealthSnapshot
 from nexus.core.stp_mode import STPMode
-from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
+from nexus.infrastructure.praxis_connector.praxis_outbound import (
+    CommandIdMismatchError,
+    PraxisOutbound,
+)
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 from nexus.infrastructure.praxis_connector.trade_command_type import TradeCommandType
 
@@ -171,6 +174,24 @@ class TestPraxisOutbound:
 
         assert 'command_id' not in received_keys
         assert result == 'praxis_minted_id'
+
+    def test_divergent_returned_id_raises(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''Passthrough active + returned id != sent id raises and does not
+        return a desynced id.'''
+
+        loop, _ = event_loop_thread
+
+        async def divergent_submit(*, command_id: str, **_kwargs: object) -> str:
+            assert command_id == 'cmd_det_003'
+            return 'praxis-minted-different-id'
+
+        outbound = PraxisOutbound(submit_fn=divergent_submit, loop=loop)
+
+        with pytest.raises(CommandIdMismatchError):
+            outbound.send_command(_make_command(command_id='cmd_det_003'))
 
     def test_short_id_rejection_propagates(
         self,
