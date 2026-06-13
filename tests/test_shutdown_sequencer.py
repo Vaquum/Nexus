@@ -675,7 +675,7 @@ class TestFinalCheckpoint:
             except BaseException as exc:
                 errors.append(exc)
 
-        worker = threading.Thread(target=run_checkpoint)
+        worker = threading.Thread(target=run_checkpoint, daemon=True)
         worker.start()
         worker.join(timeout=_DEADLOCK_TIMEOUT_SECONDS)
 

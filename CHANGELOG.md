@@ -770,4 +770,4 @@
 
 ### Add
 
-- Add 1 test to [`tests/test_shutdown_sequencer.py`](tests/test_shutdown_sequencer.py): a real `StateStore` built with the `StateSnapshotLocks` bundle completes `_final_checkpoint` without deadlocking (the store acquires the locks the method no longer wraps), plus a test that `_final_checkpoint` holds no external `positions_lock` during the store call and that the sequencer accepts `positions_lock` without enforcing the `state.risk.lock` identity
+- Add tests to [`tests/test_shutdown_sequencer.py`](tests/test_shutdown_sequencer.py): a real `StateStore` built with the `StateSnapshotLocks` bundle completes `_final_checkpoint` without deadlocking (the store acquires the locks the method no longer wraps); `_final_checkpoint` holds no external `positions_lock` during the store call; and the sequencer accepts `positions_lock` without enforcing the `state.risk.lock` identity
