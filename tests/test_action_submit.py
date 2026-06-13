@@ -1405,9 +1405,35 @@ class TestPreRegistration:
         outcome = results[0][1]
         assert outcome.status == SubmissionStatus.SUBMISSION_UNKNOWN
         assert outcome.command_id is not None
+        assert outcome.error
         handle.mark_unknown.assert_called_once()
         handle.rollback.assert_not_called()
         assert res.reservation_id in controller._reservations
+
+    def test_bare_timeout_error_yields_nonempty_error(self) -> None:
+        ctx = _enter_context()
+        controller, _res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.side_effect = TimeoutError()
+        handle = MagicMock()
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=lambda _cmd, _dec: handle,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.SUBMISSION_UNKNOWN
+        assert outcome.error == 'send_command timed out'
 
     def test_handle_callback_exception_does_not_abort_tick(self) -> None:
         ctx = _enter_context()

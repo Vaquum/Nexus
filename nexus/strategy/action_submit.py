@@ -54,6 +54,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 _RUNTIME_ABORT_REASON = 'runtime_strategy_abort'
+_SEND_TIMEOUT_REASON = 'send_command timed out'
 
 
 class SubmissionStatus(Enum):
@@ -346,7 +347,7 @@ def submit_actions(
                             status=SubmissionStatus.SUBMISSION_UNKNOWN,
                             command_id=cmd.command_id,
                             decision=decision,
-                            error=str(e),
+                            error=str(e) or _SEND_TIMEOUT_REASON,
                         ),
                     ))
                     continue
@@ -364,7 +365,7 @@ def submit_actions(
                     SubmissionOutcome(
                         status=SubmissionStatus.SUBMIT_FAILED,
                         decision=decision,
-                        error=str(e),
+                        error=str(e) or _SEND_TIMEOUT_REASON,
                     ),
                 ))
                 continue
