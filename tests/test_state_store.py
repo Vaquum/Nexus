@@ -166,6 +166,21 @@ class TestStateSnapshotLocks:
         with pytest.raises(TypeError, match='StateSnapshotLocks'):
             store.attach_snapshot_locks(None)  # type: ignore[arg-type]
 
+    def test_attach_snapshot_locks_second_attach_wins_over_type_check(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        store = StateStore(tmp_path)
+        store.attach_snapshot_locks(
+            StateSnapshotLocks(
+                positions_lock=threading.Lock(),
+                capital_lock=threading.Lock(),
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match='already attached'):
+            store.attach_snapshot_locks(None)  # type: ignore[arg-type]
+
 
 class TestDirectoryLayout:
     '''Verify StateStore creates and manages its directory.'''
