@@ -1327,3 +1327,203 @@ class TestPerActionBoundContext:
         assert captured.get('command_id') == 'cmd_abort_777'
 
         clear_context()
+
+
+class TestPreRegistration:
+
+    def _allow_with_reservation(
+        self,
+    ) -> tuple[CapitalController, object, ValidationDecision]:
+        controller = CapitalController(CapitalState(capital_pool=Decimal('10000')))
+        res = controller.check_and_reserve(
+            strategy_id='strat_001',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+        )
+        assert res.reservation is not None
+        decision = ValidationDecision(allowed=True, reservation=res.reservation)
+
+        return controller, res.reservation, decision
+
+    def test_handle_marked_submitted_on_success(self) -> None:
+        ctx = _enter_context()
+        controller, _res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_det_aaaaaaaaaaaaaaaa'
+        handle = MagicMock()
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=lambda _cmd, _dec: handle,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMITTED
+        handle.mark_submitted.assert_called_once_with('cmd_det_aaaaaaaaaaaaaaaa')
+        handle.rollback.assert_not_called()
+        handle.mark_unknown.assert_not_called()
+
+    def test_timeout_with_handle_does_not_release_reservation(self) -> None:
+        # submit_actions does NOT release on timeout when a handle owns
+        # rollback; the real launcher handle would have consumed the
+        # reservation into a capital order via send_order before the
+        # timeout, so release ownership has moved to the handle. The mock
+        # handle is inert, so the reservation simply stays untouched here.
+        ctx = _enter_context()
+        controller, res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.side_effect = TimeoutError('praxis did not respond')
+        handle = MagicMock()
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=lambda _cmd, _dec: handle,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.SUBMISSION_UNKNOWN
+        assert outcome.command_id is not None
+        handle.mark_unknown.assert_called_once()
+        handle.rollback.assert_not_called()
+        assert res.reservation_id in controller._reservations
+
+    def test_handle_callback_exception_does_not_abort_tick(self) -> None:
+        ctx = _enter_context()
+        controller, _res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.return_value = 'cmd_det_bbbbbbbbbbbbbbbb'
+        handle = MagicMock()
+        handle.mark_submitted.side_effect = RuntimeError('handle bug')
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=lambda _cmd, _dec: handle,
+        )
+
+        assert len(results) == 1
+        assert results[0][1].status == SubmissionStatus.SUBMITTED
+
+    def test_mark_unknown_exception_still_returns_unknown(self) -> None:
+        ctx = _enter_context()
+        controller, _res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.side_effect = TimeoutError('praxis did not respond')
+        handle = MagicMock()
+        handle.mark_unknown.side_effect = RuntimeError('handle bug')
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=lambda _cmd, _dec: handle,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMISSION_UNKNOWN
+
+    def test_timeout_without_handle_is_submit_failed_and_releases(self) -> None:
+        ctx = _enter_context()
+        controller, res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.side_effect = TimeoutError('praxis did not respond')
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        assert res.reservation_id not in controller._reservations
+
+    def test_non_timeout_failure_with_handle_rolls_back(self) -> None:
+        ctx = _enter_context()
+        controller, _res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        outbound.send_command.side_effect = RuntimeError('venue rejected')
+        handle = MagicMock()
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=lambda _cmd, _dec: handle,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        handle.rollback.assert_called_once()
+        handle.mark_submitted.assert_not_called()
+
+    def test_pre_register_failure_is_pre_handoff(self) -> None:
+        ctx = _enter_context()
+        controller, res, decision = self._allow_with_reservation()
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+
+        def _boom(_cmd: object, _dec: object) -> object:
+            msg = 'registry insert failed'
+            raise RuntimeError(msg)
+
+        results = submit_actions(
+            [_enter_action()],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+            capital_controller=controller,
+            pre_register=_boom,
+        )
+
+        assert results[0][1].status == SubmissionStatus.SUBMIT_FAILED
+        outbound.send_command.assert_not_called()
+        assert res.reservation_id not in controller._reservations

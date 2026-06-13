@@ -16,6 +16,7 @@ so unit tests can drive it with a fake context builder.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import threading
 from collections.abc import Callable
@@ -23,6 +24,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Protocol
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.capital_controller.lifecycle_result import LifecycleResult
@@ -33,6 +35,7 @@ from nexus.core.validator.pipeline_models import (
 )
 from nexus.infrastructure.observability import bound_context
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
+from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 from nexus.infrastructure.praxis_connector.translate import (
     translate_to_trade_command,
 )
@@ -42,6 +45,7 @@ from nexus.strategy.action import Action, ActionType
 __all__ = [
     'ContextBuilder',
     'SubmissionOutcome',
+    'SubmissionRegistration',
     'SubmissionStatus',
     'bridge_to_capital',
     'submit_actions',
@@ -58,6 +62,7 @@ class SubmissionStatus(Enum):
     SUBMITTED = 'submitted'
     REJECTED = 'rejected'
     SUBMIT_FAILED = 'submit_failed'
+    SUBMISSION_UNKNOWN = 'submission_unknown'
     INVALID = 'invalid'
 
 
@@ -67,9 +72,12 @@ class SubmissionOutcome:
 
     Args:
         status: Terminal status of the submission attempt.
-        command_id: Praxis-assigned command id when status is SUBMITTED.
+        command_id: The command id when status is SUBMITTED or
+            SUBMISSION_UNKNOWN (the deterministic Nexus id retained for
+            reconciliation in the UNKNOWN case).
         decision: Validator decision when ENTER/EXIT/MODIFY was attempted.
-        error: Short error string when status is SUBMIT_FAILED or INVALID.
+        error: Short error string when status is SUBMIT_FAILED, INVALID,
+            or SUBMISSION_UNKNOWN (the timeout cause for UNKNOWN).
     '''
 
     status: SubmissionStatus
@@ -78,7 +86,41 @@ class SubmissionOutcome:
     error: str | None = None
 
 
+class SubmissionRegistration(Protocol):
+    '''Lifecycle handle for a command registered before outbound handoff.
+
+    Returned by a caller-supplied `pre_register` and used by
+    `submit_actions` to confirm, mark-unknown, or roll back the
+    registration depending on how the `send_command` handoff resolves.
+    Registering before the handoff (rather than after the call returns)
+    is what lets a fast venue's ACK/FILL — or a timed-out-but-executed
+    command — resolve against state that already exists, instead of
+    racing the post-submit registration loop.
+    '''
+
+    def mark_submitted(self, command_id: str) -> None:
+        '''Confirm the command was accepted by Praxis.'''
+        ...
+
+    def mark_unknown(self, error: BaseException) -> None:
+        '''Mark the submission outcome unknown (timeout after handoff).
+
+        The registration is retained — the command may still execute,
+        so a late ACK/FILL must resolve against it — and a sweeper owns
+        eventual reconciliation.
+        '''
+        ...
+
+    def rollback(self, error: BaseException) -> None:
+        '''Undo the registration when the command provably did not handoff.'''
+        ...
+
+
 ContextBuilder = Callable[[Action, str], ValidationRequestContext | None]
+PreRegister = Callable[
+    [TradeCommand, ValidationDecision],
+    SubmissionRegistration,
+]
 
 
 def submit_actions(
@@ -92,6 +134,7 @@ def submit_actions(
     now: Callable[[], datetime],
     capital_controller: CapitalController | None = None,
     positions_lock: threading.Lock | None = None,
+    pre_register: PreRegister | None = None,
 ) -> list[tuple[Action, SubmissionOutcome]]:
     '''Run a list of strategy actions through validation and submission.
 
@@ -108,13 +151,16 @@ def submit_actions(
             `None` when the context is unavailable (e.g. unknown
             `trade_id` on EXIT). Not invoked for ABORT.
         now: UTC-now provider injected for deterministic tests.
-        capital_controller: When provided, on translate / send_command
-            failure after `validator.validate` granted a Reservation,
-            the granted Reservation is released via
-            `controller.release_reservation(reservation_id)` so capital
+        capital_controller: When provided AND no `pre_register` handle
+            owns the command, a translate / send_command failure after
+            `validator.validate` granted a Reservation releases that
+            Reservation via `controller.release_reservation` so capital
             does not stay parked until TTL eviction on
             deterministic-failure retry storms (config bug, malformed
-            symbol). MAJOR-G fix. None preserves legacy test behavior
+            symbol). MAJOR-G fix. When a `pre_register` handle exists it
+            owns rollback (the reservation has typically been consumed
+            into a capital order by then), so this path is not taken on
+            a post-handoff failure. None preserves legacy test behavior
             (no rollback).
         positions_lock: Optional `threading.Lock` shared with the
             launcher's `_ensure_entry_position` writer and
@@ -244,11 +290,69 @@ def submit_actions(
                 ))
                 continue
 
+            registration: SubmissionRegistration | None = None
+
+            if pre_register is not None:
+                try:
+                    registration = pre_register(cmd, decision)
+                except Exception as e:  # noqa: BLE001 - pre-handoff failure is local
+                    _log.exception(
+                        'pre_register raised before handoff',
+                        extra={
+                            'strategy_id': strategy_id,
+                            'action_type': action.action_type.value,
+                            'command_id': cmd.command_id,
+                        },
+                    )
+                    _release_granted_reservation(capital_controller, decision)
+                    results.append((
+                        action,
+                        SubmissionOutcome(
+                            status=SubmissionStatus.SUBMIT_FAILED,
+                            decision=decision,
+                            error=f'pre_register: {e}',
+                        ),
+                    ))
+                    continue
+
             try:
                 command_id = praxis_outbound.send_command(cmd)
-            except Exception as e:  # noqa: BLE001 - per-action submit failure is local
+            except (TimeoutError, concurrent.futures.TimeoutError) as e:
+                if registration is not None:
+                    try:
+                        registration.mark_unknown(e)
+                    except Exception:  # noqa: BLE001 - handle error must not abort the tick
+                        _log.exception(
+                            'submission registration mark_unknown raised',
+                            extra={
+                                'strategy_id': strategy_id,
+                                'command_id': cmd.command_id,
+                            },
+                        )
+                    _log.warning(
+                        'send_command timed out after pre-registration; '
+                        'submission unknown — reservation and registration '
+                        'retained for reconciliation by the deterministic '
+                        'command_id',
+                        extra={
+                            'strategy_id': strategy_id,
+                            'action_type': action.action_type.value,
+                            'command_id': cmd.command_id,
+                        },
+                    )
+                    results.append((
+                        action,
+                        SubmissionOutcome(
+                            status=SubmissionStatus.SUBMISSION_UNKNOWN,
+                            command_id=cmd.command_id,
+                            decision=decision,
+                            error=str(e),
+                        ),
+                    ))
+                    continue
+
                 _log.exception(
-                    'send_command failed',
+                    'send_command timed out',
                     extra={
                         'strategy_id': strategy_id,
                         'action_type': action.action_type.value,
@@ -264,8 +368,49 @@ def submit_actions(
                     ),
                 ))
                 continue
+            except Exception as e:  # noqa: BLE001 - per-action submit failure is local
+                _log.exception(
+                    'send_command failed',
+                    extra={
+                        'strategy_id': strategy_id,
+                        'action_type': action.action_type.value,
+                    },
+                )
+                if registration is not None:
+                    try:
+                        registration.rollback(e)
+                    except Exception:  # noqa: BLE001 - handle error must not abort the tick
+                        _log.exception(
+                            'submission registration rollback raised',
+                            extra={
+                                'strategy_id': strategy_id,
+                                'command_id': cmd.command_id,
+                            },
+                        )
+                else:
+                    _release_granted_reservation(capital_controller, decision)
+                results.append((
+                    action,
+                    SubmissionOutcome(
+                        status=SubmissionStatus.SUBMIT_FAILED,
+                        decision=decision,
+                        error=str(e),
+                    ),
+                ))
+                continue
 
-            if action.action_type == ActionType.EXIT and action.trade_id is not None:
+            if registration is not None:
+                try:
+                    registration.mark_submitted(command_id)
+                except Exception:  # noqa: BLE001 - handle error must not abort the tick
+                    _log.exception(
+                        'submission registration mark_submitted raised',
+                        extra={
+                            'strategy_id': strategy_id,
+                            'command_id': command_id,
+                        },
+                    )
+            elif action.action_type == ActionType.EXIT and action.trade_id is not None:
                 lock_cm = positions_lock if positions_lock is not None else nullcontext()
                 with lock_cm:
                     position = ctx.state.positions.get(action.trade_id)

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import inspect
 import logging
 from collections.abc import Callable, Coroutine
 from datetime import datetime, timezone
@@ -21,6 +22,31 @@ __all__ = ['PraxisOutbound']
 _log = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30.0
+
+
+
+def _accepts_command_id(submit_fn: Callable[..., Coroutine[Any, Any, str]]) -> bool:
+    '''Whether `submit_fn` accepts a `command_id` keyword argument.
+
+    The injected Praxis `submit_command` gained an optional
+    `command_id` parameter; older Praxis builds did not. Feature-detect
+    once at construction so the deterministic id is passed through only
+    when the receiver can honour it, keeping a new Nexus tolerant of an
+    old Praxis (no `TypeError` at the `**kwargs` seam).
+    '''
+
+    try:
+        parameters = inspect.signature(submit_fn).parameters
+    except (ValueError, TypeError):
+        return False
+
+    if 'command_id' in parameters:
+        return True
+
+    return any(
+        param.kind is inspect.Parameter.VAR_KEYWORD
+        for param in parameters.values()
+    )
 
 
 class PraxisOutbound:
@@ -49,6 +75,7 @@ class PraxisOutbound:
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._submit_fn = submit_fn
+        self._submit_supports_command_id = _accepts_command_id(submit_fn)
         self._loop = loop
         self._register_fn = register_fn
         self._unregister_fn = unregister_fn
@@ -56,6 +83,19 @@ class PraxisOutbound:
         self._submit_abort_fn = submit_abort_fn
         self._get_health_snapshot_fn = get_health_snapshot_fn
         self._timeout = timeout
+
+    @property
+    def supports_command_id(self) -> bool:
+        '''Whether the injected submit function honours a deterministic id.
+
+        The launcher gates pre-registration (and therefore the
+        `SUBMISSION_UNKNOWN` timeout semantics) on this: a transmitted
+        `command_id` is only meaningful when the receiving Praxis
+        `submit_command` accepts it, so a new Nexus paired with an old
+        Praxis falls back to the legacy submit-then-register path.
+        '''
+
+        return self._submit_supports_command_id
 
     def send_command(self, command: TradeCommand) -> str:
         '''Submit TradeCommand to Praxis via async bridge.
@@ -96,6 +136,9 @@ class PraxisOutbound:
         if command.quote_qty is not None:
             submit_kwargs['quote_qty'] = command.quote_qty
 
+        if self._submit_supports_command_id:
+            submit_kwargs['command_id'] = command.command_id
+
         future: concurrent.futures.Future[str] = asyncio.run_coroutine_threadsafe(
             self._submit_fn(**submit_kwargs),
             self._loop,
@@ -110,6 +153,20 @@ class PraxisOutbound:
                 command.command_id,
             )
             raise
+
+        if (
+            self._submit_supports_command_id
+            and str(command_id) != command.command_id
+        ):
+            _log.error(
+                'praxis returned a command_id differing from the '
+                'transmitted deterministic id; identity passthrough '
+                'may not be honoured by this Praxis build',
+                extra={
+                    'nexus_command_id': command.command_id,
+                    'praxis_command_id': command_id,
+                },
+            )
 
         _log.info(
             'command submitted',

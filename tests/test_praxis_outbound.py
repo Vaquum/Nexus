@@ -112,6 +112,83 @@ class TestPraxisOutbound:
         assert received_kwargs['timeout'] == 300
         assert received_kwargs['strategy_id'] == 'momentum'
 
+    def test_command_id_passed_when_submit_fn_accepts_it(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''A submit_fn declaring command_id receives the Nexus id verbatim.'''
+
+        loop, _ = event_loop_thread
+        received_kwargs: dict[str, object] = {}
+
+        async def submit_with_command_id(
+            *,
+            command_id: str,
+            **_kwargs: object,
+        ) -> str:
+            received_kwargs['command_id'] = command_id
+            return command_id
+
+        outbound = PraxisOutbound(submit_fn=submit_with_command_id, loop=loop)
+
+        result = outbound.send_command(_make_command(command_id='cmd_det_001'))
+
+        assert received_kwargs['command_id'] == 'cmd_det_001'
+        assert result == 'cmd_det_001'
+
+    def test_command_id_omitted_when_submit_fn_lacks_it(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''A legacy submit_fn without command_id never receives the kwarg.'''
+
+        loop, _ = event_loop_thread
+        received_keys: set[str] = set()
+
+        async def legacy_submit(
+            *,
+            trade_id: str,
+            account_id: str,
+            symbol: str,
+            side: object,
+            qty: object,
+            order_type: object,
+            execution_mode: object,
+            execution_params: object,
+            timeout: int,
+            reference_price: object,
+            maker_preference: object,
+            stp_mode: object,
+            created_at: object,
+            strategy_id: str | None = None,
+        ) -> str:
+            received_keys.update(locals().keys())
+            return 'praxis_minted_id'
+
+        outbound = PraxisOutbound(submit_fn=legacy_submit, loop=loop)
+
+        result = outbound.send_command(_make_command(command_id='cmd_det_002'))
+
+        assert 'command_id' not in received_keys
+        assert result == 'praxis_minted_id'
+
+    def test_short_id_rejection_propagates(
+        self,
+        event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
+    ) -> None:
+        '''A ValueError from a command_id-aware submit_fn propagates.'''
+
+        loop, _ = event_loop_thread
+
+        async def rejecting_submit(*, command_id: str, **_kwargs: object) -> str:
+            msg = f'command_id {command_id!r} must have at least 16 characters'
+            raise ValueError(msg)
+
+        outbound = PraxisOutbound(submit_fn=rejecting_submit, loop=loop)
+
+        with pytest.raises(ValueError, match='at least 16 characters'):
+            outbound.send_command(_make_command(command_id='short'))
+
     def test_strategy_id_passed_through_when_none(
         self,
         event_loop_thread: tuple[asyncio.AbstractEventLoop, threading.Thread],
