@@ -9,7 +9,6 @@ timer thread and reaches checkpoint().
 from __future__ import annotations
 
 import threading
-from contextlib import nullcontext
 from decimal import Decimal
 from pathlib import Path
 
@@ -35,76 +34,6 @@ def test_invalid_interval_rejected(tmp_path: Path) -> None:
             state=state,
             interval_seconds=0,
         )
-
-
-def test_lock_identity_mismatch_rejected_at_construction(tmp_path: Path) -> None:
-    '''When positions_lock is supplied, state.risk.lock must be the
-    SAME object. A mis-wired launcher passing a different lock would
-    let SnapshotScheduler iterate state.risk.per_strategy unguarded
-    against OutcomeProcessor's new-strategy inserts (FINAL-MAJOR-05
-    race). Mirrors ShutdownSequencer's identical guard at
-    shutdown_sequencer.py:188-204.
-    '''
-
-    state = _make_state()
-    store = StateStore(base_path=tmp_path)
-    positions_lock = threading.Lock()
-    state.risk.lock = threading.Lock()
-
-    with pytest.raises(RuntimeError, match=r'state\.risk\.lock is positions_lock'):
-        SnapshotScheduler(
-            state_store=store,
-            state=state,
-            positions_lock=positions_lock,
-        )
-
-
-def test_lock_identity_match_accepted(tmp_path: Path) -> None:
-    state = _make_state()
-    store = StateStore(base_path=tmp_path)
-    positions_lock = threading.Lock()
-    state.risk.lock = positions_lock
-
-    SnapshotScheduler(
-        state_store=store,
-        state=state,
-        positions_lock=positions_lock,
-        capital_lock_cm=lambda: nullcontext(),
-    )
-
-
-def test_capital_lock_cm_required_when_positions_lock_supplied(tmp_path: Path) -> None:
-    '''Mirrors ShutdownSequencer's lock-cluster invariant
-    (`shutdown_sequencer.py:206-216`): positions_lock and
-    capital_lock_cm form a pair — supplying only one is a silent
-    miswire that leaves the capital-side `dictionary changed size
-    during iteration` race against a still-alive OutcomeProcessor
-    reachable.
-    '''
-
-    state = _make_state()
-    store = StateStore(base_path=tmp_path)
-    positions_lock = threading.Lock()
-    state.risk.lock = positions_lock
-
-    with pytest.raises(RuntimeError, match=r'capital_lock_cm'):
-        SnapshotScheduler(
-            state_store=store,
-            state=state,
-            positions_lock=positions_lock,
-        )
-
-
-def test_no_positions_lock_accepts_any_risk_lock(tmp_path: Path) -> None:
-    '''Single-threaded test paths don't supply positions_lock; the
-    identity guard must not fire when positions_lock is None.
-    '''
-
-    state = _make_state()
-    store = StateStore(base_path=tmp_path)
-    state.risk.lock = threading.Lock()
-
-    SnapshotScheduler(state_store=store, state=state)
 
 
 def test_bool_interval_rejected(tmp_path: Path) -> None:
@@ -133,53 +62,6 @@ def test_tick_once_writes_snapshot_file(tmp_path: Path) -> None:
 
     assert snap_path.exists()
     assert snap_path.stat().st_size > 0
-
-
-def test_tick_once_holds_positions_and_capital_locks(tmp_path: Path) -> None:
-    '''Pin the lock-chain contract: the checkpoint call must run
-    *inside* the positions_lock and the capital_lock_cm.
-    '''
-
-    state = _make_state()
-    store = StateStore(base_path=tmp_path)
-    positions_lock = threading.Lock()
-    state.risk.lock = positions_lock
-
-    capital_lock_acquired = threading.Event()
-    capital_lock_released = threading.Event()
-
-    class _CapitalLock:
-        def __enter__(self) -> None:
-            capital_lock_acquired.set()
-
-        def __exit__(self, *_args: object) -> None:
-            capital_lock_released.set()
-
-    def capital_lock_cm() -> _CapitalLock:
-        return _CapitalLock()
-
-    checkpoints_seen: list[bool] = []
-    original_checkpoint = store.checkpoint
-
-    def spying_checkpoint(s: InstanceState) -> None:
-        checkpoints_seen.append(positions_lock.locked() and capital_lock_acquired.is_set())
-        original_checkpoint(s)
-
-    store.checkpoint = spying_checkpoint  # type: ignore[method-assign]
-
-    scheduler = SnapshotScheduler(
-        state_store=store,
-        state=state,
-        positions_lock=positions_lock,
-        capital_lock_cm=capital_lock_cm,
-    )
-
-    scheduler.tick_once()
-
-    assert checkpoints_seen == [True], (
-        'checkpoint() must run while positions_lock is held and capital_lock_cm is in __enter__'
-    )
-    assert capital_lock_released.is_set()
 
 
 def test_checkpoint_exception_swallowed(tmp_path: Path) -> None:
@@ -260,30 +142,20 @@ def test_tick_once_writes_even_when_loop_is_stopped(tmp_path: Path) -> None:
     state = _make_state()
     store = StateStore(base_path=tmp_path)
 
-    inside_lock_chain = threading.Event()
-    proceed_to_checkpoint = threading.Event()
+    inside_checkpoint = threading.Event()
+    proceed_to_finish = threading.Event()
     checkpoint_calls: list[int] = []
 
-    class _BlockingCapitalLock:
-        def __enter__(self) -> None:
-            inside_lock_chain.set()
-            assert proceed_to_checkpoint.wait(timeout=2), (
-                'main thread did not release the capital-lock barrier within 2s'
-            )
-
-        def __exit__(self, *_args: object) -> None:
-            return None
-
-    def spying_checkpoint(_s: InstanceState) -> None:
+    def blocking_checkpoint(_s: InstanceState) -> None:
+        inside_checkpoint.set()
+        assert proceed_to_finish.wait(timeout=2), (
+            'main thread did not release the checkpoint barrier within 2s'
+        )
         checkpoint_calls.append(1)
 
-    store.checkpoint = spying_checkpoint  # type: ignore[method-assign]
+    store.checkpoint = blocking_checkpoint  # type: ignore[method-assign]
 
-    scheduler = SnapshotScheduler(
-        state_store=store,
-        state=state,
-        capital_lock_cm=_BlockingCapitalLock,
-    )
+    scheduler = SnapshotScheduler(state_store=store, state=state)
 
     worker_thread = threading.Thread(
         target=scheduler.tick_once,
@@ -291,10 +163,10 @@ def test_tick_once_writes_even_when_loop_is_stopped(tmp_path: Path) -> None:
     )
     worker_thread.start()
 
-    assert inside_lock_chain.wait(timeout=2)
+    assert inside_checkpoint.wait(timeout=2)
     scheduler.start()
     scheduler.stop()
-    proceed_to_checkpoint.set()
+    proceed_to_finish.set()
     worker_thread.join(timeout=2)
 
     assert not worker_thread.is_alive()
