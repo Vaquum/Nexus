@@ -742,3 +742,14 @@
 ### Add
 
 - Add 5 tests to [`tests/test_outcome_loop.py`](tests/test_outcome_loop.py) (`TestUnresolvedRetry`): a raced outcome dispatches exactly once after registration lands; retry exhaustion drops with an empty retry map and no dispatch; sibling ACK/FILLED order is preserved when both raced; a fresh resolvable FILLED funnels behind its parked raced ACK instead of dispatching inline, and the pair drains in original order; a sibling whose resolution vanishes mid-drain is re-parked as the new queue head and drains in order once it resolves again
+
+## v0.60.0 on 13th of June, 2026
+
+### Add
+
+- Add [`StateSnapshotLocks`](nexus/infrastructure/state_store.py) and an optional `snapshot_locks` parameter to `StateStore`: when supplied, `append_mutation` and `checkpoint` acquire `positions_lock` then `capital_lock` (the documented chain order) around the `serialize_state` call, so a snapshot can no longer interleave `state.positions` / `state.account_dust` / capital reads with a concurrent mutation on another thread (the OutcomeLoop worker, the Praxis synchronous-accounting path, or the submitter's `pending_exit` writes) — closing the torn-snapshot / dict-changed-during-iteration window at the codec boundary rather than relying on every call site to wrap the call. `append_event` does not take the locks (it serializes a `StrategyEvent`, not `InstanceState`); construction without the bundle preserves the prior unguarded contract ([#88](https://github.com/Vaquum/Nexus/issues/88))
+- Add 4 tests to [`tests/test_state_store.py`](tests/test_state_store.py): `append_mutation` and `checkpoint` acquire the locks in chain order; `append_event` takes neither; legacy construction without locks is unchanged
+
+### Fix
+
+- Fix the timing-flaky `test_broken_pool_submit_does_not_kill_scheduler` in [`tests/test_predict_loop.py`](tests/test_predict_loop.py): poll for the IPC refcount drain with a deadline instead of a fixed sleep ([#89](https://github.com/Vaquum/Nexus/issues/89))
