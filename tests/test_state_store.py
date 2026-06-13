@@ -112,7 +112,7 @@ class TestStateSnapshotLocks:
         recovered = store.recover()
         assert recovered is not None
 
-    def test_attach_snapshot_locks_engages_guard_on_checkpoint(
+    def test_attach_snapshot_locks_engages_guard_on_append_and_checkpoint(
         self,
         tmp_path: Path,
     ) -> None:
