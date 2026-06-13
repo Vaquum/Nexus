@@ -7,11 +7,14 @@ capital reconciliation (conditional) and at graceful shutdown, leaving
 the WAL to grow unbounded between restarts and every read of
 `snapshot.bin` between restarts stale.
 
-The snapshot-serialization locks (`positions_lock` + `capital_lock`)
-are owned by `StateStore` via its `StateSnapshotLocks` bundle and are
-acquired inside `checkpoint()`, so this loop calls `checkpoint()`
-directly — wrapping it would re-acquire the same non-reentrant locks
-and self-deadlock.
+Snapshot-serialization locking is owned by `StateStore`: when it is
+built with a `StateSnapshotLocks` bundle (as the launcher does for the
+multi-threaded runtime), `checkpoint()` acquires `positions_lock` +
+`capital_lock` itself, so this loop calls `checkpoint()` directly —
+wrapping it would re-acquire the same non-reentrant locks and
+self-deadlock. Without the bundle (single-threaded test paths) the
+store does not lock and none is needed; configuring it is the caller's
+responsibility.
 '''
 
 from __future__ import annotations
@@ -123,7 +126,7 @@ class SnapshotScheduler:
             self._schedule_locked()
 
     def _checkpoint(self) -> None:
-        '''Call `state_store.checkpoint()`; the store owns the locks.
+        '''Call `state_store.checkpoint()`; the store owns any locking.
 
         A failure here must not abort the loop — disk-full, transient
         I/O error, or msgpack failure are all logged at ERROR and the
@@ -131,11 +134,13 @@ class SnapshotScheduler:
         happens on a failed checkpoint) so no state is lost; the next
         successful checkpoint catches up.
 
-        The snapshot-serialization locks are acquired inside
-        `checkpoint()` (`StateStore`'s `StateSnapshotLocks` bundle), so
-        this loop does not wrap the call — a racing `stop()` between the
-        `_tick` entry check and the checkpoint completing simply writes
-        one extra snapshot; duplicate checkpoints are harmless.
+        This loop does not wrap the call: when the store was built with
+        a `StateSnapshotLocks` bundle it acquires the snapshot locks
+        inside `checkpoint()`, and wrapping would re-acquire them and
+        self-deadlock; without the bundle no locking happens either way.
+        A racing `stop()` between the `_tick` entry check and the
+        checkpoint completing simply writes one extra snapshot;
+        duplicate checkpoints are harmless.
         '''
 
         try:

@@ -46,9 +46,7 @@ def _make_mock_runner() -> MagicMock:
 
 
 def _make_mock_state_store() -> MagicMock:
-    store = MagicMock(spec=StateStore)
-    store.owns_snapshot_locks = False
-    return store
+    return MagicMock(spec=StateStore)
 
 
 def _make_instance_state() -> InstanceState:

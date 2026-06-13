@@ -89,7 +89,8 @@ class ShutdownSequencer:
             mid-snapshot, and `_submit_exit` increments `pending_exit`
             under it. None disables the guard (legacy single-threaded
             shutdown paths). The final-checkpoint snapshot is no longer
-            guarded here — `StateStore` owns the snapshot locks (see
+            guarded here — snapshot locking is owned by `StateStore`
+            when it is built with a `StateSnapshotLocks` bundle (see
             `_final_checkpoint`).
     '''
 
@@ -858,16 +859,20 @@ class ShutdownSequencer:
         '''Save final snapshot and truncate WAL.
 
         Calls `StateStore.checkpoint` to persist current state and
-        truncate the WAL before exit. The snapshot-serialization locks
-        (`positions_lock` + `capital_lock`) are owned by `StateStore`
-        via its `StateSnapshotLocks` bundle, so they are acquired inside
-        `checkpoint()` — this method must NOT wrap the call, or it would
-        re-acquire the same non-reentrant locks and self-deadlock.
-        FINAL-MAJOR-05 coverage (a snapshot cannot race a still-alive
-        OutcomeLoop worker mutating `state.positions` / `risk.per_strategy`
-        / `capital.per_strategy_deployed`) is preserved by the bundle;
-        the launcher's `state.risk.lock is positions_lock` wiring is what
-        makes `positions_lock` cover `risk.per_strategy`.
+        truncate the WAL before exit. Snapshot-serialization locking is
+        owned by `StateStore`: when it is built with a
+        `StateSnapshotLocks` bundle (as the launcher does for the
+        multi-threaded runtime), `checkpoint()` acquires `positions_lock`
+        + `capital_lock` itself, so this method must NOT wrap the call —
+        it would re-acquire the same non-reentrant locks and
+        self-deadlock. With the bundle configured, FINAL-MAJOR-05
+        coverage (a snapshot cannot race a still-alive OutcomeLoop worker
+        mutating `state.positions` / `risk.per_strategy` /
+        `capital.per_strategy_deployed`) is preserved, with the
+        launcher's `state.risk.lock is positions_lock` wiring making
+        `positions_lock` cover `risk.per_strategy`. Without the bundle
+        (single-threaded paths) the store does not lock and none is
+        needed; configuring it is the launcher's responsibility.
         '''
 
         self._state_store.checkpoint(self._state)
