@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import os
-import pickle
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -13,8 +10,6 @@ from pathlib import Path
 from typing import Any
 
 import structlog
-
-from limen.experiment.trainer.trainer import Trainer
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
@@ -25,12 +20,6 @@ from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
 from nexus.infrastructure.manifest import Manifest, TimerSpec, load_manifest
 from nexus.infrastructure.state_store import StateStore
 from nexus.startup.error import StartupError
-from nexus.startup.sensor_cache import (
-    CACHE_DIR_ENV,
-    bundle_id_for,
-    cache_path_for,
-    write_sensor_atomic,
-)
 from nexus.strategy.action import Action
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.executor import StrategyExecutor
@@ -43,57 +32,24 @@ _HUNDRED = Decimal('100')
 _POSITION_KEY_LENGTH = 2
 _log = structlog.get_logger()
 
-__all__ = ['StartupSequencer', 'WiredSensor']
+__all__ = ['SignalBinding', 'StartupSequencer']
 
 
 @dataclass(frozen=True)
-class WiredSensor:
-    '''A trained Sensor ready for signal generation.
+class SignalBinding:
+    '''A strategy bound to a Conduit prediction series.
 
     Args:
-        sensor_id: Unique identifier ({path_hash_12}:{permutation_id}).
-        sensor: Limen Sensor callable (predict(data) -> dict).
-        limen_manifest: Limen Manifest for feature preparation.
-        round_params: Hyperparameters used to train this Sensor.
-        strategy_id: Strategy this Sensor feeds signals to.
-        interval_seconds: How often to call predict().
-        experiment_dir: Resolved Limen experiment directory, so a predict
-            worker process can rebuild the (unpicklable) `limen_manifest`
-            from disk rather than receiving it across a process boundary.
-    '''
-
-    sensor_id: str
-    sensor: Any
-    limen_manifest: Any
-    round_params: dict[str, Any]
-    strategy_id: str
-    interval_seconds: int
-    experiment_dir: Path
-
-
-@dataclass(frozen=True)
-class _SensorWiringTask:
-    '''One sensor reconstruction unit: a single (dir, permutation) pair.
-
-    Args:
-        strategy_id: Strategy this sensor feeds signals to.
-        resolved_dir: Resolved experiment directory.
-        path_hash: 12-char hash of `resolved_dir` for the sensor id.
-        permutation_id: Permutation (round) id to reconstruct.
-        interval_seconds: How often the wired sensor's predict() runs.
+        strategy_id: Strategy this binding feeds signals to.
+        series: Conduit series identifier read from the serving manifest.
+        interval_seconds: How often to poll Conduit for a new prediction.
+        name: Optional human-readable cohort/series label for logs.
     '''
 
     strategy_id: str
-    resolved_dir: Path
-    path_hash: str
-    permutation_id: int
+    series: str
     interval_seconds: int
-
-    @property
-    def key(self) -> tuple[Path, int]:
-        '''Return the `(resolved_dir, permutation_id)` reconstruction key.'''
-
-        return (self.resolved_dir, self.permutation_id)
+    name: str | None = None
 
 
 class StartupSequencer:
@@ -102,8 +58,8 @@ class StartupSequencer:
     Executes steps in order: load manifest (source of account_id and
     allocated_capital) → recover state (snapshot + WAL) → register with
     Trading → reconcile capital → instantiate strategies → restore
-    strategy state → replay strategy events → wire sensors → register
-    timers → determine mode → dispatch on_startup.
+    strategy state → replay strategy events → build signal bindings →
+    register timers → determine mode → dispatch on_startup.
 
     Args:
         state_store: Persistence facade for state recovery.
@@ -166,7 +122,7 @@ class StartupSequencer:
         self._manifest: Manifest | None = None
         self._runner: StrategyRunner | None = None
         self._mode: OperationalMode | None = None
-        self._wired_sensors: list[WiredSensor] = []
+        self._signal_bindings: list[SignalBinding] = []
         self._timer_specs: dict[str, tuple[TimerSpec, ...]] = {}
         self._pending_startup_actions: dict[str, list[Action]] = {}
 
@@ -177,10 +133,10 @@ class StartupSequencer:
         return dict(self._timer_specs)
 
     @property
-    def wired_sensors(self) -> list[WiredSensor]:
-        '''Return trained Sensors wired during startup.'''
+    def signal_bindings(self) -> list[SignalBinding]:
+        '''Return Conduit signal bindings built during startup.'''
 
-        return list(self._wired_sensors)
+        return list(self._signal_bindings)
 
     @property
     def instance_state(self) -> InstanceState | None:
@@ -225,7 +181,7 @@ class StartupSequencer:
         self._instantiate_strategies()
         self._restore_strategy_state()
         self._replay_strategy_events()
-        self._wire_sensors()
+        self._build_signal_bindings()
         self._register_timers()
         self._determine_mode()
         self._dispatch_startup()
@@ -631,379 +587,36 @@ class StartupSequencer:
             except Exception:  # noqa: BLE001 - intentional catch-all for strategy code
                 _log.exception('on_event_replay failed', strategy_id=strategy_id)
 
-    def _wire_sensors(self) -> None:
-        '''Reconstruct Limen Sensors and wire them for signal generation.
+    def _build_signal_bindings(self) -> None:
+        '''Build one SignalBinding per manifest strategy.
 
-        Builds the work set (one entry per (strategy, experiment_dir,
-        permutation_id)) from the manifest, then for each unique
-        experiment directory constructs a single loader `Trainer(dir)`
-        in this process to obtain its `_manifest` (reused for every
-        `WiredSensor` from that dir) and its frozen `_data`. Sensors
-        already present in the opt-in disk cache
-        (`NEXUS_SENSOR_CACHE_DIR`) are loaded directly; the remaining
-        misses are reconstructed inline and persisted to the cache.
-        Parallel reconstruction is done ahead of launch by
-        `nexus.startup.warm_cache`, never in this process.
-
-        Per-sensor failures are logged with full context and skipped.
-        The account aborts with `StartupError` only when no sensor
-        wires — running with zero signal sources is silent dead air.
+        Each strategy's `signal` spec names the Conduit series the
+        PredictLoop polls for that strategy. No filesystem access, no
+        model reconstruction, no cache — the binding is a plain
+        descriptor consumed by the runtime poller.
         '''
 
         if self._manifest is None:
-            raise StartupError('wire_sensors', 'manifest not loaded')
+            raise StartupError('build_signal_bindings', 'manifest not loaded')
 
-        self._wired_sensors.clear()
-
-        tasks = self._collect_sensor_tasks()
-        if not tasks:
-            raise StartupError(
-                'wire_sensors',
-                'manifest declared 0 sensor specs across all strategies; '
-                'refusing to start an account with no signal source',
+        self._signal_bindings = [
+            SignalBinding(
+                strategy_id=spec.strategy_id,
+                series=spec.signal.series,
+                interval_seconds=spec.signal.interval_seconds,
+                name=spec.signal.name,
             )
+            for spec in self._manifest.strategies
+        ]
 
-        loaders, failed_dirs = self._load_bundle_trainers(tasks)
-        cache_dir = self._sensor_cache_dir()
-        bundle_ids: dict[Path, str] = {}
-        if cache_dir is not None:
-            for resolved_dir in dict.fromkeys(task.resolved_dir for task in tasks):
-                try:
-                    bundle_ids[resolved_dir] = bundle_id_for(resolved_dir)
-                except Exception:  # noqa: BLE001 - cache is best-effort; skip caching this dir
-                    _log.warning(
-                        'cache bundle id unavailable, caching disabled for dir',
-                        experiment_dir=str(resolved_dir),
-                    )
-
-        misses: list[_SensorWiringTask] = []
-        attempted = 0
-        raised = 0
-        empty = 0
-
-        for task in tasks:
-            if task.resolved_dir in failed_dirs:
-                attempted += 1
-                raised += 1
-                continue
-
-            cached_sensor = self._load_cached_sensor(
-                cache_dir, bundle_ids.get(task.resolved_dir), task,
+        for binding in self._signal_bindings:
+            _log.info(
+                'signal binding',
+                strategy_id=binding.strategy_id,
+                series=binding.series,
+                interval_seconds=binding.interval_seconds,
+                name=binding.name,
             )
-            if cached_sensor is not None and self._wire_cached_sensor(
-                cached_sensor, task, loaders,
-            ):
-                continue
-
-            misses.append(task)
-
-        reconstructed = self._reconstruct_misses(misses, loaders)
-
-        for task in misses:
-            attempted += 1
-            sensor = reconstructed.get(task.key)
-            if sensor is None:
-                if task.key in reconstructed:
-                    empty += 1
-                else:
-                    raised += 1
-                continue
-
-            self._store_cached_sensor(
-                cache_dir, bundle_ids.get(task.resolved_dir), task, sensor,
-            )
-            self._append_wired_sensor(sensor, task, loaders)
-
-        if not self._wired_sensors:
-            raise StartupError(
-                'wire_sensors',
-                f'all {attempted} sensor tasks produced no wired sensors '
-                f'({raised} raised, {empty} returned no Sensors); '
-                'refusing to start an account with no signal source',
-            )
-
-    def _collect_sensor_tasks(self) -> list[_SensorWiringTask]:
-        '''Flatten the manifest into one reconstruction task per permutation.'''
-
-        if self._manifest is None:
-            raise StartupError('wire_sensors', 'manifest not loaded')
-
-        tasks: list[_SensorWiringTask] = []
-        for spec in self._manifest.strategies:
-            strategy_id = spec.strategy_id
-
-            for sensor_spec in spec.sensors:
-                resolved_dir = sensor_spec.experiment_dir.resolve()
-                path_hash = hashlib.sha256(
-                    str(resolved_dir).encode(),
-                ).hexdigest()[:12]
-
-                for permutation_id in sensor_spec.permutation_ids:
-                    tasks.append(
-                        _SensorWiringTask(
-                            strategy_id=strategy_id,
-                            resolved_dir=resolved_dir,
-                            path_hash=path_hash,
-                            permutation_id=permutation_id,
-                            interval_seconds=sensor_spec.interval_seconds,
-                        ),
-                    )
-
-        return tasks
-
-    def _load_bundle_trainers(
-        self,
-        tasks: list[_SensorWiringTask],
-    ) -> tuple[dict[Path, Trainer], set[Path]]:
-        '''Construct one loader `Trainer(dir)` per unique experiment dir.
-
-        The loader yields the bundle's `_manifest` (reused for every
-        `WiredSensor` from that dir) and the frozen `_data` slice that
-        seeds every reconstruction from that dir. A dir whose loader
-        raises is recorded as failed so its tasks are counted as
-        reconstruction failures without aborting unrelated dirs.
-
-        Args:
-            tasks: All reconstruction tasks.
-
-        Returns:
-            A `(loaders, failed_dirs)` pair.
-        '''
-
-        loaders: dict[Path, Trainer] = {}
-        failed_dirs: set[Path] = set()
-
-        for resolved_dir in dict.fromkeys(task.resolved_dir for task in tasks):
-            try:
-                loaders[resolved_dir] = Trainer(resolved_dir)
-            except Exception:  # noqa: BLE001 - per-bundle isolation
-                failed_dirs.add(resolved_dir)
-                _log.exception(
-                    'sensor bundle load failed',
-                    experiment_dir=str(resolved_dir),
-                )
-
-        return loaders, failed_dirs
-
-    def _reconstruct_misses(
-        self,
-        misses: list[_SensorWiringTask],
-        loaders: dict[Path, Trainer],
-    ) -> dict[tuple[Path, int], Any]:
-        '''Reconstruct cache-miss sensors inline in this process.
-
-        Reconstruction always runs inline: the launcher owns Polars'
-        rayon thread pool, and creating a `ProcessPoolExecutor` here
-        crashes that pool (see `nexus.startup.warm_cache`, which runs the
-        parallel reconstruction in a separate pre-launch process). With a
-        warm cache the inline path only reconstructs the handful of
-        uncached misses, so it stays cheap.
-
-        Misses are deduplicated by `task.key` first, so a
-        `(dir, permutation_id)` referenced by more than one task (e.g.
-        shared across strategies) is reconstructed exactly once; the
-        result is keyed by `task.key`, so the caller's per-task wiring
-        loop wires that single Sensor to every referencing task.
-
-        A key present in the result with a non-`None` value reconstructed
-        cleanly; a key present mapped to `None` means `train()` returned
-        no Sensor; an absent key means the reconstruction raised.
-
-        Args:
-            misses: Tasks not satisfied by the cache.
-            loaders: Per-dir loader Trainers (source of frozen `_data`).
-
-        Returns:
-            Mapping of `task.key` to the reconstructed `Sensor` (or
-            `None` for an empty `train()` result).
-        '''
-
-        if not misses:
-            return {}
-
-        unique: dict[tuple[Path, int], _SensorWiringTask] = {}
-        for task in misses:
-            unique.setdefault(task.key, task)
-
-        return self._reconstruct_inline(list(unique.values()), loaders)
-
-    def _reconstruct_inline(
-        self,
-        misses: list[_SensorWiringTask],
-        loaders: dict[Path, Trainer],
-    ) -> dict[tuple[Path, int], Any]:
-        '''Reconstruct misses in the current process (no ProcessPool).'''
-
-        results: dict[tuple[Path, int], Any] = {}
-
-        for task in misses:
-            loader = loaders[task.resolved_dir]
-            try:
-                # NOTE: loader._data is a private attribute on Limen Trainer.
-                # No public accessor exists as of vaquum_limen 4.0.1.
-                trainer = Trainer(task.resolved_dir, data=loader._data)
-                sensors = trainer.train([task.permutation_id])
-            except Exception:  # noqa: BLE001 - per-sensor isolation
-                self._log_reconstruction_failure(task)
-                continue
-
-            results[task.key] = sensors[0] if sensors else None
-
-        return results
-
-    def _append_wired_sensor(
-        self,
-        sensor: Any,
-        task: _SensorWiringTask,
-        loaders: dict[Path, Trainer],
-    ) -> None:
-        '''Wrap a reconstructed/cached Sensor in a WiredSensor and store it.'''
-
-        sensor_id = f'{task.path_hash}:{sensor.permutation_id}'
-        # NOTE: loader._manifest is a private attribute on Limen Trainer.
-        # No public accessor exists as of vaquum_limen 4.0.1.
-        wired = WiredSensor(
-            sensor_id=sensor_id,
-            sensor=sensor,
-            limen_manifest=loaders[task.resolved_dir]._manifest,
-            round_params=sensor.round_params,
-            strategy_id=task.strategy_id,
-            interval_seconds=task.interval_seconds,
-            experiment_dir=task.resolved_dir,
-        )
-        self._wired_sensors.append(wired)
-        _log.info(
-            'wired sensor',
-            sensor_id=sensor_id,
-            strategy_id=task.strategy_id,
-            interval_seconds=task.interval_seconds,
-        )
-
-    def _wire_cached_sensor(
-        self,
-        sensor: Any,
-        task: _SensorWiringTask,
-        loaders: dict[Path, Trainer],
-    ) -> bool:
-        '''Wire a cache-loaded Sensor; return False when it is unusable.
-
-        A cache entry that unpickles but does not satisfy the full
-        Sensor contract Nexus reads — a `permutation_id` matching the
-        task's (a stale or misplaced file under the right key fails
-        this), a callable `predict` (invoked by the predict loop), and
-        a dict `round_params` (passed to `manifest.prepare_data`) —
-        would otherwise wire the wrong model, fail later at runtime, or
-        abort startup at `_append_wired_sensor`. Rejecting it here and
-        returning False lets the caller treat the entry as a miss and
-        reconstruct, keeping the corrupt-entry → reconstruct guarantee
-        whole rather than only covering unpickling failures.
-        '''
-
-        try:
-            if sensor.permutation_id != task.permutation_id:
-                _log.warning(
-                    'cached sensor permutation mismatch, reconstructing',
-                    experiment_dir=str(task.resolved_dir),
-                    expected_permutation_id=task.permutation_id,
-                    cached_permutation_id=sensor.permutation_id,
-                )
-                return False
-
-            if not callable(getattr(sensor, 'predict', None)):
-                _log.warning(
-                    'cached sensor has no callable predict, reconstructing',
-                    experiment_dir=str(task.resolved_dir),
-                    permutation_id=task.permutation_id,
-                )
-                return False
-
-            if not isinstance(getattr(sensor, 'round_params', None), dict):
-                _log.warning(
-                    'cached sensor round_params is not a dict, reconstructing',
-                    experiment_dir=str(task.resolved_dir),
-                    permutation_id=task.permutation_id,
-                )
-                return False
-
-            self._append_wired_sensor(sensor, task, loaders)
-        except Exception:  # noqa: BLE001 - unusable cache entry => treat as miss
-            _log.warning(
-                'cached sensor unusable, reconstructing',
-                experiment_dir=str(task.resolved_dir),
-                permutation_id=task.permutation_id,
-            )
-            return False
-
-        return True
-
-    def _sensor_cache_dir(self) -> Path | None:
-        '''Return the configured sensor cache directory, or None when off.'''
-
-        raw = os.environ.get(CACHE_DIR_ENV)
-        if not raw:
-            return None
-
-        return Path(raw)
-
-    def _load_cached_sensor(
-        self,
-        cache_dir: Path | None,
-        bundle_id: str | None,
-        task: _SensorWiringTask,
-    ) -> Any | None:
-        '''Load a cached Sensor for a task, or None on miss/corruption.'''
-
-        if cache_dir is None or bundle_id is None:
-            return None
-
-        path = cache_path_for(cache_dir, bundle_id, task.permutation_id)
-        if not path.is_file():
-            return None
-
-        try:
-            with path.open('rb') as handle:
-                return pickle.load(handle)  # noqa: S301 - operator-owned cache dir, not untrusted input
-        except Exception:  # noqa: BLE001 - corrupt cache => treat as miss
-            _log.warning(
-                'sensor cache entry unreadable, reconstructing',
-                experiment_dir=str(task.resolved_dir),
-                permutation_id=task.permutation_id,
-                cache_path=str(path),
-            )
-            return None
-
-    def _store_cached_sensor(
-        self,
-        cache_dir: Path | None,
-        bundle_id: str | None,
-        task: _SensorWiringTask,
-        sensor: Any,
-    ) -> None:
-        '''Persist a reconstructed Sensor to the cache when enabled.'''
-
-        if cache_dir is None or bundle_id is None:
-            return
-
-        path = cache_path_for(cache_dir, bundle_id, task.permutation_id)
-        try:
-            write_sensor_atomic(path, sensor)
-        except Exception:  # noqa: BLE001 - cache write must not abort wiring
-            _log.warning(
-                'sensor cache write failed',
-                experiment_dir=str(task.resolved_dir),
-                permutation_id=task.permutation_id,
-                cache_path=str(path),
-            )
-
-    def _log_reconstruction_failure(self, task: _SensorWiringTask) -> None:
-        '''Log a per-sensor reconstruction failure with full context.'''
-
-        _log.exception(
-            'sensor wiring failed',
-            strategy_id=task.strategy_id,
-            experiment_dir=str(task.resolved_dir),
-            permutation_ids=[task.permutation_id],
-        )
 
     def _register_timers(self) -> None:
         '''Register strategy timers from manifest.

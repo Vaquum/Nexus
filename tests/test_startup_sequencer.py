@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,24 +16,9 @@ from nexus.core.domain.position import Position
 from nexus.infrastructure.state_store import StateStore
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.startup import StartupError, StartupSequencer
+from nexus.startup.sequencer import SignalBinding
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.runner import StrategyRunner
-
-
-@pytest.fixture(autouse=True)
-def _mock_trainer() -> None:
-    '''Patch Limen Trainer so startup tests skip real training.'''
-
-    mock_sensor = MagicMock()
-    mock_sensor.permutation_id = 1
-    mock_sensor.round_params = {}
-
-    mock_trainer = MagicMock()
-    mock_trainer.return_value.train.return_value = [mock_sensor]
-    mock_trainer.return_value._manifest = MagicMock()
-
-    with patch('nexus.startup.sequencer.Trainer', mock_trainer):
-        yield
 
 
 def _make_mock_state_store() -> MagicMock:
@@ -41,14 +26,11 @@ def _make_mock_state_store() -> MagicMock:
     return mock
 
 
-def _sensors_yaml(tmp_path: Path) -> str:
-    exp_dir = tmp_path / 'experiment'
-    exp_dir.mkdir(exist_ok=True)
+def _sensors_yaml(_tmp_path: Path) -> str:
     return (
-        f'    sensors:\n'
-        f'      - experiment: {exp_dir}\n'
-        f'        permutation_ids: [1]\n'
-        f'        interval_seconds: 60\n'
+        '    signal:\n'
+        '      series: time_15m\n'
+        '      interval_seconds: 60\n'
     )
 
 
@@ -86,7 +68,6 @@ def _make_sequencer(
         strategies_base_path=strategies_base_path or _PLACEHOLDER_STRATEGIES,
         strategy_state_path=strategy_state_path,
     )
-    sequencer._sensor_wire_max_workers = 1
     return sequencer
 
 
@@ -703,34 +684,73 @@ class TestExternalIntegrationStubs:
         with pytest.raises(StartupError, match='replay_strategy_events'):
             sequencer._replay_strategy_events()
 
-    def test_wire_sensors_without_manifest_raises(self) -> None:
+    def test_build_signal_bindings_without_manifest_raises(self) -> None:
         sequencer = _make_sequencer()
 
         with pytest.raises(StartupError, match='manifest not loaded'):
-            sequencer._wire_sensors()
+            sequencer._build_signal_bindings()
 
-    def test_wire_sensors_with_zero_sensor_specs_raises(self) -> None:
-        '''PT-FIX-34: pre-fix the all-sensors-failed guard short-
-        circuited on `attempted > 0`, so any path that produced zero
-        sensor specs (`attempted == 0`) silently passed and boot
-        proceeded with `wired_sensors=[]`. The PredictLoop then had
-        no signal source and the account sat permanently dead.
-        Post-fix the guard fires whenever `_wired_sensors` is empty,
-        with a distinct error message.
+    def test_build_signal_bindings_one_per_strategy(self, tmp_path: Path) -> None:
+        '''Each manifest strategy yields exactly one SignalBinding
+        carrying that strategy's series / interval / name.'''
 
-        Manifest's own validators today reject empty `strategies` and
-        empty `sensors`, so the only way to hit `attempted == 0`
-        without relaxing those rules is to skip the strategy loop
-        entirely. The test models that by overriding `manifest.
-        strategies = ()` — no strategies means no sensor specs are
-        attempted — and asserts the guard fires regardless.'''
+        manifest_path = tmp_path / 'manifest.yaml'
+        strategy_file = tmp_path / 'strat.py'
+        strategy_file.write_text(VALID_STRATEGY)
+        manifest_path.write_text(
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: alpha\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 30\n'
+            '      name: alpha_cohort\n'
+            '    capital_pct: 40\n'
+            '  - id: beta\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_1h\n'
+            '      interval_seconds: 60\n'
+            '    capital_pct: 50\n'
+        )
+        sequencer = _make_sequencer(
+            manifest_path=manifest_path,
+            strategies_base_path=tmp_path,
+        )
+        sequencer._load_manifest()
+
+        sequencer._build_signal_bindings()
+
+        bindings = sequencer.signal_bindings
+        assert bindings == [
+            SignalBinding(
+                strategy_id='alpha',
+                series='time_15m',
+                interval_seconds=30,
+                name='alpha_cohort',
+            ),
+            SignalBinding(
+                strategy_id='beta',
+                series='time_1h',
+                interval_seconds=60,
+                name=None,
+            ),
+        ]
+
+    def test_build_signal_bindings_empty_when_no_strategies(self) -> None:
+        '''No strategies means no bindings (no error — the manifest
+        validators already reject an empty strategies list at load).'''
 
         sequencer = _make_sequencer()
         manifest = _attach_stub_manifest(sequencer)
         manifest.strategies = ()
 
-        with pytest.raises(StartupError, match='manifest declared 0 sensor specs'):
-            sequencer._wire_sensors()
+        sequencer._build_signal_bindings()
+
+        assert sequencer.signal_bindings == []
 
     def test_register_timers_without_manifest_raises(self) -> None:
         sequencer = _make_sequencer()

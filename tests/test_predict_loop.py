@@ -1,81 +1,39 @@
-'''Tests for PredictLoop timer-based signal generation.'''
+'''Tests for the single-process Conduit PredictLoop.'''
 
 from __future__ import annotations
 
+import json
 import threading
 import time
-from collections.abc import Iterator
-from concurrent.futures import Future
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, ClassVar
-from unittest.mock import MagicMock, patch
+from typing import Any
+from unittest.mock import MagicMock
 
-import numpy as np
 import polars as pl
 import pytest
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.order_types import ExecutionMode, OrderType
-from nexus.startup.sequencer import WiredSensor
-from nexus.strategy import predict_loop as predict_loop_module
+from nexus.startup.sequencer import SignalBinding
 from nexus.strategy.action import Action, ActionType
 from nexus.strategy.context import StrategyContext
 from nexus.strategy.predict_loop import PredictLoop
 from nexus.strategy.runner import StrategyRunner
 from nexus.strategy.signal import Signal
 
-
-def _mock_sensor() -> MagicMock:
-    sensor = MagicMock()
-    sensor.predict.return_value = {
-        '_preds': np.array([1]),
-        '_probs': np.array([0.85]),
-    }
-    return sensor
+_SERIES = 'time_15m'
+_TS = 1_700_000_000_000_000_000
+_CLOSE = 70500.0
 
 
-def _mock_limen_manifest() -> MagicMock:
-    manifest = MagicMock()
-    override = MagicMock()
-
-    x_train = pl.DataFrame({'f1': [1.0, 2.0], 'f2': [3.0, 4.0]})
-    override.prepare_data.return_value = {'x_train': x_train}
-    manifest.with_params_override.return_value = override
-    manifest.data_source_config.params = {'kline_size': 3600}
-
-    return manifest
+def _fixed_clock(moment: datetime) -> Callable[[], datetime]:
+    return lambda: moment
 
 
-def _make_wired(
-    sensor_id: str = 'exp:1',
-    strategy_id: str = 'strat_a',
-    interval_seconds: int = 1,
-) -> WiredSensor:
-    return WiredSensor(
-        sensor_id=sensor_id,
-        sensor=_mock_sensor(),
-        limen_manifest=_mock_limen_manifest(),
-        round_params={'random_weights': 0.5},
-        strategy_id=strategy_id,
-        interval_seconds=interval_seconds,
-        experiment_dir=Path('exp'),
-    )
-
-
-def _mock_market_data_provider(_kline_size: int) -> pl.DataFrame:
-    return pl.DataFrame({
-        'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
-        'open': [70000.0],
-        'high': [71000.0],
-        'low': [69000.0],
-        'close': [70500.0],
-        'volume': [100.0],
-    })
-
-
-def _mock_context_provider(_strategy_id: str) -> StrategyContext:
+def _context_provider(_strategy_id: str) -> StrategyContext:
     return StrategyContext(
         positions=(),
         capital_available=Decimal('10000'),
@@ -83,180 +41,153 @@ def _mock_context_provider(_strategy_id: str) -> StrategyContext:
     )
 
 
-class _SyncExecutor:
-    '''In-process stand-in for the spawn ProcessPoolExecutor.
+def _write_manifest(
+    conduit_dir: Path,
+    generated_at: datetime,
+    *,
+    series: str = _SERIES,
+    cohort_id: str = 'cohort_a',
+    name: str = 'alpha',
+    include_series: bool = True,
+) -> None:
+    entries: dict[str, Any] = {}
+    if include_series:
+        entries[series] = {
+            'cohort_id': cohort_id,
+            'name': name,
+            'path': f'{series}/latest.arrow',
+            'rows': 1,
+            'max_ts': _TS,
+        }
 
-    Runs submitted callables synchronously so the parent-side scheduler,
-    dispatch, and reschedule logic can be exercised without spawning real
-    worker processes, which cannot run MagicMock sensors across a pickle
-    boundary or rebuild a manifest from a non-existent experiment dir.
-    '''
-
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    def submit(self, fn: Any, *args: Any, **kwargs: Any) -> Future:
-        future: Future = Future()
-
-        try:
-            future.set_result(fn(*args, **kwargs))
-        except Exception as exc:
-            future.set_exception(exc)
-
-        return future
-
-    def shutdown(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+    manifest = {
+        'version': 1,
+        'generated_at': generated_at.isoformat(),
+        'series': entries,
+    }
+    (conduit_dir / 'serving_manifest.json').write_text(json.dumps(manifest))
 
 
-def _stub_predict_in_process(task: Any, _market_data_path: str) -> Signal:
-    return Signal(
-        predictor_fn_id=task.sensor_id,
-        values={'_preds': 1, '_probs': 0.85, 'close': 70500.0},
-        timestamp=datetime.now(tz=timezone.utc),
+def _write_conduit_frame(
+    conduit_dir: Path,
+    *,
+    series: str = _SERIES,
+    rows: list[dict[str, Any]] | None = None,
+) -> None:
+    if rows is None:
+        rows = [
+            {
+                'ts': _TS,
+                'prediction': 1,
+                'probability': 0.85,
+                'reason_code': 0,
+            },
+        ]
+
+    frame = pl.DataFrame(
+        rows,
+        schema={
+            'ts': pl.Int64,
+            'prediction': pl.Int8,
+            'probability': pl.Float64,
+            'reason_code': pl.Int8,
+        },
+    )
+    series_dir = conduit_dir / series
+    series_dir.mkdir(parents=True, exist_ok=True)
+    frame.write_ipc(series_dir / 'latest.arrow')
+
+
+def _write_arrow_frame(
+    arrow_dir: Path,
+    *,
+    series: str = _SERIES,
+    rows: list[dict[str, Any]] | None = None,
+) -> None:
+    if rows is None:
+        rows = [{'ts': _TS, 'close': _CLOSE}]
+
+    frame = pl.DataFrame(rows, schema={'ts': pl.Int64, 'close': pl.Float64})
+    series_dir = arrow_dir / series
+    series_dir.mkdir(parents=True, exist_ok=True)
+    frame.write_ipc(series_dir / 'latest.arrow')
+
+
+def _build_fixture(
+    tmp_path: Path,
+    generated_at: datetime,
+    **manifest_kwargs: Any,
+) -> tuple[Path, Path]:
+    conduit_dir = tmp_path / 'conduit'
+    arrow_dir = tmp_path / 'arrow'
+    conduit_dir.mkdir()
+    arrow_dir.mkdir()
+    _write_manifest(conduit_dir, generated_at, **manifest_kwargs)
+    _write_conduit_frame(conduit_dir)
+    _write_arrow_frame(arrow_dir)
+    return conduit_dir, arrow_dir
+
+
+def _make_loop(
+    conduit_dir: Path,
+    arrow_dir: Path,
+    runner: StrategyRunner,
+    *,
+    clock: Callable[[], datetime],
+    action_submit: Callable[[list[Action], str], None] | None = None,
+    binding: SignalBinding | None = None,
+) -> PredictLoop:
+    return PredictLoop(
+        runner=runner,
+        signal_bindings=[binding or _binding()],
+        context_provider=_context_provider,
+        action_submit=action_submit,
+        conduit_dir=conduit_dir,
+        arrow_dir=arrow_dir,
+        clock=clock,
     )
 
 
-class TestPredictLoop:
-
-    @pytest.fixture(autouse=True)
-    def _in_process_predict_pool(self) -> Iterator[None]:
-        with (
-            patch.object(predict_loop_module, 'ProcessPoolExecutor', _SyncExecutor),
-            patch.object(
-                predict_loop_module,
-                '_predict_in_process',
-                _stub_predict_in_process,
-            ),
-        ):
-            yield
+def _binding(
+    strategy_id: str = 'strat_a',
+    series: str = _SERIES,
+    interval_seconds: int = 1,
+) -> SignalBinding:
+    return SignalBinding(
+        strategy_id=strategy_id,
+        series=series,
+        interval_seconds=interval_seconds,
+    )
 
 
-    def test_start_and_stop(self) -> None:
-        '''PredictLoop starts and stops without error.'''
+class TestPredictLoopTick:
 
-        runner = MagicMock(spec=StrategyRunner)
-        wired = _make_wired(interval_seconds=10)
+    def test_emits_signal_and_dispatches(self, tmp_path: Path) -> None:
+        '''A fresh manifest + usable row emits a Signal with
+        `_preds`/`_probs`/`close` and dispatches it.'''
 
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
-
-        loop.start()
-        assert loop.running is True
-
-        loop.stop()
-        assert loop.running is False
-
-    def test_dispatches_signal(self) -> None:
-        '''PredictLoop dispatches Signal to runner after timer fires.'''
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
 
         runner = MagicMock(spec=StrategyRunner)
-        dispatched = threading.Event()
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
 
-        def track_dispatch(*_args: Any, **_kwargs: Any) -> list:
-            dispatched.set()
-            return []
+        loop.tick_once(_binding())
 
-        runner.dispatch_signal.side_effect = track_dispatch
-        wired = _make_wired(interval_seconds=1)
+        assert runner.dispatch_signal.call_count == 1
+        call = runner.dispatch_signal.call_args
+        assert call[0][0] == 'strat_a'
+        signal = call[0][1]
+        assert isinstance(signal, Signal)
+        assert signal.predictor_fn_id == f'strat_a:{_SERIES}'
+        assert signal.get('_preds') == 1
+        assert signal.get('_probs') == 0.85
+        assert signal.get('close') == _CLOSE
 
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
-
-        loop.start()
-        dispatched.wait(timeout=3)
-        loop.stop()
-
-        assert runner.dispatch_signal.called
-        call_args = runner.dispatch_signal.call_args
-        assert call_args[0][0] == 'strat_a'
-        assert isinstance(call_args[0][1], Signal)
-
-    def test_empty_market_data_skips(self) -> None:
-        '''Empty market data logs warning and reschedules.'''
-
-        runner = MagicMock(spec=StrategyRunner)
-
-        def empty_provider(_kline_size: int) -> pl.DataFrame:
-            return pl.DataFrame()
-
-        wired = _make_wired(interval_seconds=1)
-
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=empty_provider,
-            context_provider=_mock_context_provider,
-        )
-
-        loop.start()
-        time.sleep(1.5)
-        loop.stop()
-
-        assert not runner.dispatch_signal.called
-
-    def test_predict_error_does_not_crash_loop(self) -> None:
-        '''Exception in predict cycle is caught, loop continues.'''
-
-        runner = MagicMock(spec=StrategyRunner)
-        call_count = 0
-        dispatched_second = threading.Event()
-
-        def failing_then_ok(kline_size: int) -> pl.DataFrame:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                msg = 'transient error'
-                raise RuntimeError(msg)
-            dispatched_second.set()
-            return _mock_market_data_provider(kline_size)
-
-        wired = _make_wired(interval_seconds=1)
-
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=failing_then_ok,
-            context_provider=_mock_context_provider,
-        )
-
-        loop.start()
-        dispatched_second.wait(timeout=4)
-        loop.stop()
-
-        assert call_count >= 2
-
-    def test_stop_prevents_further_dispatch(self) -> None:
-        '''After stop, no more signals are dispatched.'''
-
-        runner = MagicMock(spec=StrategyRunner)
-        wired = _make_wired(interval_seconds=1)
-
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
-
-        loop.start()
-        loop.stop()
-
-        runner.dispatch_signal.reset_mock()
-        time.sleep(1.5)
-
-        assert not runner.dispatch_signal.called
-
-    def test_action_submit_called_with_returned_actions(self) -> None:
-        '''Actions returned from dispatch_signal are forwarded to action_submit.'''
+    def test_action_submit_called_with_returned_actions(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
 
         action = Action(
             action_type=ActionType.ENTER,
@@ -266,367 +197,397 @@ class TestPredictLoop:
             order_type=OrderType.MARKET,
             deadline=300,
         )
-
         runner = MagicMock(spec=StrategyRunner)
         runner.dispatch_signal.return_value = [action]
 
-        submitted = threading.Event()
         captured: list[tuple[list[Action], str]] = []
 
         def submitter(actions: list[Action], strategy_id: str) -> None:
             captured.append((actions, strategy_id))
-            submitted.set()
 
-        wired = _make_wired(strategy_id='strat_a', interval_seconds=1)
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
+        loop = _make_loop(
+            conduit_dir,
+            arrow_dir,
+            runner,
+            clock=_fixed_clock(now),
             action_submit=submitter,
         )
 
-        loop.start()
-        submitted.wait(timeout=3)
-        loop.stop()
+        loop.tick_once(_binding())
 
-        assert captured
-        actions_arg, strategy_id_arg = captured[0]
-        assert strategy_id_arg == 'strat_a'
-        assert actions_arg == [action]
+        assert captured == [([action], 'strat_a')]
 
-    def test_action_submit_not_called_for_empty_actions(self) -> None:
-        '''dispatch_signal returning [] does not invoke action_submit.'''
+    def test_action_submit_not_called_for_empty_actions(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
 
         runner = MagicMock(spec=StrategyRunner)
         runner.dispatch_signal.return_value = []
-
-        dispatched = threading.Event()
-
-        def track(*_args: Any, **_kwargs: Any) -> list:
-            dispatched.set()
-            return []
-
-        runner.dispatch_signal.side_effect = track
         submitter = MagicMock()
-
-        wired = _make_wired(interval_seconds=1)
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
+        loop = _make_loop(
+            conduit_dir,
+            arrow_dir,
+            runner,
+            clock=_fixed_clock(now),
             action_submit=submitter,
         )
 
-        loop.start()
-        did_dispatch = dispatched.wait(timeout=3)
-        loop.stop()
+        loop.tick_once(_binding())
 
-        assert did_dispatch is True
         assert submitter.call_count == 0
 
-    def test_action_submit_exception_does_not_kill_loop(self) -> None:
-        '''Submitter raising leaves the loop running and reschedules.'''
+    def test_stale_manifest_skips_dispatch(self, tmp_path: Path) -> None:
+        '''A manifest older than 120s yields no dispatch.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        generated_at = now - timedelta(seconds=121)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, generated_at)
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
+    def test_series_missing_from_manifest_skips_dispatch(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now, include_series=False)
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
+    def test_only_usable_reason_code_rows_used(self, tmp_path: Path) -> None:
+        '''Rows with reason_code != 0 are ignored; the latest rc==0 row
+        is chosen even when a later-ts unusable row exists.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        _write_manifest(conduit_dir, now)
+        _write_conduit_frame(
+            conduit_dir,
+            rows=[
+                {'ts': _TS, 'prediction': 1, 'probability': 0.85, 'reason_code': 0},
+                {'ts': _TS + 1, 'prediction': 0, 'probability': 0.10, 'reason_code': 3},
+            ],
+        )
+        _write_arrow_frame(arrow_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        signal = runner.dispatch_signal.call_args[0][1]
+        assert signal.get('_preds') == 1
+
+    def test_dedupe_same_ts_not_reemitted(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+        binding = _binding()
+
+        loop.tick_once(binding)
+        loop.tick_once(binding)
+
+        assert runner.dispatch_signal.call_count == 1
+
+    def test_newer_ts_reemitted_after_dedupe(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+        binding = _binding()
+
+        loop.tick_once(binding)
+
+        _write_conduit_frame(
+            conduit_dir,
+            rows=[
+                {'ts': _TS + 10, 'prediction': 0, 'probability': 0.2, 'reason_code': 0},
+            ],
+        )
+        _write_arrow_frame(arrow_dir, rows=[{'ts': _TS + 10, 'close': 71000.0}])
+
+        loop.tick_once(binding)
+
+        assert runner.dispatch_signal.call_count == 2
+
+    def test_missing_arrow_price_skips_dispatch(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        _write_manifest(conduit_dir, now)
+        _write_conduit_frame(conduit_dir)
+        _write_arrow_frame(arrow_dir, rows=[{'ts': _TS + 999, 'close': _CLOSE}])
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
+    def test_prediction_one_maps_to_enter_preds(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_args[0][1].get('_preds') == 1
+
+    def test_prediction_zero_maps_to_exit_preds(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        _write_manifest(conduit_dir, now)
+        _write_conduit_frame(
+            conduit_dir,
+            rows=[
+                {'ts': _TS, 'prediction': 0, 'probability': 0.10, 'reason_code': 0},
+            ],
+        )
+        _write_arrow_frame(arrow_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_args[0][1].get('_preds') == 0
+
+
+class TestPredictLoopCohortLogging:
+
+    def test_cohort_change_logged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now, cohort_id='cohort_a')
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+        binding = _binding()
+
+        with caplog.at_level('INFO', logger='nexus.strategy.predict_loop'):
+            loop.tick_once(binding)
+
+            _write_manifest(conduit_dir, now, cohort_id='cohort_b')
+            _write_conduit_frame(
+                conduit_dir,
+                rows=[
+                    {
+                        'ts': _TS + 5,
+                        'prediction': 1,
+                        'probability': 0.9,
+                        'reason_code': 0,
+                    },
+                ],
+            )
+            _write_arrow_frame(arrow_dir, rows=[{'ts': _TS + 5, 'close': 72000.0}])
+
+            loop.tick_once(binding)
+
+        changed = [r for r in caplog.records if r.message == 'cohort changed']
+        assert len(changed) == 1
+        assert changed[0].previous_cohort_id == 'cohort_a'
+        assert changed[0].cohort_id == 'cohort_b'
+
+    def test_cohort_does_not_gate_dispatch(self, tmp_path: Path) -> None:
+        '''A cohort change is observational only: dispatch still fires.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now, cohort_id='cohort_b')
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+        loop._last_cohort[('strat_a', _SERIES)] = 'cohort_a'
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 1
+
+
+class TestPredictLoopLogging:
+
+    def test_logs_signal_before_dispatch(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        seen_at_dispatch: list[str] = []
+
+        def capture(*_args: object, **_kwargs: object) -> list[Action]:
+            seen_at_dispatch.extend(r.message for r in caplog.records)
+            return []
+
+        runner.dispatch_signal.side_effect = capture
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        with caplog.at_level('INFO', logger='nexus.strategy.predict_loop'):
+            loop.tick_once(_binding())
+
+        produced = [r for r in caplog.records if r.message == 'signal produced']
+        assert len(produced) == 1
+        assert produced[0].strategy_id == 'strat_a'
+        assert produced[0].predictor_fn_id == f'strat_a:{_SERIES}'
+        assert isinstance(produced[0].values, dict)
+        assert 'signal produced' in seen_at_dispatch
+
+
+class TestPredictLoopTickOncePropagation:
+
+    def test_dispatch_exception_propagates(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.side_effect = RuntimeError('dispatch broke')
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        with pytest.raises(RuntimeError, match='dispatch broke'):
+            loop.tick_once(_binding())
+
+    def test_action_submit_exception_propagates(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
 
         runner = MagicMock(spec=StrategyRunner)
         runner.dispatch_signal.return_value = [
             Action(action_type=ActionType.ABORT, command_id='cmd_x'),
         ]
 
-        call_count = threading.Event()
-        calls = {'n': 0}
-
         def submitter(_actions: list[Action], _strategy_id: str) -> None:
-            calls['n'] += 1
-            if calls['n'] >= 2:
-                call_count.set()
-            raise RuntimeError('submitter blew up')
+            msg = 'submitter blew up'
+            raise RuntimeError(msg)
 
-        wired = _make_wired(interval_seconds=1)
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
+        loop = _make_loop(
+            conduit_dir,
+            arrow_dir,
+            runner,
+            clock=_fixed_clock(now),
             action_submit=submitter,
         )
 
+        with pytest.raises(RuntimeError, match='submitter blew up'):
+            loop.tick_once(_binding())
+
+    def test_raises_when_scheduler_running(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        binding = _binding(interval_seconds=3600)
+        loop = _make_loop(
+            conduit_dir, arrow_dir, runner, clock=_fixed_clock(now), binding=binding,
+        )
+
         loop.start()
-        call_count.wait(timeout=5)
+        try:
+            with pytest.raises(RuntimeError, match='scheduler loop is running'):
+                loop.tick_once(binding)
+        finally:
+            loop.stop()
+
+
+class TestPredictLoopScheduler:
+
+    def test_start_and_stop(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        binding = _binding(interval_seconds=10)
+        loop = _make_loop(
+            conduit_dir, arrow_dir, runner, clock=_fixed_clock(now), binding=binding,
+        )
+
+        loop.start()
+        assert loop.running is True
+
         loop.stop()
+        assert loop.running is False
 
-        assert calls['n'] >= 2
-
-    def test_multiple_sensors(self) -> None:
-        '''PredictLoop handles multiple sensors dispatching to different strategies.'''
+    def test_scheduler_dispatches(self, tmp_path: Path) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir, arrow_dir = _build_fixture(tmp_path, now)
 
         runner = MagicMock(spec=StrategyRunner)
         dispatched = threading.Event()
-        strategies_seen: list[str] = []
 
-        def track_dispatch(*args: Any, **_kwargs: Any) -> list:
-            strategies_seen.append(args[0])
-            if len(strategies_seen) >= 2:
-                dispatched.set()
+        def track(*_args: Any, **_kwargs: Any) -> list[Action]:
+            dispatched.set()
             return []
 
-        runner.dispatch_signal.side_effect = track_dispatch
-
-        wired_a = _make_wired(sensor_id='exp:1', strategy_id='strat_a', interval_seconds=1)
-        wired_b = _make_wired(sensor_id='exp:2', strategy_id='strat_b', interval_seconds=1)
-
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired_a, wired_b],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
+        runner.dispatch_signal.side_effect = track
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
 
         loop.start()
-        dispatched.wait(timeout=3)
-        loop.stop()
-
-        assert 'strat_a' in strategies_seen
-        assert 'strat_b' in strategies_seen
-
-
-class TestPredictInProcess:
-
-    def _task(self, experiment_dir: str) -> Any:
-        return predict_loop_module.PredictTask(
-            sensor_id='exp:1',
-            sensor=_mock_sensor(),
-            round_params={'random_weights': 0.5},
-            strategy_id='strat_a',
-            interval_seconds=60,
-            experiment_dir=experiment_dir,
-        )
-
-    def test_rebuilds_manifest_and_produces_signal(self, tmp_path: Path) -> None:
-        '''Worker reads the IPC frame, rebuilds the manifest, returns a Signal.'''
-
-        predict_loop_module._WORKER_MANIFESTS.clear()
-        predict_loop_module._WORKER_MARKET_DATA.clear()
-
-        market_data = pl.DataFrame({
-            'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
-            'close': [70500.0],
-        })
-        ipc_path = tmp_path / 'md.arrow'
-        market_data.write_ipc(ipc_path)
-
-        trainer = MagicMock()
-        trainer._manifest = _mock_limen_manifest()
-        task = self._task(str(tmp_path))
-
-        with patch.object(predict_loop_module, 'Trainer', return_value=trainer) as trainer_cls:
-            signal = predict_loop_module._predict_in_process(task, str(ipc_path))
-            predict_loop_module._predict_in_process(task, str(ipc_path))
-
-        assert isinstance(signal, Signal)
-        assert signal.predictor_fn_id == 'exp:1'
-        assert trainer_cls.call_count == 1
-        assert str(tmp_path) in predict_loop_module._WORKER_MANIFESTS
-
-        predict_loop_module._WORKER_MANIFESTS.clear()
-        predict_loop_module._WORKER_MARKET_DATA.clear()
-
-    def test_market_data_cache_is_bounded(self, tmp_path: Path) -> None:
-        '''Worker market-data cache evicts the oldest frame beyond the cap.'''
-
-        predict_loop_module._WORKER_MANIFESTS.clear()
-        predict_loop_module._WORKER_MARKET_DATA.clear()
-
-        trainer = MagicMock()
-        trainer._manifest = _mock_limen_manifest()
-        task = self._task(str(tmp_path))
-
-        cap = predict_loop_module._WORKER_MARKET_DATA_CACHE_MAX
-        paths: list[str] = []
-
-        with patch.object(predict_loop_module, 'Trainer', return_value=trainer):
-            for index in range(cap + 2):
-                frame = pl.DataFrame({
-                    'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
-                    'close': [70500.0 + index],
-                })
-                path = tmp_path / f'md_{index}.arrow'
-                frame.write_ipc(path)
-                paths.append(str(path))
-                predict_loop_module._predict_in_process(task, str(path))
-
-        assert len(predict_loop_module._WORKER_MARKET_DATA) <= cap
-        assert paths[0] not in predict_loop_module._WORKER_MARKET_DATA
-
-        predict_loop_module._WORKER_MANIFESTS.clear()
-        predict_loop_module._WORKER_MARKET_DATA.clear()
-
-
-class _BrokenExecutor:
-    '''Stand-in for ProcessPoolExecutor whose `submit` always raises.
-
-    Mirrors the `BrokenProcessPool` failure mode (a `RuntimeError`
-    subclass) without needing a real spawn pool.
-    '''
-
-    submit_calls: ClassVar[list[tuple[Any, ...]]] = []
-
-    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    def submit(self, fn: Any, *args: Any, **_kwargs: Any) -> Future:
-        _BrokenExecutor.submit_calls.append((fn, args))
-        msg = 'simulated broken pool'
-        raise RuntimeError(msg)
-
-    def shutdown(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
-
-
-class TestPredictLoopResilience:
-    '''Pin: pool-submit and IPC-write failures must not kill the scheduler.
-
-    Both failure modes mutate lock-protected state (`_in_flight`,
-    `_ipc_refs`, `_ipc_current`) before the failing external call;
-    each fix must roll back the mutation so a transient failure is
-    recoverable and a persistent failure keeps logging instead of
-    going silent.
-    '''
-
-    def test_broken_pool_submit_does_not_kill_scheduler(self) -> None:
-        '''A `submit` failure logs, rolls back `_in_flight` + `_ipc_refs`,
-        and the daemon scheduler thread keeps polling.
-        '''
-
-        _BrokenExecutor.submit_calls = []
-        wired = _make_wired(interval_seconds=1)
-        runner = MagicMock(spec=StrategyRunner)
-
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
-
-        with (
-            patch.object(predict_loop_module, 'ProcessPoolExecutor', _BrokenExecutor),
-            patch.object(
-                predict_loop_module,
-                '_predict_in_process',
-                _stub_predict_in_process,
-            ),
-        ):
-            loop.start()
-
-            for _ in range(40):
-                if _BrokenExecutor.submit_calls:
-                    break
-
-                time.sleep(0.1)
-
-            assert _BrokenExecutor.submit_calls, 'scheduler never attempted submit'
-            assert loop.running is True
-            assert loop._scheduler_thread is not None
-            assert loop._scheduler_thread.is_alive()
-            assert runner.dispatch_signal.called is False
-
-            deadline = time.monotonic() + 2.0
-
-            while (
-                any(count != 0 for count in loop._ipc_refs.values())
-                and time.monotonic() < deadline
-            ):
-                time.sleep(0.02)
-
-            assert all(count == 0 for count in loop._ipc_refs.values())
-
+        try:
+            assert dispatched.wait(timeout=3)
+        finally:
             loop.stop()
 
-    def test_broken_pool_does_not_tight_loop_after_failure(self) -> None:
-        '''After a submit failure, `_next_due[key]` is advanced by
-        `interval_seconds` so the scheduler does not re-pick the key on
-        the next ~0.25 s poll. Without the advance, a persistently
-        broken pool would retry at the ~4 submits/sec poll rate and
-        flood logs.
-        '''
+        assert runner.dispatch_signal.call_args[0][0] == 'strat_a'
 
-        _BrokenExecutor.submit_calls = []
-        wired = _make_wired(interval_seconds=1)
+    def test_read_error_in_one_tick_does_not_stop_loop(self, tmp_path: Path) -> None:
+        '''A first-tick read failure is caught; once the data appears the
+        scheduler keeps polling and eventually dispatches.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        (conduit_dir / 'serving_manifest.json').write_text('{ not valid json')
+
         runner = MagicMock(spec=StrategyRunner)
+        dispatched = threading.Event()
 
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
+        def track(*_args: Any, **_kwargs: Any) -> list[Action]:
+            dispatched.set()
+            return []
 
-        with (
-            patch.object(predict_loop_module, 'ProcessPoolExecutor', _BrokenExecutor),
-            patch.object(
-                predict_loop_module,
-                '_predict_in_process',
-                _stub_predict_in_process,
-            ),
-        ):
-            loop.start()
+        runner.dispatch_signal.side_effect = track
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
 
-            for _ in range(40):
-                if _BrokenExecutor.submit_calls:
-                    break
-
-                time.sleep(0.1)
-
-            assert _BrokenExecutor.submit_calls, 'scheduler never attempted submit'
-            first_count = len(_BrokenExecutor.submit_calls)
+        loop.start()
+        try:
             time.sleep(0.5)
-            after_count = len(_BrokenExecutor.submit_calls)
+            assert loop.running is True
+
+            _write_manifest(conduit_dir, now)
+            _write_conduit_frame(conduit_dir)
+            _write_arrow_frame(arrow_dir)
+
+            assert dispatched.wait(timeout=3)
+        finally:
             loop.stop()
-
-        assert after_count - first_count <= 1, (
-            f'expected at most 1 retry in 0.5 s with interval_seconds=1; '
-            f'got {after_count - first_count} retries '
-            f'(tight retry loop bug — `_next_due[key]` not advanced)'
-        )
-
-    def test_write_ipc_failure_rolls_back_ipc_current(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        '''An `OSError` in `write_ipc` restores the prior `_ipc_current`
-        entry and drops the phantom `_ipc_refs` entry, so the next call
-        does not return a path to a non-existent file.
-        '''
-
-        wired = _make_wired(interval_seconds=3600)
-        runner = MagicMock(spec=StrategyRunner)
-        loop = PredictLoop(
-            runner=runner,
-            wired_sensors=[wired],
-            market_data_provider=_mock_market_data_provider,
-            context_provider=_mock_context_provider,
-        )
-        loop._ipc_dir = tmp_path
-        loop._ipc_current = {}
-        loop._ipc_refs = {}
-        loop._ipc_seq = 0
-
-        market_data = pl.DataFrame({
-            'datetime': [datetime(2026, 1, 1, tzinfo=timezone.utc)],
-            'close': [70500.0],
-        })
-
-        def _failing_write(_frame: pl.DataFrame, *_args: Any, **_kwargs: Any) -> None:
-            msg = 'disk full'
-            raise OSError(msg)
-
-        monkeypatch.setattr(pl.DataFrame, 'write_ipc', _failing_write)
-
-        with pytest.raises(OSError, match='disk full'):
-            loop._write_market_data_ipc(3600, market_data)
-
-        assert 3600 not in loop._ipc_current
-        assert loop._ipc_refs == {}
