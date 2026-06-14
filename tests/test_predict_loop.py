@@ -431,6 +431,44 @@ class TestPredictLoopTick:
 
         assert runner.dispatch_signal.call_count == 0
 
+    def test_missing_conduit_frame_file_skips_dispatch(self, tmp_path: Path) -> None:
+        '''A manifest-declared series whose prediction frame file is
+        absent (mid atomic-swap) warn-skips without raising.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        _write_manifest(conduit_dir, now)
+        _write_arrow_frame(arrow_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
+    def test_missing_arrow_frame_file_skips_dispatch(self, tmp_path: Path) -> None:
+        '''A series whose OHLCV frame file is absent warn-skips without
+        raising.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        _write_manifest(conduit_dir, now)
+        _write_conduit_frame(conduit_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
     def test_prediction_one_maps_to_enter_preds(self, tmp_path: Path) -> None:
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         conduit_dir, arrow_dir = _build_fixture(tmp_path, now)

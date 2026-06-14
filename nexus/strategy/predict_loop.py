@@ -7,6 +7,16 @@ frame, joins the matching raw `close` from the OHLCV Arrow frame,
 builds a `Signal`, and dispatches it to the strategy in this same
 thread. No process pool, no Limen, no shared IPC.
 
+Shared `ts` contract: the prediction frame (`/opt/conduit/<series>/
+latest.arrow`) and the OHLCV frame (`/opt/arrow/<series>/latest.arrow`)
+are produced independently upstream (Furnace and the control plane) but
+share the `ts` column as UTC epoch nanoseconds anchored on the closed
+bar. The price join is exact equality on `ts`, so a drift in unit
+(ns/ms/s) or anchor (bar-open vs bar-close) on either producer makes the
+join match nothing and the strategy never trades — surfaced per tick by
+the diagnostic `no OHLCV close for prediction ts` warning, which carries
+the prediction `ts` and the OHLCV `ts` range.
+
 Every produced Signal is logged at INFO immediately before strategy
 dispatch so a silent HOLD path stays distinguishable from a broken
 predict path: a strategy that maps every prediction to no-action
@@ -398,10 +408,6 @@ class PredictLoop:
 
         close = self._close_for_ts(series, ts)
         if close is None:
-            _log.warning(
-                'no matching OHLCV close for prediction ts, skipping tick',
-                extra={'series': series, 'ts': ts},
-            )
             return None
 
         signal = Signal(
@@ -457,6 +463,13 @@ class PredictLoop:
         '''
 
         path = self._conduit_dir / rel_path
+        if not path.is_file():
+            _log.warning(
+                'conduit prediction frame not found, skipping tick',
+                extra={'path': str(path)},
+            )
+            return None
+
         df = pl.read_ipc(path, memory_map=True)
         usable = df.filter(pl.col('reason_code') == _USABLE_REASON_CODE)
 
@@ -466,13 +479,39 @@ class PredictLoop:
         return usable.sort('ts').tail(1).to_dicts()[0]
 
     def _close_for_ts(self, series: str, ts: int) -> float | None:
-        '''Return the OHLCV `close` matching `ts` for a series, or None.'''
+        '''Return the OHLCV `close` matching `ts` for a series, or None.
+
+        Joins the prediction `ts` against the OHLCV frame on exact
+        equality (the shared `ts` contract — see the module docstring).
+        A transiently-absent frame (mid atomic-swap) and an unmatched
+        `ts` (a `ts`-convention drift on the producing side) both
+        warn-skip; the unmatched-`ts` warning carries the prediction
+        `ts` and the OHLCV `ts` range so a drift is diagnosable from the
+        log rather than a silent never-trade.
+        '''
 
         path = self._arrow_dir / series / _LATEST_ARROW
+        if not path.is_file():
+            _log.warning(
+                'ohlcv frame not found, skipping tick',
+                extra={'series': series, 'path': str(path)},
+            )
+            return None
+
         df = pl.read_ipc(path, memory_map=True)
         matched = df.filter(pl.col('ts') == ts).select('close')
 
         if matched.is_empty():
+            ts_col = df['ts'] if 'ts' in df.columns and not df.is_empty() else None
+            _log.warning(
+                'no OHLCV close for prediction ts, skipping tick',
+                extra={
+                    'series': series,
+                    'prediction_ts': ts,
+                    'ohlcv_ts_min': ts_col.min() if ts_col is not None else None,
+                    'ohlcv_ts_max': ts_col.max() if ts_col is not None else None,
+                },
+            )
             return None
 
         return float(matched.to_series()[0])
