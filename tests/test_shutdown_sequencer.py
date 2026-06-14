@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import queue
-import tempfile
 import threading
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -23,7 +22,7 @@ from nexus.core.validator.pipeline_models import (
     ValidationAction,
     ValidationRequestContext,
 )
-from nexus.infrastructure.manifest import Manifest, SensorSpec, StrategySpec
+from nexus.infrastructure.manifest import Manifest, SignalSpec, StrategySpec
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
@@ -37,8 +36,6 @@ from nexus.strategy.runner import StrategyRunner
 
 _PLACEHOLDER_PATH = Path('/placeholder/strategy_state')
 _DEADLOCK_TIMEOUT_SECONDS = 5.0
-_EXP_DIR_HANDLE = tempfile.TemporaryDirectory()
-_EXP_DIR = Path(_EXP_DIR_HANDLE.name)
 
 
 def _make_mock_runner() -> MagicMock:
@@ -54,15 +51,10 @@ def _make_instance_state() -> InstanceState:
 
 
 def _make_strategy_spec(strategy_id: str = 'test_strategy') -> StrategySpec:
-    pfn = SensorSpec(
-        experiment_dir=_EXP_DIR,
-        permutation_ids=(1,),
-        interval_seconds=60,
-    )
     return StrategySpec(
         strategy_id=strategy_id,
         file='test.py',
-        sensors=(pfn,),
+        signal=SignalSpec(series='time_15m', interval_seconds=60),
         capital_pct=Decimal('50'),
     )
 
