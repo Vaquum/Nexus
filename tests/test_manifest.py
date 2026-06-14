@@ -10,31 +10,27 @@ import yaml
 
 from nexus.infrastructure.manifest import (
     Manifest,
-    SensorSpec,
+    SignalSpec,
     StrategySpec,
     load_manifest,
 )
 
 
-def _pfn(tmp_path: Path) -> SensorSpec:
-    exp_dir = tmp_path / 'experiment'
-    exp_dir.mkdir(exist_ok=True)
-    return SensorSpec(
-        experiment_dir=exp_dir,
-        permutation_ids=(1,),
-        interval_seconds=60,
+def _signal() -> SignalSpec:
+    return SignalSpec(
+        series='time_15m',
+        interval_seconds=900,
     )
 
 
 def _make_spec(
-    tmp_path: Path,
     strategy_id: str = 'test',
     capital_pct: Decimal = Decimal('50'),
 ) -> StrategySpec:
     return StrategySpec(
         strategy_id=strategy_id,
         file='test.py',
-        sensors=(_pfn(tmp_path),),
+        signal=_signal(),
         capital_pct=capital_pct,
     )
 
@@ -49,26 +45,20 @@ def _write_strategy_file(base: Path, rel_path: str, content: str = '') -> None:
     file_path.write_text(content or '# Strategy file\n', encoding='utf-8')
 
 
-def _yaml_sensors(tmp_path: Path) -> str:
-    '''Return YAML sensors block pointing to a real experiment dir.'''
-
-    exp_dir = tmp_path / 'experiment'
-    exp_dir.mkdir(exist_ok=True)
-    return (
-        f'    sensors:\n'
-        f'      - experiment: {exp_dir}\n'
-        f'        permutation_ids: [1]\n'
-        f'        interval_seconds: 60\n'
-    )
+_YAML_SIGNAL = (
+    '    signal:\n'
+    '      series: time_15m\n'
+    '      interval_seconds: 900\n'
+)
 
 
 class TestManifest:
 
-    def test_valid_manifest(self, tmp_path: Path) -> None:
+    def test_valid_manifest(self) -> None:
         '''Valid Manifest creates successfully.'''
 
-        spec1 = _make_spec(tmp_path, 'strategy_a', Decimal('60'))
-        spec2 = _make_spec(tmp_path, 'strategy_b', Decimal('40'))
+        spec1 = _make_spec('strategy_a', Decimal('60'))
+        spec2 = _make_spec('strategy_b', Decimal('40'))
 
         manifest = Manifest(
             account_id='test_acct',
@@ -80,20 +70,20 @@ class TestManifest:
         assert manifest.capital_pool == Decimal('10000')
         assert manifest.strategies == (spec1, spec2)
 
-    def test_manifest_is_frozen(self, tmp_path: Path) -> None:
+    def test_manifest_is_frozen(self) -> None:
         '''Manifest is immutable.'''
 
         manifest = Manifest(
             account_id='test_acct',
             allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
-            strategies=(_make_spec(tmp_path),),
+            strategies=(_make_spec(),),
         )
 
         with pytest.raises(AttributeError):
             manifest.capital_pool = Decimal('5000')  # type: ignore[misc]
 
-    def test_non_decimal_capital_pool_raises(self, tmp_path: Path) -> None:
+    def test_non_decimal_capital_pool_raises(self) -> None:
         '''Non-Decimal capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
@@ -101,10 +91,10 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=10000,  # type: ignore[arg-type]
-                strategies=(_make_spec(tmp_path),),
+                strategies=(_make_spec(),),
             )
 
-    def test_infinite_capital_pool_raises(self, tmp_path: Path) -> None:
+    def test_infinite_capital_pool_raises(self) -> None:
         '''Infinite capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
@@ -112,10 +102,10 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('inf'),
-                strategies=(_make_spec(tmp_path),),
+                strategies=(_make_spec(),),
             )
 
-    def test_nan_capital_pool_raises(self, tmp_path: Path) -> None:
+    def test_nan_capital_pool_raises(self) -> None:
         '''NaN capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be a finite Decimal'):
@@ -123,10 +113,10 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('nan'),
-                strategies=(_make_spec(tmp_path),),
+                strategies=(_make_spec(),),
             )
 
-    def test_zero_capital_pool_raises(self, tmp_path: Path) -> None:
+    def test_zero_capital_pool_raises(self) -> None:
         '''Zero capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be positive'):
@@ -134,10 +124,10 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('0'),
-                strategies=(_make_spec(tmp_path),),
+                strategies=(_make_spec(),),
             )
 
-    def test_negative_capital_pool_raises(self, tmp_path: Path) -> None:
+    def test_negative_capital_pool_raises(self) -> None:
         '''Negative capital_pool raises ValueError.'''
 
         with pytest.raises(ValueError, match='capital_pool must be positive'):
@@ -145,7 +135,7 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('-1000'),
-                strategies=(_make_spec(tmp_path),),
+                strategies=(_make_spec(),),
             )
 
     def test_empty_strategies_raises(self) -> None:
@@ -159,7 +149,7 @@ class TestManifest:
                 strategies=(),
             )
 
-    def test_strategies_not_tuple_raises(self, tmp_path: Path) -> None:
+    def test_strategies_not_tuple_raises(self) -> None:
         '''Non-tuple strategies raises ValueError.'''
 
         with pytest.raises(ValueError, match='strategies must be a non-empty tuple'):
@@ -167,10 +157,10 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
-                strategies=[_make_spec(tmp_path)],  # type: ignore[arg-type]
+                strategies=[_make_spec()],  # type: ignore[arg-type]
             )
 
-    def test_strategies_with_non_spec_raises(self, tmp_path: Path) -> None:
+    def test_strategies_with_non_spec_raises(self) -> None:
         '''Strategies containing non-StrategySpec raises ValueError.'''
 
         with pytest.raises(ValueError, match='strategies must contain StrategySpec'):
@@ -178,10 +168,10 @@ class TestManifest:
                 account_id='test_acct',
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
-                strategies=(_make_spec(tmp_path), 'not a spec'),  # type: ignore[arg-type]
+                strategies=(_make_spec(), 'not a spec'),  # type: ignore[arg-type]
             )
 
-    def test_duplicate_strategy_id_raises(self, tmp_path: Path) -> None:
+    def test_duplicate_strategy_id_raises(self) -> None:
         '''Duplicate strategy_id raises ValueError.'''
 
         with pytest.raises(ValueError, match='duplicate strategy_id'):
@@ -190,12 +180,12 @@ class TestManifest:
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=(
-                    _make_spec(tmp_path, 'same_id', Decimal('50')),
-                    _make_spec(tmp_path, 'same_id', Decimal('50')),
+                    _make_spec('same_id', Decimal('50')),
+                    _make_spec('same_id', Decimal('50')),
                 ),
             )
 
-    def test_capital_pct_sum_over_100_raises(self, tmp_path: Path) -> None:
+    def test_capital_pct_sum_over_100_raises(self) -> None:
         '''capital_pct sum > 100 raises ValueError.'''
 
         with pytest.raises(ValueError, match=r'capital_pct sum .* exceeds 100'):
@@ -204,12 +194,12 @@ class TestManifest:
                 allocated_capital=Decimal('100000'),
                 capital_pool=Decimal('10000'),
                 strategies=(
-                    _make_spec(tmp_path, 'a', Decimal('60')),
-                    _make_spec(tmp_path, 'b', Decimal('50')),
+                    _make_spec('a', Decimal('60')),
+                    _make_spec('b', Decimal('50')),
                 ),
             )
 
-    def test_capital_pct_sum_exactly_100_allowed(self, tmp_path: Path) -> None:
+    def test_capital_pct_sum_exactly_100_allowed(self) -> None:
         '''capital_pct sum of exactly 100 is allowed.'''
 
         manifest = Manifest(
@@ -217,26 +207,26 @@ class TestManifest:
             allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(
-                _make_spec(tmp_path, 'a', Decimal('60')),
-                _make_spec(tmp_path, 'b', Decimal('40')),
+                _make_spec('a', Decimal('60')),
+                _make_spec('b', Decimal('40')),
             ),
         )
 
         assert manifest.capital_pool == Decimal('10000')
 
-    def test_account_id_is_normalized(self, tmp_path: Path) -> None:
+    def test_account_id_is_normalized(self) -> None:
         '''account_id is stripped of surrounding whitespace at construction.'''
 
         manifest = Manifest(
             account_id='  test_acct  ',
             allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
-            strategies=(_make_spec(tmp_path),),
+            strategies=(_make_spec(),),
         )
 
         assert manifest.account_id == 'test_acct'
 
-    def test_capital_pct_sum_under_100_allowed(self, tmp_path: Path) -> None:
+    def test_capital_pct_sum_under_100_allowed(self) -> None:
         '''capital_pct sum under 100 is allowed.'''
 
         manifest = Manifest(
@@ -244,21 +234,21 @@ class TestManifest:
             allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
             strategies=(
-                _make_spec(tmp_path, 'a', Decimal('30')),
-                _make_spec(tmp_path, 'b', Decimal('20')),
+                _make_spec('a', Decimal('30')),
+                _make_spec('b', Decimal('20')),
             ),
         )
 
         assert manifest.capital_pool == Decimal('10000')
 
-    def test_single_strategy_allowed(self, tmp_path: Path) -> None:
+    def test_single_strategy_allowed(self) -> None:
         '''Single strategy in manifest is allowed.'''
 
         manifest = Manifest(
             account_id='test_acct',
             allocated_capital=Decimal('100000'),
             capital_pool=Decimal('10000'),
-            strategies=(_make_spec(tmp_path, 'only_one', Decimal('100')),),
+            strategies=(_make_spec('only_one', Decimal('100')),),
         )
 
         assert len(manifest.strategies) == 1
@@ -270,32 +260,28 @@ class TestLoadManifest:
         '''Valid YAML manifest loads successfully.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_strategy_file(tmp_path, 'strategies/momentum.py')
         _write_strategy_file(tmp_path, 'strategies/mean_rev.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: momentum\n'
-            f'    file: strategies/momentum.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 60\n'
-            f'  - id: mean_rev\n'
-            f'    file: strategies/mean_rev.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [2]\n'
-            f'        interval_seconds: 300\n'
-            f'    capital_pct: 40\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: momentum\n'
+            '    file: strategies/momentum.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 60\n'
+            '  - id: mean_rev\n'
+            '    file: strategies/mean_rev.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 40\n',
         )
 
         manifest = load_manifest(path)
@@ -304,8 +290,8 @@ class TestLoadManifest:
         assert len(manifest.strategies) == 2
         assert manifest.strategies[0].strategy_id == 'momentum'
         assert manifest.strategies[1].strategy_id == 'mean_rev'
-        assert manifest.strategies[0].sensors[0].permutation_ids == (1,)
-        assert manifest.strategies[0].sensors[0].interval_seconds == 60
+        assert manifest.strategies[0].signal.series == 'time_15m'
+        assert manifest.strategies[0].signal.interval_seconds == 900
 
     def test_file_not_found_raises(self) -> None:
         '''Missing manifest file raises FileNotFoundError.'''
@@ -317,22 +303,19 @@ class TestLoadManifest:
         '''capital_pool > allocated_capital raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 15000\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 15000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='exceeds allocated_capital'):
@@ -404,21 +387,18 @@ class TestLoadManifest:
         '''Missing capital_pool raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='missing required field: capital_pool'):
@@ -457,21 +437,18 @@ class TestLoadManifest:
         '''Strategy missing id raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='missing required field: id'):
@@ -481,28 +458,25 @@ class TestLoadManifest:
         '''Strategy missing file raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='missing required field: file'):
             load_manifest(path)
 
-    def test_strategy_missing_sensors_raises(self, tmp_path: Path) -> None:
-        '''Strategy missing sensors raises ValueError.'''
+    def test_strategy_missing_signal_raises(self, tmp_path: Path) -> None:
+        '''Strategy missing signal raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
 
@@ -517,28 +491,67 @@ class TestLoadManifest:
             '    capital_pct: 100\n',
         )
 
-        with pytest.raises(ValueError, match='missing or empty sensors'):
+        with pytest.raises(ValueError, match='missing or invalid signal mapping'):
+            load_manifest(path)
+
+    def test_strategy_signal_missing_series_raises(self, tmp_path: Path) -> None:
+        '''Strategy signal missing series raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
+        )
+
+        with pytest.raises(ValueError, match='signal missing required field: series'):
+            load_manifest(path)
+
+    def test_strategy_signal_missing_interval_raises(self, tmp_path: Path) -> None:
+        '''Strategy signal missing interval_seconds raises ValueError.'''
+
+        path = tmp_path / 'manifest.yaml'
+
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '    capital_pct: 100\n',
+        )
+
+        with pytest.raises(ValueError, match='signal missing required field: interval_seconds'):
             load_manifest(path)
 
     def test_strategy_missing_capital_pct_raises(self, tmp_path: Path) -> None:
         '''Strategy missing capital_pct raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n',
         )
 
         with pytest.raises(ValueError, match='missing required field: capital_pct'):
@@ -566,29 +579,25 @@ class TestLoadManifest:
         '''Duplicate strategy_id raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: same\n'
-            f'    file: test1.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 50\n'
-            f'  - id: same\n'
-            f'    file: test2.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [2]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 50\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: same\n'
+            '    file: test1.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 50\n'
+            '  - id: same\n'
+            '    file: test2.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 50\n',
         )
 
         with pytest.raises(ValueError, match='duplicate strategy_id'):
@@ -598,31 +607,27 @@ class TestLoadManifest:
         '''capital_pct sum > 100 raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'a.py')
         _write_strategy_file(tmp_path, 'b.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: a\n'
-            f'    file: a.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 60\n'
-            f'  - id: b\n'
-            f'    file: b.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [2]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 50\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: a\n'
+            '    file: a.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 60\n'
+            '  - id: b\n'
+            '    file: b.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 50\n',
         )
 
         with pytest.raises(ValueError, match='exceeds 100'):
@@ -632,22 +637,19 @@ class TestLoadManifest:
         '''Missing strategy .py file raises ValueError with path.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: missing_file\n'
-            f'    file: nonexistent/strategy.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: missing_file\n'
+            '    file: nonexistent/strategy.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match=r"file not found.*nonexistent/strategy\.py"):
@@ -657,25 +659,22 @@ class TestLoadManifest:
         '''Invalid Python syntax in strategy file raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         strategy_file = tmp_path / 'bad_syntax.py'
         strategy_file.write_text('def broken(\n')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: bad_syntax\n'
-            f'    file: bad_syntax.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: bad_syntax\n'
+            '    file: bad_syntax.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match=r'syntax error.*bad_syntax\.py'):
@@ -685,23 +684,20 @@ class TestLoadManifest:
         '''Non-numeric capital_pool raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'test.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: not_a_number\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: not_a_number\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='capital_pool is not a valid number'):
@@ -711,23 +707,20 @@ class TestLoadManifest:
         '''Non-numeric capital_pct raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'test.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: test\n'
-            f'    file: test.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: invalid\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: test\n'
+            '    file: test.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: invalid\n',
         )
 
         with pytest.raises(ValueError, match='capital_pct is not a valid number'):
@@ -737,22 +730,19 @@ class TestLoadManifest:
         '''Absolute strategy file path raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: absolute\n'
-            f'    file: /etc/passwd\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: absolute\n'
+            '    file: /etc/passwd\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='file must be relative'):
@@ -762,22 +752,19 @@ class TestLoadManifest:
         '''Strategy file path escaping base raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: escape\n'
-            f'    file: ../../../etc/passwd\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: escape\n'
+            '    file: ../../../etc/passwd\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='escapes base path'):
@@ -787,23 +774,20 @@ class TestLoadManifest:
         '''Directory path instead of file raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         (tmp_path / 'a_directory').mkdir()
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: dir_not_file\n'
-            f'    file: a_directory\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: dir_not_file\n'
+            '    file: a_directory\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         with pytest.raises(ValueError, match='file not found'):
@@ -816,28 +800,25 @@ class TestLoadManifestTimers:
         '''Manifest with valid timers parses correctly.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'strat.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: strat1\n'
-            f'    file: strat.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n'
-            f'    timers:\n'
-            f'      - id: trailing_stop\n'
-            f'        interval_seconds: 30\n'
-            f'      - id: position_review\n'
-            f'        interval_seconds: 300\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: strat1\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n'
+            '    timers:\n'
+            '      - id: trailing_stop\n'
+            '        interval_seconds: 30\n'
+            '      - id: position_review\n'
+            '        interval_seconds: 300\n',
         )
 
         manifest = load_manifest(path)
@@ -850,23 +831,20 @@ class TestLoadManifestTimers:
         '''Manifest without timers field defaults to empty tuple.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'strat.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: strat1\n'
-            f'    file: strat.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: strat1\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
         )
 
         manifest = load_manifest(path)
@@ -877,25 +855,22 @@ class TestLoadManifestTimers:
         '''Timer missing id raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'strat.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: strat1\n'
-            f'    file: strat.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n'
-            f'    timers:\n'
-            f'      - interval_seconds: 30\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: strat1\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n'
+            '    timers:\n'
+            '      - interval_seconds: 30\n',
         )
 
         with pytest.raises(ValueError, match='timer missing required field: id'):
@@ -905,26 +880,23 @@ class TestLoadManifestTimers:
         '''Timer with bool interval_seconds raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'strat.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: strat1\n'
-            f'    file: strat.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n'
-            f'    timers:\n'
-            f'      - id: check\n'
-            f'        interval_seconds: true\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: strat1\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n'
+            '    timers:\n'
+            '      - id: check\n'
+            '        interval_seconds: true\n',
         )
 
         with pytest.raises(ValueError, match='interval_seconds must be an int'):
@@ -934,28 +906,25 @@ class TestLoadManifestTimers:
         '''Duplicate timer_id raises ValueError.'''
 
         path = tmp_path / 'manifest.yaml'
-        exp_dir = tmp_path / 'experiment'
-        exp_dir.mkdir()
         _write_strategy_file(tmp_path, 'strat.py')
 
         _write_yaml(
             path,
-            f'account_id: test_acct\n'
-            f'allocated_capital: 10000\n'
-            f'capital_pool: 10000\n'
-            f'strategies:\n'
-            f'  - id: strat1\n'
-            f'    file: strat.py\n'
-            f'    sensors:\n'
-            f'      - experiment: {exp_dir}\n'
-            f'        permutation_ids: [1]\n'
-            f'        interval_seconds: 60\n'
-            f'    capital_pct: 100\n'
-            f'    timers:\n'
-            f'      - id: check\n'
-            f'        interval_seconds: 30\n'
-            f'      - id: check\n'
-            f'        interval_seconds: 60\n',
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: strat1\n'
+            '    file: strat.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n'
+            '    timers:\n'
+            '      - id: check\n'
+            '        interval_seconds: 30\n'
+            '      - id: check\n'
+            '        interval_seconds: 60\n',
         )
 
         with pytest.raises(ValueError, match='duplicate timer_id'):
