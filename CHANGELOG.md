@@ -782,3 +782,22 @@
 
 - Add [`StateStore.attach_snapshot_locks`](nexus/infrastructure/state_store.py): a one-shot setter that attaches the `StateSnapshotLocks` bundle after construction, so `append_mutation` / `checkpoint` acquire it around `serialize_state` exactly as if it had been passed to `__init__`. Behaviorally identical to construction-time injection because `_state_read_guard` reads the bundle per call; the caller attaches after recovery and before any concurrent mutator starts. Raises `RuntimeError` on a second attach (a re-attach would silently swap the locks live mutators rely on) and `TypeError` on a non-`StateSnapshotLocks` argument (a `None` would leave serialization silently unguarded)
 - Add 4 tests to [`tests/test_state_store.py::TestStateSnapshotLocks`](tests/test_state_store.py): a late `attach_snapshot_locks` engages the lock guard on the next `append_mutation` / `checkpoint` (and not before); a second attach raises `RuntimeError`; a non-bundle argument raises `TypeError`; a second attach with a non-bundle argument still raises `RuntimeError` (the already-attached guard is checked before the type check)
+
+## v0.63.0 on 15th of June, 2026
+
+### BREAKING
+
+- Replace the in-process Limen sensor path with Furnace Conduit prediction consumption. The per-strategy manifest block `sensors: [{experiment, permutation_ids, interval_seconds}]` becomes a single `signal: {series, interval_seconds, stale_policy, name?}` binding to a Conduit prediction series; [`SensorSpec`](nexus/infrastructure/manifest.py) is replaced by [`SignalSpec`](nexus/infrastructure/manifest.py) and `StrategySpec.sensors` by `StrategySpec.signal`. [`WiredSensor`](nexus/startup/sequencer.py) is replaced by [`SignalBinding`](nexus/startup/sequencer.py) and `StartupSequencer.wired_sensors` by `StartupSequencer.signal_bindings`. [`PredictLoop`](nexus/strategy/predict_loop.py) drops the `market_data_provider` / `wired_sensors` constructor parameters in favour of `signal_bindings` plus `conduit_dir` / `arrow_dir`. Downstream launchers must update the manifest schema and the `PredictLoop` wiring and mount the `furnace_conduit` (`/opt/conduit`) and control-plane Arrow (`/opt/arrow`) volumes read-only
+
+### NOTE
+
+- Removes boot-time sensor reconstruction entirely (no `Trainer.train()` at startup), eliminating the long blind-boot window and the cross-version metric-drift `ReconstructionError` that inline reconstruction produced. Predictions are now read from Furnace's serving manifest and per-series prediction Arrow frames — the producer applies the model; consumers need only `polars`
+
+### Add
+
+- Add [`SignalSpec`](nexus/infrastructure/manifest.py) (`series`, `interval_seconds`, `stale_policy='skip'`, `name`) and [`SignalBinding`](nexus/startup/sequencer.py) (`strategy_id`, `series`, `interval_seconds`, `name`); [`StartupSequencer`](nexus/startup/sequencer.py) builds one `SignalBinding` per strategy directly from the manifest with no filesystem, `Trainer`, or sensor cache
+- Rewrite [`PredictLoop`](nexus/strategy/predict_loop.py) as a single-process Conduit poller: one daemon thread polls each binding on `interval_seconds`, re-reads `serving_manifest.json` (skips the tick when `generated_at` is older than 120s or the series is absent), takes the greatest-`ts` `reason_code == 0` row from `/opt/conduit/<series>/latest.arrow`, dedupes by `(strategy_id, series, ts)`, logs the active cohort and emits a distinct change event when `cohort_id` changes (never gating), joins the matching `close` from `/opt/arrow/<series>/latest.arrow` (skips when absent), and dispatches `Signal{_preds, _probs, close}`; a failed tick is logged and the thread continues
+
+### Remove
+
+- Remove the `vaquum_limen` dependency and the runtime Limen path: `WiredSensor` / `SensorSpec`, [`nexus.strategy.signal_producer`](nexus/strategy/signal_producer.py), [`nexus.startup.sensor_cache`](nexus/startup/sensor_cache.py), [`nexus.startup.warm_cache`](nexus/startup/warm_cache.py), the `PredictLoop` `ProcessPoolExecutor` + market-data IPC, and the sensor disk cache. Add `polars` and `numpy` as direct dependencies (previously transitive through `vaquum_limen`)
