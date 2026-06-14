@@ -369,13 +369,29 @@ class PredictLoop:
             )
             return None
 
-        row = self._latest_usable_row(series)
+        rel_path = entry.get('path')
+        if not isinstance(rel_path, str) or not rel_path:
+            _log.warning(
+                'serving manifest entry missing path, skipping tick',
+                extra={'series': series},
+            )
+            return None
+
+        row = self._latest_usable_row(rel_path)
         if row is None:
             return None
 
         ts = int(row['ts'])
         key = (binding.strategy_id, series)
         if ts <= self._last_ts.get(key, -1):
+            return None
+
+        prediction = int(row['prediction'])
+        if prediction not in (0, 1):
+            _log.warning(
+                'non-binary prediction, skipping tick',
+                extra={'series': series, 'ts': ts, 'prediction': prediction},
+            )
             return None
 
         self._log_cohort(key, series, entry)
@@ -391,7 +407,7 @@ class PredictLoop:
         signal = Signal(
             predictor_fn_id=f'{binding.strategy_id}:{series}',
             values={
-                '_preds': int(row['prediction']),
+                '_preds': prediction,
                 '_probs': float(row['probability']),
                 'close': float(close),
             },
@@ -425,20 +441,22 @@ class PredictLoop:
             _log.warning('serving manifest missing generated_at')
             return None
 
-        parsed = datetime.fromisoformat(raw)
+        normalized = f'{raw[:-1]}+00:00' if raw.endswith('Z') else raw
+        parsed = datetime.fromisoformat(normalized)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
 
         return parsed.astimezone(timezone.utc)
 
-    def _latest_usable_row(self, series: str) -> dict[str, Any] | None:
+    def _latest_usable_row(self, rel_path: str) -> dict[str, Any] | None:
         '''Return the max-ts usable prediction row for a series, or None.
 
+        Reads the manifest-declared `rel_path` under the conduit mount.
         Rows with a non-zero `reason_code` are dropped; the surviving
         row with the greatest `ts` is returned.
         '''
 
-        path = self._conduit_dir / series / _LATEST_ARROW
+        path = self._conduit_dir / rel_path
         df = pl.read_ipc(path, memory_map=True)
         usable = df.filter(pl.col('reason_code') == _USABLE_REASON_CODE)
 

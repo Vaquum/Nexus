@@ -261,6 +261,94 @@ class TestPredictLoopTick:
 
         assert runner.dispatch_signal.call_count == 0
 
+    def test_non_binary_prediction_skips_dispatch(self, tmp_path: Path) -> None:
+        '''A prediction outside {0, 1} is rejected without dispatch.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        _write_manifest(conduit_dir, now)
+        _write_conduit_frame(
+            conduit_dir,
+            rows=[
+                {'ts': _TS, 'prediction': 2, 'probability': 0.85, 'reason_code': 0},
+            ],
+        )
+        _write_arrow_frame(arrow_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
+    def test_z_suffixed_generated_at_is_parsed(self, tmp_path: Path) -> None:
+        '''A `Z`-suffixed manifest timestamp parses as UTC and dispatches.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        manifest = {
+            'version': 1,
+            'generated_at': '2026-01-01T00:00:00Z',
+            'series': {
+                _SERIES: {
+                    'cohort_id': 'cohort_a',
+                    'name': 'alpha',
+                    'path': f'{_SERIES}/latest.arrow',
+                    'rows': 1,
+                    'max_ts': _TS,
+                },
+            },
+        }
+        (conduit_dir / 'serving_manifest.json').write_text(json.dumps(manifest))
+        _write_conduit_frame(conduit_dir)
+        _write_arrow_frame(arrow_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        runner.dispatch_signal.return_value = []
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 1
+
+    def test_manifest_entry_missing_path_skips_dispatch(self, tmp_path: Path) -> None:
+        '''A manifest series entry without `path` yields no dispatch.'''
+
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conduit_dir = tmp_path / 'conduit'
+        arrow_dir = tmp_path / 'arrow'
+        conduit_dir.mkdir()
+        arrow_dir.mkdir()
+        manifest = {
+            'version': 1,
+            'generated_at': now.isoformat(),
+            'series': {
+                _SERIES: {
+                    'cohort_id': 'cohort_a',
+                    'name': 'alpha',
+                    'rows': 1,
+                    'max_ts': _TS,
+                },
+            },
+        }
+        (conduit_dir / 'serving_manifest.json').write_text(json.dumps(manifest))
+        _write_conduit_frame(conduit_dir)
+        _write_arrow_frame(arrow_dir)
+
+        runner = MagicMock(spec=StrategyRunner)
+        loop = _make_loop(conduit_dir, arrow_dir, runner, clock=_fixed_clock(now))
+
+        loop.tick_once(_binding())
+
+        assert runner.dispatch_signal.call_count == 0
+
     def test_only_usable_reason_code_rows_used(self, tmp_path: Path) -> None:
         '''Rows with reason_code != 0 are ignored; the latest rc==0 row
         is chosen even when a later-ts unusable row exists.'''
