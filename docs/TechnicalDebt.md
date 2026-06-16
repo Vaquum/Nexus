@@ -53,48 +53,15 @@ Several lifecycle methods return `False` for failure paths (for example, missing
 
 ---
 
-## TD-004: All timestamps must be UTC
-
-**Origin**: 7.3 (event dispatch types)
-**Severity**: High
-**Modules**:
-- `nexus/strategy/signal.py`
-- `nexus/infrastructure/praxis_connector/trade_outcome.py`
-- `nexus/infrastructure/strategy_event.py`
-- `nexus/core/capital_controller/reservation.py`
-- `nexus/core/capital_controller/tracked_order.py`
-- `nexus/infrastructure/praxis_connector/trade_command.py`
-
-Current validation checks for tz-awareness (`tzinfo is not None`) but does not enforce UTC specifically. A timestamp with `tzinfo=+05:00` passes validation but violates the UTC-only convention.
-
-**When to fix**: ASAP
-**Migration**: Replace tz-awareness checks with explicit UTC checks (`timestamp.tzinfo == timezone.utc`).
+## TD-004: All timestamps must be UTC — RESOLVED
 
 ---
 
-## TD-005: StartupSequencer._register_with_trading is a stub
-
-**Origin**: 9.1.3 (external integration stubs)
-**Severity**: High (no Trading sub-system registration)
-**Module**: `nexus/startup/sequencer.py`
-
-`_register_with_trading()` logs a warning and does nothing. The Manager instance does not register with the Trading sub-system (Praxis), meaning Praxis has no knowledge of active Manager instances.
-
-**When to fix**: When Praxis Connector is built.
-**Migration**: Implement actual registration via Praxis Connector API. Remove this entry when done.
+## TD-005: StartupSequencer._register_with_trading is a stub — RESOLVED
 
 ---
 
-## TD-006: StartupSequencer._reconcile_capital is a stub
-
-**Origin**: 9.1.3 (external integration stubs)
-**Severity**: High (no capital reconciliation)
-**Module**: `nexus/startup/sequencer.py`
-
-`_reconcile_capital()` logs a warning and does nothing. Capital state is not reconciled against Trading sub-system positions on startup, meaning Manager may have stale or incorrect capital/position data.
-
-**When to fix**: When Reconciler is built.
-**Migration**: Implement actual reconciliation via Reconciler. Remove this entry when done.
+## TD-006: StartupSequencer._reconcile_capital is a stub — RESOLVED
 
 ---
 
@@ -104,29 +71,11 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-010: StartupSequencer._register_timers is a stub
-
-**Origin**: 9.1.6 (runtime setup stubs)
-**Severity**: Medium (no timer callbacks)
-**Module**: `nexus/startup/sequencer.py`
-
-`_register_timers()` logs a warning and does nothing. Strategy timers are not registered, meaning on_timer callbacks will not fire.
-
-**When to fix**: When timer system is built.
-**Migration**: Implement timer registration. Remove this entry when done.
+## TD-010: StartupSequencer._register_timers is a stub — RESOLVED
 
 ---
 
-## TD-011: StartupSequencer._determine_mode always sets ACTIVE
-
-**Origin**: 9.1.7 (startup dispatch)
-**Severity**: Medium (no health-based mode selection)
-**Module**: `nexus/startup/sequencer.py`
-
-`_determine_mode()` always sets ACTIVE without checking health. Should set REDUCE_ONLY if health degraded, HALTED if critical.
-
-**When to fix**: When health monitoring is built.
-**Migration**: Implement health check and mode selection logic. Remove this entry when done.
+## TD-011: StartupSequencer._determine_mode always sets ACTIVE — RESOLVED
 
 ---
 
@@ -143,16 +92,7 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-013: ShutdownSequencer._stop_signals is a stub
-
-**Origin**: 9.2.2 (shutdown sequence)
-**Severity**: High (signals continue during shutdown)
-**Module**: `nexus/startup/shutdown_sequencer.py`
-
-~~`_stop_signals()` logs a warning and does nothing.~~ RESOLVED
-
-**Status**: Implemented in v0.25.0 (X.1.2.5). `_stop_signals()` calls `PredictLoop.stop()` to cancel all sensor timers before shutdown proceeds.
-**Migration**: Implement signal unsubscription. Remove this entry when done.
+## TD-013: ShutdownSequencer._stop_signals is a stub — RESOLVED
 
 ---
 
@@ -169,67 +109,19 @@ Current validation checks for tz-awareness (`tzinfo is not None`) but does not e
 
 ---
 
-## TD-015: ShutdownSequencer._submit_actions lacks Validator/Connector
-
-**Origin**: 9.2.4 (shutdown sequence)
-**Severity**: High (shutdown EXIT actions not submitted)
-**Module**: `nexus/startup/shutdown_sequencer.py`
-
-`_submit_actions()` filters actions to EXIT/ABORT but cannot validate or submit them. No ValidationPipeline or OutboundConnector is wired in. EXIT actions from on_shutdown are logged but not executed.
-
-**When to fix**: When Action dataclass has full fields (TD-023) and shutdown integration is built.
-**Migration**: Add validator and connector parameters to ShutdownSequencer. Validate filtered actions through pipeline, submit valid ones via connector. Remove this entry when done.
+## TD-015: ShutdownSequencer._submit_actions lacks Validator/Connector — RESOLVED
 
 ---
 
-## TD-016: _wait_terminal lacks ABORT escalation
-
-**Origin**: 9.2.5 (shutdown sequence), updated X.1.4.2
-**Severity**: Medium (timeout logs warning but does not force-close)
-**Module**: `nexus/startup/shutdown_sequencer.py`
-
-`_wait_terminal()` now polls PraxisInbound for terminal outcomes with a configurable timeout. However, when timeout expires with commands still pending, it only logs a warning. The RFC specifies ABORT escalation: remaining in-flight commands should be force-aborted via PraxisOutbound, then wait again with a shorter timeout. This requires Action fields (TD-023) to construct ABORT TradeCommands.
-
-**When to fix**: When TD-023 (Action fields) is resolved.
-**Migration**: On timeout, submit ABORT for each pending command via PraxisOutbound, then re-enter wait loop with shorter deadline.
+## TD-016: _wait_terminal lacks ABORT escalation — RESOLVED
 
 ---
 
-## TD-017: StrategySpec allows whitespace-padded strategy_id
-
-**Origin**: 9.2 review (manifest validation gap)
-**Severity**: Medium (potential collision after normalization)
-**Module**: `nexus/infrastructure/manifest.py`
-
-`StrategySpec.__post_init__` validates that `strategy_id.strip()` is non-empty but does not normalize or reject surrounding whitespace. This permits entries like `'s1'` and `' s1 '` to both pass validation as distinct strategies. Downstream code (StartupSequencer, ShutdownSequencer, StrategyRunner) uses `.strip()` on lookup, causing these entries to collide silently — actions and state get attributed to the wrong strategy.
-
-**When to fix**: Before multi-strategy deployments.
-**Migration**: Tighten `StrategySpec.__post_init__` to either (a) strip-and-store the normalized value, or (b) reject strategy_id with leading/trailing whitespace. Validate uniqueness after normalization. Remove this entry when done.
+## TD-017: StrategySpec allows whitespace-padded strategy_id — RESOLVED
 
 ---
 
-## TD-018: Performance bottlenecks in O(N) Python loops and Decimal arithmetic
-
-**Origin**: 10.1 (performance audit)
-**Severity**: Medium (scaling risk)
-**Modules**:
-- `nexus/infrastructure/loss_derivation.py`
-- `nexus/infrastructure/state_store.py`
-- `nexus/infrastructure/wal.py`
-- `nexus/core/validator/intake_stage.py`
-- `nexus/core/capital_controller/capital_controller.py`
-
-Several hot paths and recovery routines use linear O(N) scans and manual dictionary cleanups in pure Python, which will bottleneck as event volume and strategy counts scale. Specifically:
-- `derive_rolling_losses` performs iterative `Decimal` arithmetic over all events in the WAL.
-- `WriteAheadLog.read_all` (called by `StateStore.recover`) performs sequential record-by-record reads over the WAL file.
-- `make_duplicate_order_hook` and `_purge_expired` perform full dictionary scans on every call to find stale entries.
-
-**When to fix**: Before high-frequency trading (HFT) or large-scale multi-strategy deployments.
-**Migration**:
-- ~~Replace O(N) dictionary/list scans~~ RESOLVED in v0.26.0 (X.2.3.1) — `_purge_expired` uses heapq, `make_duplicate_order_hook` uses deque.
-- `derive_rolling_losses` Decimal arithmetic is already O(n) single-pass with early exits. Float aggregation rejected — RFC requires Decimal precision for financial calculations. No further optimization needed unless event volume exceeds 100k per recovery.
-- `WriteAheadLog.read_all` reads sequentially with length-prefixed records — no skip-ahead possible without reading headers. Memory-mapping doesn't help for variable-length records. Marginal optimization; real fix is incremental updates (below) that avoid full WAL reads.
-- ~~Incremental rolling loss updates~~ RESOLVED by TD-002 (X.1.1.4) — snapshot preserves rolling losses, `truncate_keeping_events` retains post-checkpoint events only, recovery re-derives from delta events not full WAL.
+## TD-018: Performance bottlenecks in O(N) Python loops and Decimal arithmetic — RESOLVED
 
 ---
 
@@ -289,16 +181,7 @@ When the manifest changes experiment directories or permutation IDs, Sensors sho
 
 ---
 
-## TD-023: Action dataclass lacks trade fields
-
-**Origin**: MMVP-X.1 command flow (X.1.3.3)
-**Severity**: High (strategies cannot express tradeable decisions)
-**Module**: `nexus/strategy/action.py`
-
-`Action` only has `action_type` (ENTER, EXIT, MODIFY, ABORT). The RFC specifies additional fields required for trade execution: `direction` (BUY/SELL), `size` (base asset quantity), `execution_mode` (SingleShot, Bracket, TWAP, etc.), `order_type` (Market, Limit, etc.), `execution_params` (mode-specific), `deadline` (timeout seconds), `trade_id` (for EXIT/MODIFY/ABORT), `maker_preference`, `reference_price`. Without these fields, the Action → ValidationPipeline → TradeCommand → Praxis submission chain cannot function. The shutdown action submission (TD-015) and the live strategy action flow both depend on this.
-
-**When to fix**: Before end-to-end strategy → trade execution.
-**Migration**: Add RFC-specified fields to Action dataclass. Update ValidationPipeline to validate the new fields. Update `translate_to_trade_command` to map from the enriched Action.
+## TD-023: Action dataclass lacks trade fields — RESOLVED
 
 ---
 
