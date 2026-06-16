@@ -814,3 +814,15 @@
 
 - Stop boot reconciliation from silently deleting a Nexus position absent from the Praxis snapshot. `_reconcile_capital` previously evicted such positions ("Praxis truth wins") and checkpointed the deletion, so a restart could discard a live position and orphan the venue holding. It now preserves the position and fails closed (raises [`StartupError`](nexus/startup/error.py)) so the divergence is investigated rather than resolved by data loss. Pairs with the Praxis fix that stops entry fills from emitting `TradeClosed` (which made Praxis under-report open positions on replay)
 - Match Praxis positions on `pos.trade_id` rather than unpacking the snapshot tuple key in `_reconcile_capital`. Praxis keys positions `(trade_id, account_id)` but reconcile read element `[1]` (the account_id) as the trade_id, so every Praxis position mis-bucketed and never matched the Nexus side
+
+## v0.65.0 on 16th of June, 2026
+
+### Add
+
+- Add `test_decode_capital_state_snaps_subulp_negative_residue` and `test_decode_capital_state_rejects_meaningful_negative` to [`tests/test_wal_codec.py`](tests/test_wal_codec.py)
+- Add TD-096 recording the structural follow-up (collapse the two-step terminal residual release in `order_fill` into one exact decrement)
+
+### Fix
+
+- Snap sub-ULP Decimal residues in `CapitalController` capital aggregates to zero so a restart cannot brick on recovery. After a fee-bearing terminal fill, the reserve/release arithmetic (proportional-fee division in `TrackedOrder.remaining_total`) could leave `working_order_notional` at a sub-ULP negative (e.g. `-1E-27`); `CapitalState.__post_init__` rejects any negative, so `deserialize_state` failed and the instance crash-looped on boot. `order_fill` now snaps `working_order_notional`, `fee_reserve`, and `per_strategy_deployed` residues within `_SUB_ULP_TOLERANCE` to zero (the `fee_reserve` snap previously handled only tiny negatives; `_adjust_strategy_deployed` now treats sub-tolerance magnitudes as zero rather than logging a false underflow). Latent until the Praxis fee fix made `actual_fees` non-zero
+- Add a narrow recovery shim in `wal_codec._decode_capital_state`: snap sub-tolerance negative persisted aggregates to zero before constructing `CapitalState`, so snapshots already carrying a residue boot. The `CapitalState` non-negative invariant stays strict — only sub-`_SUB_ULP_TOLERANCE` negatives are snapped; meaningful negatives still raise

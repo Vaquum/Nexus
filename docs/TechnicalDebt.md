@@ -1009,3 +1009,16 @@ Inside the terminal-release path, `order_fill` calls `_adjust_strategy_deployed(
 
 **When to fix**: If restart-during-close races prove frequent during the soak.
 **Migration**: Have Praxis expose whether a `trade_id` has a recorded terminal close (`TradeClosed` / terminal outcome). Reconcile then applies a Praxis-recorded close to Nexus state, and fails closed only when Praxis has no record of the position at all (the genuine orphan / data-loss case).
+
+---
+
+## TD-096: order_fill releases terminal residual in two steps
+
+**Origin**: Capital sub-ULP residue fix (pre-PR review)
+**Severity**: Low (residue now snapped to zero; this is cleanliness, not correctness)
+**Module**: `nexus/core/capital_controller/capital_controller.py`
+
+For a terminal fill with `new_remaining > 0`, `order_fill` releases the working aggregate as `fill_with_estimated` plus `terminal_residual`, which algebraically sum to `pre_fill_remaining` but, via `TrackedOrder.remaining_total`'s proportional-fee Decimal division, can leave a sub-ULP residue in `working_order_notional`. The residue is now snapped to zero within `_SUB_ULP_TOLERANCE`, so the non-negative invariant holds; the two-step release shape is retained.
+
+**When to fix**: Opportunistically.
+**Migration**: For terminal fills, decrement `working_order_notional` by `pre_fill_remaining` in one exact operation instead of the two-step `fill_with_estimated` + `terminal_residual`.

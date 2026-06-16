@@ -955,3 +955,37 @@ class TestAccountDustRoundtrip:
 
         restored = deserialize_state(legacy_data)
         assert restored.account_dust == {}
+
+
+def test_decode_capital_state_snaps_subulp_negative_residue() -> None:
+    '''A sub-ULP negative residue in a non-negative aggregate is snapped
+    to zero on decode so recovery does not brick on a persisted residue
+    (e.g. working_order_notional == -1E-27 from fee-division rounding).'''
+
+    decoded = wal_codec._decode_capital_state({
+        'capital_pool': '80000',
+        'position_notional': '6005.999999999999999999999999',
+        'working_order_notional': '-1E-27',
+        'in_flight_order_notional': '0',
+        'fee_reserve': '1E-27',
+        'reservation_notional': '0',
+        'per_strategy_deployed': {},
+    })
+
+    assert decoded.working_order_notional == Decimal('0')
+
+
+def test_decode_capital_state_rejects_meaningful_negative() -> None:
+    '''A negative beyond the sub-ULP tolerance is left intact so
+    CapitalState still rejects genuinely-broken persisted state.'''
+
+    with pytest.raises(ValueError):
+        wal_codec._decode_capital_state({
+            'capital_pool': '80000',
+            'position_notional': '0',
+            'working_order_notional': '-0.5',
+            'in_flight_order_notional': '0',
+            'fee_reserve': '0',
+            'reservation_notional': '0',
+            'per_strategy_deployed': {},
+        })
