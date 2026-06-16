@@ -801,3 +801,9 @@
 ### Remove
 
 - Remove the `vaquum_limen` dependency and the runtime Limen path: `WiredSensor` / `SensorSpec`, [`nexus.strategy.signal_producer`](nexus/strategy/signal_producer.py), [`nexus.startup.sensor_cache`](nexus/startup/sensor_cache.py), [`nexus.startup.warm_cache`](nexus/startup/warm_cache.py), the `PredictLoop` `ProcessPoolExecutor` + market-data IPC, and the sensor disk cache. Add `polars` and `numpy` as direct dependencies (previously transitive through `vaquum_limen`)
+
+## v0.63.1 on 16th of June, 2026
+
+### Update
+
+- Prune the technical-debt register in [`docs/TechnicalDebt.md`](docs/TechnicalDebt.md): collapse code-verified-resolved (TD-004, TD-005, TD-006, TD-010, TD-011, TD-013, TD-015, TD-016, TD-017, TD-018, TD-023) and Conduit-obsoleted (TD-019, TD-020, TD-021, TD-022, TD-087, TD-088, TD-089) entries to heading-only status markers, and mark TD-051 RESOLVED (`_reduce_position` already nets exit fees at [`outcome_processor.py`](nexus/infrastructure/praxis_connector/outcome_processor.py) via `realized_pnl = gross_pnl - actual_fees`)
