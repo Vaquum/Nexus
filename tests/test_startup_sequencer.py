@@ -455,13 +455,11 @@ class TestExternalIntegrationStubs:
         assert sequencer._state.capital.position_notional == Decimal('100000')
         assert sequencer._state.positions['shared_trade'].avg_cost_basis == Decimal('50000')
 
-    def test_reconcile_capital_evicts_nexus_only_position(self) -> None:
-        '''A Nexus position that Praxis no longer carries (e.g. closed
-        via Praxis WS path between our last checkpoint and this boot)
-        is evicted, and `position_notional` is recomputed from the
-        Praxis snapshot only. Prevents the
-        attribution-mismatch denial that the per-strategy deployed
-        rebuild downstream would otherwise trigger.'''
+    def test_reconcile_capital_fails_closed_on_nexus_only_position(self) -> None:
+        '''A Nexus position absent from the Praxis snapshot must not be
+        silently deleted — that would orphan the venue holding. Reconcile
+        fails closed (raises StartupError) and preserves the position so a
+        subsequent consistent boot can recover it.'''
 
         outbound = MagicMock()
         outbound.pull_positions.return_value = {}
@@ -485,10 +483,10 @@ class TestExternalIntegrationStubs:
         )
         sequencer._state = state
 
-        sequencer._reconcile_capital()
+        with pytest.raises(StartupError):
+            sequencer._reconcile_capital()
 
-        assert 'stale_trade' not in sequencer._state.positions
-        assert sequencer._state.capital.position_notional == Decimal('0')
+        assert 'stale_trade' in sequencer._state.positions
 
     def test_reconcile_capital_keeps_position_present_in_both(self) -> None:
         '''A position present in both Nexus and Praxis stays put
@@ -528,10 +526,51 @@ class TestExternalIntegrationStubs:
 
         assert 'shared_trade' in sequencer._state.positions
 
-    def test_reconcile_capital_evicts_nexus_only_keeps_praxis_only(self) -> None:
+    def test_reconcile_capital_matches_on_pos_trade_id_not_tuple_order(self) -> None:
+        '''Praxis keys positions `(trade_id, account_id)`; reconcile must
+        match on `pos.trade_id`, not on a tuple position. A position
+        present in both must reconcile cleanly (no spurious fail-closed),
+        regardless of the snapshot key ordering.'''
+
+        praxis_pos = MagicMock()
+        praxis_pos.account_id = 'acc_001'
+        praxis_pos.trade_id = 'shared_trade'
+        praxis_pos.symbol = 'BTCUSDT'
+        praxis_pos.side = OrderSide.BUY
+        praxis_pos.qty = Decimal('0.5')
+        praxis_pos.avg_entry_price = Decimal('50000')
+        praxis_pos.strategy_id = 'momentum'
+
+        outbound = MagicMock()
+        outbound.pull_positions.return_value = {
+            ('shared_trade', 'acc_001'): praxis_pos,
+        }
+
+        sequencer = _make_sequencer()
+        sequencer._praxis_outbound = outbound
+        _attach_stub_manifest(sequencer, account_id='acc_001')
+        state = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+        )
+        state.positions['shared_trade'] = Position(
+            trade_id='shared_trade',
+            strategy_id='momentum',
+            symbol='BTCUSDT',
+            side=OrderSide.BUY,
+            size=Decimal('0.5'),
+            entry_price=Decimal('50000'),
+        )
+        sequencer._state = state
+
+        sequencer._reconcile_capital()
+
+        assert 'shared_trade' in sequencer._state.positions
+
+    def test_reconcile_capital_fails_closed_preserving_nexus_only(self) -> None:
         '''Mixed scenario — Nexus has trade_a only, Praxis has trade_b
-        only. After reconcile, trade_a is evicted, trade_b is imported,
-        position_notional reflects trade_b only.'''
+        only. The Praxis-only position imports, but the Nexus-only trade_a
+        makes reconcile fail closed (StartupError) and stay preserved
+        rather than being silently deleted.'''
 
         praxis_pos = MagicMock()
         praxis_pos.account_id = 'acc_001'
@@ -566,11 +605,11 @@ class TestExternalIntegrationStubs:
         )
         sequencer._state = state
 
-        sequencer._reconcile_capital()
+        with pytest.raises(StartupError):
+            sequencer._reconcile_capital()
 
-        assert 'trade_a' not in sequencer._state.positions
-        assert 'trade_b' in sequencer._state.positions
-        assert sequencer._state.capital.position_notional == Decimal('40000')
+        assert 'trade_a' in sequencer._state.positions
+        assert 'trade_b' not in sequencer._state.positions
 
     def test_reconcile_capital_skips_praxis_position_without_strategy_id(self) -> None:
         '''Praxis positions lacking strategy_id are not imported AND do not

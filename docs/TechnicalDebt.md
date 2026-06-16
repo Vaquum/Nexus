@@ -996,3 +996,16 @@ Inside the terminal-release path, `order_fill` calls `_adjust_strategy_deployed(
 **When to fix**: Never on its own. Roll into TD-093 if/when the branch is being touched anyway; otherwise the two-call shape mirrors the natural read order (apply fee delta, then apply residual release) and is easier to reason about.
 
 **Migration**: Combine the two `_adjust_strategy_deployed` calls in the terminal-release branch into one with the summed delta. Strictly cosmetic.
+
+---
+
+## TD-095: Boot reconcile fails closed even on a position the venue legitimately closed
+
+**Origin**: Reconcile durability fix (preserve-not-evict), Greybeard pre-PR review
+**Severity**: Low (a restart racing a close is rare; failing closed is safer than silent loss)
+**Module**: `nexus/startup/sequencer.py`
+
+`_reconcile_capital` raises `StartupError` for any Nexus position absent from the Praxis snapshot, preserving it rather than deleting. This correctly prevents orphaning a venue holding when Praxis under-reported the position. But it cannot distinguish that from a position the venue legitimately closed whose terminal outcome Nexus had not processed before a restart — the latter now halts startup instead of reconciling, so an unattended restart cannot self-recover from that previously-handled case.
+
+**When to fix**: If restart-during-close races prove frequent during the soak.
+**Migration**: Have Praxis expose whether a `trade_id` has a recorded terminal close (`TradeClosed` / terminal outcome). Reconcile then applies a Praxis-recorded close to Nexus state, and fails closed only when Praxis has no record of the position at all (the genuine orphan / data-loss case).

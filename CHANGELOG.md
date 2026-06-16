@@ -807,3 +807,10 @@
 ### Update
 
 - Prune the technical-debt register in [`docs/TechnicalDebt.md`](docs/TechnicalDebt.md): collapse code-verified-resolved (TD-004, TD-005, TD-006, TD-010, TD-011, TD-013, TD-015, TD-016, TD-017, TD-018, TD-023) and Conduit-obsoleted (TD-019, TD-020, TD-021, TD-022, TD-087, TD-088, TD-089) entries to heading-only status markers, and mark TD-051 RESOLVED (`_reduce_position` already nets exit fees at [`outcome_processor.py`](nexus/infrastructure/praxis_connector/outcome_processor.py) via `realized_pnl = gross_pnl - actual_fees`)
+
+## v0.64.0 on 16th of June, 2026
+
+### Fix
+
+- Stop boot reconciliation from silently deleting a Nexus position absent from the Praxis snapshot. `_reconcile_capital` previously evicted such positions ("Praxis truth wins") and checkpointed the deletion, so a restart could discard a live position and orphan the venue holding. It now preserves the position and fails closed (raises [`StartupError`](nexus/startup/error.py)) so the divergence is investigated rather than resolved by data loss. Pairs with the Praxis fix that stops entry fills from emitting `TradeClosed` (which made Praxis under-report open positions on replay)
+- Match Praxis positions on `pos.trade_id` rather than unpacking the snapshot tuple key in `_reconcile_capital`. Praxis keys positions `(trade_id, account_id)` but reconcile read element `[1]` (the account_id) as the trade_id, so every Praxis position mis-bucketed and never matched the Nexus side
