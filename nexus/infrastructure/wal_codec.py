@@ -184,9 +184,8 @@ def _decode_capital_state(d: dict[str, Any]) -> CapitalState:
         fee_reserve=_clamp_subulp_negative(Decimal(d['fee_reserve'])),
         reservation_notional=_clamp_subulp_negative(Decimal(d['reservation_notional'])),
         per_strategy_deployed={
-            strategy_id: clamped
+            strategy_id: _clamp_subulp_negative(Decimal(deployed))
             for strategy_id, deployed in d.get('per_strategy_deployed', {}).items()
-            if (clamped := _clamp_subulp_negative(Decimal(deployed))) != _ZERO
         },
     )
 

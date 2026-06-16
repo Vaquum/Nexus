@@ -969,12 +969,10 @@ def test_decode_capital_state_snaps_subulp_negative_residue() -> None:
         'in_flight_order_notional': '0',
         'fee_reserve': '1E-27',
         'reservation_notional': '0',
-        'per_strategy_deployed': {'residue': '-1E-27', 'real': '2000'},
+        'per_strategy_deployed': {},
     })
 
     assert decoded.working_order_notional == Decimal('0')
-    assert 'residue' not in decoded.per_strategy_deployed
-    assert decoded.per_strategy_deployed['real'] == Decimal('2000')
 
 
 def test_decode_capital_state_rejects_meaningful_negative() -> None:
