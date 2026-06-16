@@ -609,6 +609,7 @@ class TestExternalIntegrationStubs:
             sequencer._reconcile_capital()
 
         assert 'trade_a' in sequencer._state.positions
+        assert 'trade_b' not in sequencer._state.positions
 
     def test_reconcile_capital_skips_praxis_position_without_strategy_id(self) -> None:
         '''Praxis positions lacking strategy_id are not imported AND do not
