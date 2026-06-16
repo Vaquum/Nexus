@@ -125,59 +125,19 @@ Several lifecycle methods return `False` for failure paths (for example, missing
 
 ---
 
-## TD-019: Cohort (multi-decoder aggregation) not supported
-
-**Origin**: MMVP-X.1 signal flow design (X.1.2.1)
-**Severity**: Medium (single-decoder Trainer path works, Cohort deferred)
-**Module**: `nexus/startup/sequencer.py`
-
-Nexus trains Sensors via `Trainer(experiment_dir).train(permutation_ids)` — this produces one Sensor per permutation ID from a single SFD experiment. Limen's Cohort system (RegimeDiversifiedOpinionPools) aggregates predictions across multiple decoders/regimes into a single callable, but Cohort is not yet ready in Limen.
-
-When Cohort becomes available, Nexus must support a second path in the manifest where a strategy references a Cohort rather than individual Trainer permutations. The Cohort callable exposes the same `predict()` interface as Sensor, so the downstream dispatch (Signal → strategy) is unchanged.
-
-**When to fix**: When Limen Cohort is production-ready.
-**Migration**: Add `cohort` as an alternative to `experiment` + `permutation_ids` in the manifest `sensors` schema. Implement Cohort instantiation path in StartupSequencer alongside the existing Trainer path.
+## TD-019: Cohort (multi-decoder aggregation) not supported — OBSOLETE (superseded by Conduit migration)
 
 ---
 
-## TD-020: No experiment directory sandboxing per account
-
-**Origin**: MMVP-X.1 manifest schema (X.1.2.1)
-**Severity**: High (access control gap)
-**Module**: `nexus/infrastructure/manifest.py`
-
-`SensorSpec.experiment_dir` accepts any path on disk. A manifest can reference any experiment directory, regardless of which account ran that experiment. In a multi-account process, account A's manifest could point to account B's experiments, or to experiments the account owner never ran. There is no validation that an account is authorized to use a given experiment.
-
-**When to fix**: Before multi-tenant or multi-account production deployment.
-**Migration**: Introduce per-account experiment directory allowlists or a scoped base path per account (e.g. `{base}/{account_id}/experiments/`). Validate during manifest load that all `experiment_dir` paths fall within the account's allowed scope. Reject manifests that reference experiments outside the account's sandbox.
+## TD-020: No experiment directory sandboxing per account — OBSOLETE (superseded by Conduit migration)
 
 ---
 
-## TD-021: PredictLoop uses stub market data provider
-
-**Origin**: MMVP-X.1 predict loop (X.1.2.4)
-**Severity**: High (no real market data flows to Sensors)
-**Module**: `nexus/strategy/predict_loop.py`
-
-`PredictLoop` accepts a `market_data_provider: Callable[[int], pl.DataFrame]` that returns a rolling DataFrame of bars for a given kline_size. No concrete provider exists — the predict loop works but has nothing to call in production.
-
-The concrete provider depends on Praxis TD-016 #3 (shared market data poller) which fetches klines per unique kline_size using `binancial.compute.get_spot_klines`. The kline_size for each sensor is in the Limen manifest's `data_source_config.params['kline_size']` — already extracted by `PredictLoop._extract_kline_size()`.
-
-**When to fix**: When Praxis TD-016 #3 (shared market data poller) is built.
-**Migration**: Implement the concrete market data provider that wraps the shared poller's rolling DataFrames. Wire it into PredictLoop construction during Nexus instance startup.
+## TD-021: PredictLoop uses stub market data provider — OBSOLETE (superseded by Conduit migration)
 
 ---
 
-## TD-022: Sensor hot reload not implemented
-
-**Origin**: MMVP-X.1 signal flow (X.1.2.6)
-**Severity**: Medium (requires process restart to change sensors)
-**Modules**: `nexus/startup/sequencer.py`, `nexus/strategy/predict_loop.py`
-
-When the manifest changes experiment directories or permutation IDs, Sensors should be re-trained and the predict loop restarted without process restart. This requires: manifest file watching, diffing old vs new SensorSpecs, stopping the predict loop, re-running `_wire_sensors` with updated specs, restarting the loop with new WiredSensors. The RFC describes a full hot reload system with tier-1/tier-2/tier-3 change classification — none of this infrastructure exists yet.
-
-**When to fix**: When manifest hot reload infrastructure is built.
-**Migration**: Implement manifest file watcher, change diffing, and Sensor re-training via `importlib` reload. Integrate with PredictLoop start/stop lifecycle.
+## TD-022: Sensor hot reload not implemented — OBSOLETE (superseded by Conduit migration)
 
 ---
 
@@ -958,47 +918,17 @@ Both changes together close the window. Option (1) alone is preferred where feas
 
 ---
 
-## TD-087: `reconstruct_sensor` raises bare `KeyError` for an unseeded `_worker_data` dir — indistinguishable from a per-sensor reconstruction failure
-
-**Origin**: Greybeard pre-PR review (#72 parallel/cache wiring)
-**Severity**: Low (internal invariant — only fires on a worker-seeding bug, not on normal input)
-**Module**: `nexus/startup/sensor_cache.py` (`reconstruct_sensor`); pool path `nexus/startup/warm_cache.py` `warm_cache` (was `nexus/startup/sequencer.py` `_reconstruct_pooled` through v0.52.0; moved to the pre-launch warmer in v0.52.1 as the launcher no longer runs a pool).
-
-`reconstruct_sensor` does `data = _worker_data[experiment_dir_str]`. If a worker's `_worker_data` was not seeded with that dir (a programming error in how `init_worker`'s `data_by_dir` is built), the bare `KeyError` propagates out of the future and the pooled caller catches it in the per-sensor isolation handler, logging it as `"sensor wiring failed"`. A seeding bug — which would mis-wire *every* sensor for that dir — is then indistinguishable from a genuine per-permutation `ReconstructionError`, and the account could silently start with a whole dir's sensors quarantined. Today the dirs seeded into `data_by_dir` (now in `warm_cache.warm_cache`) are derived from the same `misses` set the tasks come from, so the key is always present; the gap is purely diagnostic.
-
-**When to fix**: When a second experiment-dir source or a non-trivial `data_by_dir` construction path is added (raising the chance of a seeding mismatch), or if a quarantine-everything-for-a-dir incident is observed.
-
-**Migration**: In `reconstruct_sensor`, distinguish a missing-seed `KeyError` from a reconstruction failure (e.g. raise a typed `RuntimeError('worker data not seeded for <dir>')`), and have the pooled caller in `warm_cache.warm_cache` surface that as a hard warmer-exit error rather than per-sensor isolation, since it indicates a programming error, not a bad permutation.
+## TD-087: `reconstruct_sensor` raises bare `KeyError` for an unseeded `_worker_data` dir — indistinguishable from a per-sensor reconstruction failure — OBSOLETE (superseded by Conduit migration)
 
 ---
 
-## TD-088: pool initializer broadcasts every dir's `_data` to every worker — O(num_dirs × num_workers) memory for multi-dir manifests
-
-**Origin**: Copilot PR #73 review (#72 parallel/cache wiring)
-**Severity**: Low today (current deploys wire a single experiment_dir); material only for manifests spanning several large bundles
-**Module**: `nexus/startup/warm_cache.py` `warm_cache` (was `nexus/startup/sequencer.py` `_reconstruct_pooled` through v0.52.0; moved to the pre-launch warmer in v0.52.1)
-
-`warm_cache` builds `data_by_dir = {dir: loader._data for dir in miss_dirs}` and passes the whole map to `ProcessPoolExecutor(initializer=init_worker, initargs=(data_by_dir,))`. Each worker therefore receives — pickled at pool startup and held resident — the frozen `_data` (~160 MB for the BTC 15m bundle) for *every* experiment_dir with misses, not just the dirs whose tasks it happens to run. Memory and pool-startup pickling cost scale as O(num_dirs × num_workers). A single-dir manifest (today's deploys) replicates one bundle per worker, which is unavoidable since every worker may draw a task for that dir; the blow-up only bites a manifest that wires sensors from multiple large bundles at once.
-
-**When to fix**: When a manifest wires sensors from multiple large experiment_dirs under process-parallel reconstruction.
-
-**Migration**: Shard reconstruction by dir — either a separate `ProcessPoolExecutor` per experiment_dir (each seeded with only its own `_data`), or a worker `initializer` that lazily loads a dir's `_data` on first use behind a small per-worker LRU, so a worker holds only the bundles it actually touches.
+## TD-088: pool initializer broadcasts every dir's `_data` to every worker — O(num_dirs × num_workers) memory for multi-dir manifests — OBSOLETE (superseded by Conduit migration)
 
 ---
 
-## TD-089: PredictLoop test executor runs done-callbacks inline, not on a separate thread
+## TD-089: PredictLoop test executor runs done-callbacks inline, not on a separate thread — OBSOLETE (superseded by Conduit migration)
 
-**Origin**: Greybeard pre-PR review of `fix/wire-pool-spawn-start-method` (v0.53.0 process-pool predict executor)
-**Severity**: Low (test fidelity only; production correctness verified by real spawn-pool smoke test)
-**Module**: `tests/test_predict_loop.py` `_SyncExecutor`
-
-`_SyncExecutor.submit` returns a completed `concurrent.futures.Future`. When `_submit_one` then calls `future.add_done_callback(_on_done)` on a future that is already done, the callback fires **inline in the calling thread** (the scheduler thread). The production `ProcessPoolExecutor` invokes done-callbacks on a separate result-handler thread, so the parent-side dispatch chain (`_log_signal` -> `context_provider` -> `dispatch_signal` -> `action_submit`) actually runs concurrent with the scheduler thread's next iteration. The test double therefore cannot exercise any cross-thread race between scheduling and result handling — for example, a `stop()` racing against an in-flight callback, or two callbacks contending for `self._lock` while the scheduler is mid-poll.
-
-The `MagicMock`-sensor + spawn-pickle-boundary constraint forced this seam; the test executor is the only practical way to exercise parent-side behavior without spawning real workers (which would also bypass the mocks and try to load a real bundle from disk). Real-pool coverage is limited to the smoke test in the session that ships the change (and the prod runtime itself).
-
-**When to fix**: When a concurrency defect in the parent-side scheduler/callback interaction is suspected or reported, or when adding a feature that meaningfully changes lock scope in `_handle_predict_result`, `_submit_one`, or `_maybe_unlink_ipc`.
-
-**Migration**: Add a second test double that submits to a thread-based executor and fires `add_done_callback` from a worker thread (or use a real `ThreadPoolExecutor` patched in place of `ProcessPoolExecutor`); use it for the lock/race-sensitive subset of tests while keeping the synchronous `_SyncExecutor` for the dispatch-chain tests that don't need cross-thread fidelity. An integration test against a real spawn pool with a recorded bundle on disk would be even stronger but requires CI infrastructure to ship a small fixture bundle.
+---
 
 ## TD-090: `serialize_state` snapshot is shallow — `Position` / `StrategyModeState` field-level torn reads still possible
 
