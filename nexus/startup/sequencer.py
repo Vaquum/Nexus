@@ -29,7 +29,6 @@ from nexus.strategy.runner import StrategyRunner
 
 _ZERO = Decimal(0)
 _HUNDRED = Decimal('100')
-_POSITION_KEY_LENGTH = 2
 _log = structlog.get_logger()
 
 __all__ = ['SignalBinding', 'StartupSequencer']
@@ -371,17 +370,14 @@ class StartupSequencer:
 
         try:
             for key, pos in praxis_positions.items():
-                if not isinstance(key, tuple) or len(key) != _POSITION_KEY_LENGTH:
-                    _log.warning('skipping Praxis position with unexpected key', key=repr(key))
-                    continue
-                _, trade_id = key
-                if isinstance(trade_id, str):
-                    praxis_by_trade_id[trade_id] = pos
-                else:
+                trade_id = getattr(pos, 'trade_id', None)
+                if not isinstance(trade_id, str):
                     _log.warning(
-                        'skipping Praxis position with non-string trade_id',
-                        trade_id=repr(trade_id),
+                        'skipping Praxis position without a string trade_id',
+                        key=repr(key),
                     )
+                    continue
+                praxis_by_trade_id[trade_id] = pos
         except Exception as e:
             raise StartupError('reconcile_capital', f'failed to parse Praxis positions: {e}') from e
 
@@ -449,16 +445,28 @@ class StartupSequencer:
             trade_id for trade_id in self._state.positions
             if trade_id not in praxis_by_trade_id
         ]
-        for trade_id in nexus_only_trade_ids:
-            evicted = self._state.positions.pop(trade_id)
-            _log.warning(
-                'evicting Nexus-only position not present in Praxis snapshot — '
-                'Praxis truth wins; the per_strategy_deployed rebuild downstream '
-                'will not include this stale entry',
-                trade_id=trade_id,
-                strategy_id=evicted.strategy_id,
-                size=str(evicted.size),
-                entry_price=str(evicted.entry_price),
+        if nexus_only_trade_ids:
+            nexus_only = {
+                trade_id: {
+                    'strategy_id': self._state.positions[trade_id].strategy_id,
+                    'size': str(self._state.positions[trade_id].size),
+                    'entry_price': str(self._state.positions[trade_id].entry_price),
+                }
+                for trade_id in nexus_only_trade_ids
+            }
+            _log.error(
+                'boot reconciliation found Nexus positions absent from the '
+                'Praxis snapshot; preserving Nexus state and failing closed '
+                'rather than deleting live positions — a silent deletion here '
+                'would orphan the venue holding the position. Investigate the '
+                'divergence (e.g. a Praxis replay that did not rebuild the '
+                'position) before restarting',
+                nexus_only=nexus_only,
+            )
+            raise StartupError(
+                'reconcile_capital',
+                'Nexus-only positions not present in Praxis snapshot: '
+                f'{sorted(nexus_only_trade_ids)}',
             )
 
         old_notional = self._state.capital.position_notional
