@@ -361,7 +361,10 @@ class PraxisOutbound:
             account_id: Account identifier to query.
 
         Returns:
-            Positions keyed by (account_id, trade_id) tuples.
+            Positions keyed by (trade_id, account_id) tuples. Consumers
+            should match on `pos.trade_id` rather than tuple position —
+            the key ordering is a Praxis-internal detail, and reading it
+            positionally is what previously mis-bucketed every position.
 
         Raises:
             RuntimeError: If pull_positions_fn is not configured.
