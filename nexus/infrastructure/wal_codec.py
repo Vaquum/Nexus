@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import msgpack
 
+from nexus.core.domain.capital_state import SUB_ULP_TOLERANCE as _SUB_ULP_TOLERANCE
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
@@ -27,6 +28,25 @@ __all__ = [
     'serialize_event',
     'serialize_state',
 ]
+
+_ZERO = Decimal(0)
+
+
+def _clamp_subulp_negative(value: Decimal) -> Decimal:
+    '''Snap a sub-tolerance negative aggregate to zero, else return as-is.
+
+    Capital reserve/release arithmetic can leave a sub-ULP negative
+    Decimal residue (e.g. `-1E-27`) in a field that must stay
+    non-negative. Persisting it bricks recovery because
+    `CapitalState.__post_init__` rejects any negative. Snap only residues
+    within `_SUB_ULP_TOLERANCE`; a meaningful negative is left intact so
+    the domain invariant still rejects genuinely-broken state.
+    '''
+
+    if -_SUB_ULP_TOLERANCE <= value < _ZERO:
+        return _ZERO
+
+    return value
 
 _CODEC_VERSION_1 = 1
 _CODEC_VERSION_LATEST = _CODEC_VERSION_1
@@ -158,13 +178,13 @@ def _decode_capital_state(d: dict[str, Any]) -> CapitalState:
 
     return CapitalState(
         capital_pool=Decimal(d['capital_pool']),
-        position_notional=Decimal(d['position_notional']),
-        working_order_notional=Decimal(d['working_order_notional']),
-        in_flight_order_notional=Decimal(d['in_flight_order_notional']),
-        fee_reserve=Decimal(d['fee_reserve']),
-        reservation_notional=Decimal(d['reservation_notional']),
+        position_notional=_clamp_subulp_negative(Decimal(d['position_notional'])),
+        working_order_notional=_clamp_subulp_negative(Decimal(d['working_order_notional'])),
+        in_flight_order_notional=_clamp_subulp_negative(Decimal(d['in_flight_order_notional'])),
+        fee_reserve=_clamp_subulp_negative(Decimal(d['fee_reserve'])),
+        reservation_notional=_clamp_subulp_negative(Decimal(d['reservation_notional'])),
         per_strategy_deployed={
-            strategy_id: Decimal(deployed)
+            strategy_id: _clamp_subulp_negative(Decimal(deployed))
             for strategy_id, deployed in d.get('per_strategy_deployed', {}).items()
         },
     )

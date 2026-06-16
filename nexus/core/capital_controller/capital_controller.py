@@ -26,6 +26,7 @@ from nexus.core.capital_controller.tracked_order import (
     OrderLifecycleState,
     TrackedOrder,
 )
+from nexus.core.domain.capital_state import SUB_ULP_TOLERANCE as _SUB_ULP_TOLERANCE
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.position import Position
 
@@ -56,7 +57,8 @@ _ONE_HUNDRED = Decimal('100')
 # any meaningful money increment; at extreme scales (sub-cent
 # trades or notional > 10^15) it would need to become relative.
 # Tracked as a TD entry; not load-bearing for current scope.
-_SUB_ULP_TOLERANCE = Decimal('1E-12')
+# `_SUB_ULP_TOLERANCE` is imported from `capital_state` (single source,
+# also used by the WAL codec's recovery clamp).
 
 
 class CapitalController:
@@ -945,10 +947,7 @@ class CapitalController:
             self._state.position_notional += fill_notional + actual_fees
             self._state.fee_reserve += fee_delta
 
-            if (
-                self._state.fee_reserve < _ZERO
-                and abs(self._state.fee_reserve) <= _SUB_ULP_TOLERANCE
-            ):
+            if abs(self._state.fee_reserve) <= _SUB_ULP_TOLERANCE:
                 self._state.fee_reserve = _ZERO
 
             if fee_delta != _ZERO:
@@ -957,6 +956,9 @@ class CapitalController:
             if terminal and new_remaining > _ZERO:
                 self._state.working_order_notional -= terminal_residual
                 self._adjust_strategy_deployed(order.strategy_id, -terminal_residual)
+
+            if abs(self._state.working_order_notional) <= _SUB_ULP_TOLERANCE:
+                self._state.working_order_notional = _ZERO
 
             return LifecycleResult(success=True)
 
@@ -1086,6 +1088,10 @@ class CapitalController:
         current = self._state.per_strategy_deployed.get(strategy_id, _ZERO)
         updated = current + delta
 
+        if abs(updated) <= _SUB_ULP_TOLERANCE:
+            self._state.per_strategy_deployed.pop(strategy_id, None)
+            return
+
         if updated < _ZERO:
             _logger.warning(
                 'Per-strategy deployed underflow: strategy=%s current=%s delta=%s updated=%s',
@@ -1094,10 +1100,6 @@ class CapitalController:
                 delta,
                 updated,
             )
-            self._state.per_strategy_deployed.pop(strategy_id, None)
-            return
-
-        if updated == _ZERO:
             self._state.per_strategy_deployed.pop(strategy_id, None)
             return
 

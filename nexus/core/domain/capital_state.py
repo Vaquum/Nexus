@@ -10,9 +10,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-__all__ = ['CapitalState']
+__all__ = ['SUB_ULP_TOLERANCE', 'CapitalState']
 
 _ZERO = Decimal(0)
+SUB_ULP_TOLERANCE = Decimal('1E-12')
 
 
 @dataclass
