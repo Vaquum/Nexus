@@ -434,17 +434,7 @@ The contract documented in `bridge_to_capital`'s docstring is replicated open-co
 
 ---
 
-## TD-051: Realized PnL excludes exit fees; latent inconsistency with future fee_rate change
-
-**Origin**: Round-14 8-pass aggregation
-**Severity**: Low (currently safe — couples with TD-030 in Praxis fee_rate=0)
-**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:400`
-
-`realized_pnl = side_multiplier * (fill_price - entry_price) * fill_size` — gross PnL, no exit-fee subtraction. `outcome.actual_fees` is available but unused for EXIT. Documented at `capital_controller.py:608-614` (order_exit docstring) as a deliberate design choice. Combined with Praxis TD-030 (translator fee_rate=0), the gap is currently zero, but a future fee_rate change without updating `_reduce_position` would silently inflate `strategy_realized_pnl` by total exit fees.
-
-**When to fix**: When Praxis TD-030 is addressed (fee_rate flips non-zero), OR when a deployment needs strict realized-PnL accounting.
-**Migration**: Update `_reduce_position` to subtract `outcome.actual_fees` from `realized_pnl`, OR add a `realized_fees` ledger per the existing `order_exit` docstring suggestion.
-
+## TD-051: Realized PnL excludes exit fees; latent inconsistency with future fee_rate change — RESOLVED
 
 ---
 
