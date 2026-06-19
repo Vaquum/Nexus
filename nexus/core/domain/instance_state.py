@@ -41,6 +41,16 @@ class InstanceState:
             symbol (e.g., BTCUSDT → BTC residue). Persisted via WAL
             replay + snapshot save/load so dust survives restarts.
             See Vaquum/Nexus#82.
+        processed_outcome_ids: `outcome_id`s already applied by
+            `OutcomeProcessor.process`, persisted via WAL replay +
+            snapshot save/load so the dedup set survives restarts.
+            Persisted atomically with the mutation it guards (the
+            launcher's `append_mutation` writes the whole state), so a
+            boot replay of an already-applied outcome is recognised and
+            not double-applied. See Vaquum/Nexus#86.
+        processed_dust_close_ids: `dust_close_id`s already applied by
+            `OutcomeProcessor.close_as_dust`, durable for the same
+            reason as `processed_outcome_ids`.
     '''
 
     capital: CapitalState
@@ -49,6 +59,8 @@ class InstanceState:
     mode: ModeState = field(default_factory=ModeState)
     strategy_modes: dict[str, StrategyModeState] = field(default_factory=dict)
     account_dust: dict[str, Decimal] = field(default_factory=dict)
+    processed_outcome_ids: set[str] = field(default_factory=set)
+    processed_dust_close_ids: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         '''Validate that dict keys match their value identifiers.'''
@@ -84,6 +96,16 @@ class InstanceState:
                     f'InstanceState.account_dust[{symbol!r}] must be a finite '
                     'non-negative Decimal'
                 )
+                raise ValueError(msg)
+
+        for outcome_id in self.processed_outcome_ids:
+            if not isinstance(outcome_id, str) or not outcome_id.strip():
+                msg = 'InstanceState.processed_outcome_ids entries must be non-empty strings'
+                raise ValueError(msg)
+
+        for dust_close_id in self.processed_dust_close_ids:
+            if not isinstance(dust_close_id, str) or not dust_close_id.strip():
+                msg = 'InstanceState.processed_dust_close_ids entries must be non-empty strings'
                 raise ValueError(msg)
 
     @classmethod

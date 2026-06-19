@@ -989,3 +989,40 @@ def test_decode_capital_state_rejects_meaningful_negative() -> None:
             'reservation_notional': '0',
             'per_strategy_deployed': {},
         })
+
+
+class TestProcessedDedupIds:
+    '''Verify the durable outcome / dust-close dedup sets round-trip.'''
+
+    def test_processed_ids_round_trip(self) -> None:
+        '''Verify both dedup sets survive serialize → deserialize.'''
+
+        original = InstanceState(
+            capital=CapitalState(capital_pool=Decimal('10000')),
+            processed_outcome_ids={'oc-1', 'oc-2', 'oc-3'},
+            processed_dust_close_ids={'dust-1', 'dust-2'},
+        )
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.processed_outcome_ids == {'oc-1', 'oc-2', 'oc-3'}
+        assert restored.processed_dust_close_ids == {'dust-1', 'dust-2'}
+
+    def test_processed_ids_default_empty(self) -> None:
+        '''Verify a state with no dedup ids round-trips to empty sets.'''
+
+        restored = deserialize_state(serialize_state(_make_minimal_state()))
+
+        assert restored.processed_outcome_ids == set()
+        assert restored.processed_dust_close_ids == set()
+
+    def test_processed_ids_back_compat_missing_keys(self) -> None:
+        '''Verify a pre-Nexus#86 payload (no dedup keys) decodes to empty sets.'''
+
+        payload = msgpack.unpackb(serialize_state(_make_minimal_state()), raw=False)
+        del payload['processed_outcome_ids']
+        del payload['processed_dust_close_ids']
+
+        restored = deserialize_state(cast(bytes, msgpack.packb(payload)))
+
+        assert restored.processed_outcome_ids == set()
+        assert restored.processed_dust_close_ids == set()

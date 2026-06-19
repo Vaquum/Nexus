@@ -69,6 +69,8 @@ def serialize_state(state: InstanceState) -> bytes:
     positions_snapshot = dict(state.positions)
     strategy_modes_snapshot = dict(state.strategy_modes)
     account_dust_snapshot = dict(state.account_dust)
+    processed_outcome_ids_snapshot = set(state.processed_outcome_ids)
+    processed_dust_close_ids_snapshot = set(state.processed_dust_close_ids)
 
     d: dict[str, Any] = {
         '_v': _CODEC_VERSION_LATEST,
@@ -80,6 +82,8 @@ def serialize_state(state: InstanceState) -> bytes:
             k: _encode_strategy_mode_state(v) for k, v in strategy_modes_snapshot.items()
         },
         'account_dust': {k: str(v) for k, v in account_dust_snapshot.items()},
+        'processed_outcome_ids': sorted(processed_outcome_ids_snapshot),
+        'processed_dust_close_ids': sorted(processed_dust_close_ids_snapshot),
     }
     return cast(bytes, msgpack.packb(d))
 
@@ -131,6 +135,8 @@ def _decode_state_v1(d: dict[str, Any]) -> InstanceState:
                 for k, v in d['strategy_modes'].items()
             },
             account_dust=account_dust,
+            processed_outcome_ids=set(d.get('processed_outcome_ids', [])),
+            processed_dust_close_ids=set(d.get('processed_dust_close_ids', [])),
         )
     except (KeyError, TypeError, AttributeError, ValueError, InvalidOperation) as exc:
         msg = f'Malformed WAL codec payload: {exc}'

@@ -65,8 +65,6 @@ class OutcomeProcessor:
         self._positions_cm: AbstractContextManager[Any] = (
             positions_lock if positions_lock is not None else nullcontext()
         )
-        self._processed_outcome_ids: set[str] = set()
-        self._processed_dust_close_ids: set[str] = set()
         self._dedup_lock = threading.Lock()
 
     def process(
@@ -99,6 +97,16 @@ class OutcomeProcessor:
         NOT poison the dedup set — the caller may legitimately retry
         and the second attempt runs normally.
 
+        Durability (Nexus#86): the dedup set is `InstanceState.
+        processed_outcome_ids`, not a process-local set, so the
+        successful `outcome_id` is persisted by the launcher's
+        `append_mutation(state)` atomically with the capital / position
+        mutation it guards, and restored by `StateStore.recover`. A boot
+        replay of an outcome whose mutation was already persisted is
+        recognised here and returns a no-op success, closing the
+        cross-restart double-apply (a durable mutation paired with a
+        previously process-local, restart-volatile dedup set).
+
         Args:
             outcome: Inbound outcome from Trading sub-system.
             context: Metadata for outcome processing.
@@ -111,7 +119,7 @@ class OutcomeProcessor:
         '''
 
         with self._dedup_lock:
-            if outcome.outcome_id in self._processed_outcome_ids:
+            if outcome.outcome_id in self._state.processed_outcome_ids:
                 _log.debug(
                     'duplicate outcome dropped: outcome_id=%s command_id=%s',
                     outcome.outcome_id,
@@ -145,7 +153,7 @@ class OutcomeProcessor:
 
         if result.success:
             with self._dedup_lock:
-                self._processed_outcome_ids.add(outcome.outcome_id)
+                self._state.processed_outcome_ids.add(outcome.outcome_id)
 
         return result
 
@@ -656,7 +664,7 @@ class OutcomeProcessor:
 
         with self._dedup_lock:
 
-            if dust_close_id in self._processed_dust_close_ids:
+            if dust_close_id in self._state.processed_dust_close_ids:
                 _log.debug(
                     'duplicate dust close dropped: dust_close_id=%s trade_id=%s',
                     dust_close_id,
@@ -664,7 +672,7 @@ class OutcomeProcessor:
                 )
                 return False
 
-            self._processed_dust_close_ids.add(dust_close_id)
+            self._state.processed_dust_close_ids.add(dust_close_id)
 
         with self._positions_cm:
             position = self._state.positions.get(trade_id)

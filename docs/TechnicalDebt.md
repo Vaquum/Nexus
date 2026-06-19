@@ -880,6 +880,12 @@ Closing this requires the pipeline executor to track granted reservations indepe
 
 ## TD-086: `OutcomeProcessor.process` records `outcome_id` only after successful return — a raise mid-`_handle_fill` leaves capital/position mutated AND the dedup set empty
 
+**Status**: Durable applied-outcome marker RESOLVED in v0.66.0 (the cross-restart paired-boundary requirement for Praxis TD-052); the in-process mid-`_handle_fill` partial-mutation guard (migration steps 1 + 2 below) remains.
+
+**Resolved in v0.66.0 (durable marker)**: the dedup sets moved from process-local sets to `InstanceState.processed_outcome_ids` / `processed_dust_close_ids`, serialized via the existing `wal_codec` v1 payload and reconstructed by `StateStore.recover`. The successful `outcome_id` is now persisted atomically with the mutation it guards (the launcher's `append_mutation` writes the whole state), so a boot replay of an already-applied-and-persisted outcome is recognised and returns a no-op success — closing the cross-restart double-apply that paired with the (now non-durable) dedup set. This satisfies the acceptance-addendum requirement that `recover()` rebuild the applied-outcome marker, so Praxis TD-052 boot replay can land safely against this dedup.
+
+**Remaining (in-process partial-mutation guard)**: the migration steps below — reorder `_handle_fill` so raising I/O precedes mutation, and/or an in-flight (`IN_PROGRESS`) marker — are NOT done. A crash *mid-`_handle_fill`* (between the risk `append_event` and the launcher's `append_mutation`) can still leave a persisted risk event whose paired capital/position mutation was not persisted, so a replay re-runs the handler and double-counts that risk event. This overlaps the partial-mutation gap (TD-048/075) and needs the record-before-mutate sequencing below.
+
 **Origin**: Copilot PR #57 review (post-merge follow-up to round-18 MAJOR-004 part A)
 **Severity**: Low today (currently unreachable — append_event raise + Praxis retry of the exact same outcome_id is narrow); High if MAJOR-004 part B (Praxis boot replay-from-spine) lands without a paired fix here
 **Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:71-149` (`process`); `nexus/infrastructure/praxis_connector/outcome_processor.py:167-252` (`_handle_fill`)
