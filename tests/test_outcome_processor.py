@@ -3052,3 +3052,44 @@ class TestOutcomeProcessorDurableDedup:
 
         assert applied is False
         assert 'dust-001' in recovered.processed_dust_close_ids
+
+
+class TestDedupWriteLockDomain:
+    '''Verify dedup writes occur under positions_lock (the serialize domain).'''
+
+    def test_dust_close_dedup_write_is_gated_by_positions_lock(self) -> None:
+        _proc, _ctrl, state, store, _tmp = _make_processor()
+        positions_lock = threading.Lock()
+        proc = OutcomeProcessor(
+            CapitalController(state.capital), state, store,
+            positions_lock=positions_lock,
+        )
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000842'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        done = threading.Event()
+
+        def call() -> None:
+            proc.close_as_dust(trade_id='trade_001', reason='r', dust_close_id='d-1')
+            done.set()
+
+        positions_lock.acquire()
+        worker = threading.Thread(target=call)
+        worker.start()
+
+        blocked = not done.wait(timeout=0.2)
+        assert blocked
+        assert 'd-1' not in state.processed_dust_close_ids
+
+        positions_lock.release()
+        worker.join(timeout=2)
+
+        assert done.is_set()
+        assert 'd-1' in state.processed_dust_close_ids
