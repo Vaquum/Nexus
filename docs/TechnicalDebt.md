@@ -1028,3 +1028,16 @@ For a terminal fill with `new_remaining > 0`, `order_fill` releases the working 
 
 **When to fix**: Opportunistically.
 **Migration**: For terminal fills, decrement `working_order_notional` by `pre_fill_remaining` in one exact operation instead of the two-step `fill_with_estimated` + `terminal_residual`.
+
+---
+
+## TD-097: durable `processed_outcome_ids` / `processed_dust_close_ids` dedup sets grow unbounded
+
+**Origin**: Greybeard pre-PR review (TD-086 durable-dedup follow-up)
+**Severity**: Low (slow growth; harmless for the current paper-soak)
+**Module**: `nexus/core/domain/instance_state.py`; `nexus/infrastructure/wal_codec.py`; `nexus/infrastructure/praxis_connector/outcome_processor.py`
+
+TD-086 made the outcome-dedup durable by moving `processed_outcome_ids` and `processed_dust_close_ids` onto `InstanceState`, serialized into every snapshot / WAL `STATE_MUTATION`. They are never pruned, so both sets — and the serialized payload — grow without bound over the instance lifetime. The pre-TD-086 in-memory sets grew during uptime but reset on restart; the durable sets grow permanently across restarts.
+
+**When to fix**: Before a long-lived (multi-month) deployment, or if snapshot size / boot deserialize time becomes material.
+**Migration**: Bound retention to the ids that could still be replayed. Praxis only replays un-acked outcomes at boot, so the dedup set only needs ids within that window — e.g. evict ids older than the maximum spine-replay horizon, or cap the set to a bounded most-recent ring keyed by outcome ordering. Requires a defensible replay-window definition Nexus can compute (or a Praxis-supplied high-water ack mark).
