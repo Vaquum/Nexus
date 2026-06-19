@@ -18,6 +18,7 @@ from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProce
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
 from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.wal_codec import deserialize_state, serialize_state
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
@@ -2939,7 +2940,7 @@ class TestDustClose:
         '''Concurrent callers with the same dust_close_id must not double-credit.
 
         Regression for PR #83 review (round 1): the check + add on
-        `_processed_dust_close_ids` must be atomic inside a single
+        `state.processed_dust_close_ids` must be atomic inside a single
         `_dedup_lock` acquisition. Otherwise two threads both pass
         the check before either commits the add, both proceed to
         `_positions_cm`, and (when the processor is constructed
@@ -2987,3 +2988,108 @@ class TestDustClose:
         assert results.count(False) == 7
         assert 'trade_001' not in state.positions
         assert state.account_dust['BTCUSD'] == Decimal('0.00000842')
+
+
+class TestOutcomeProcessorDurableDedup:
+    '''Verify the dedup set survives a serialize/recover cycle (Nexus#86).'''
+
+    def test_applied_outcome_not_reapplied_after_restart(self) -> None:
+        proc, ctrl, state, store, _tmp = _make_processor()
+        _setup_working_order(ctrl)
+
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.01'),
+            entry_price=Decimal('50000'),
+        )
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('100'),
+            actual_fees=Decimal('1'),
+        )
+
+        first = proc.process(outcome, _entry_context())
+        assert first.success is True
+        assert first.capital_updated is True
+        assert 'out_001' in state.processed_outcome_ids
+
+        position_notional_after_apply = ctrl._state.position_notional
+
+        recovered = deserialize_state(serialize_state(state))
+        assert 'out_001' in recovered.processed_outcome_ids
+
+        new_ctrl = CapitalController(recovered.capital)
+        new_proc = OutcomeProcessor(new_ctrl, recovered, store)
+
+        replay = new_proc.process(outcome, _entry_context())
+
+        assert replay.success is True
+        assert replay.capital_updated is False
+        assert replay.position_updated is False
+        assert recovered.capital.position_notional == position_notional_after_apply
+
+    def test_dust_close_dedup_survives_restart(self) -> None:
+        _proc, _ctrl, state, store, _tmp = _make_processor()
+        state.processed_dust_close_ids.add('dust-001')
+
+        recovered = deserialize_state(serialize_state(state))
+        new_proc = OutcomeProcessor(CapitalController(recovered.capital), recovered, store)
+
+        applied = new_proc.close_as_dust(
+            trade_id='trade_001',
+            reason='sub_lot_remainder',
+            dust_close_id='dust-001',
+        )
+
+        assert applied is False
+        assert 'dust-001' in recovered.processed_dust_close_ids
+
+
+class TestDedupWriteLockDomain:
+    '''Verify dedup writes occur under positions_lock (the serialize domain).'''
+
+    def test_dust_close_dedup_write_is_gated_by_positions_lock(self) -> None:
+        _proc, _ctrl, state, store, _tmp = _make_processor()
+        positions_lock = threading.Lock()
+        proc = OutcomeProcessor(
+            CapitalController(state.capital), state, store,
+            positions_lock=positions_lock,
+        )
+        state.positions['trade_001'] = Position(
+            trade_id='trade_001',
+            strategy_id='strat_001',
+            symbol='BTCUSD',
+            side=OrderSide.BUY,
+            size=Decimal('0.00000842'),
+            entry_price=Decimal('50000'),
+            avg_cost_basis=Decimal('50050'),
+        )
+
+        done = threading.Event()
+
+        def call() -> None:
+            proc.close_as_dust(trade_id='trade_001', reason='r', dust_close_id='d-1')
+            done.set()
+
+        positions_lock.acquire()
+        worker = threading.Thread(target=call)
+        worker.start()
+
+        blocked = not done.wait(timeout=0.2)
+        assert blocked
+        assert 'd-1' not in state.processed_dust_close_ids
+
+        positions_lock.release()
+        worker.join(timeout=2)
+
+        assert done.is_set()
+        assert 'd-1' in state.processed_dust_close_ids

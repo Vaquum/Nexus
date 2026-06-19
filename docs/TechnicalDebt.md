@@ -880,6 +880,16 @@ Closing this requires the pipeline executor to track granted reservations indepe
 
 ## TD-086: `OutcomeProcessor.process` records `outcome_id` only after successful return — a raise mid-`_handle_fill` leaves capital/position mutated AND the dedup set empty
 
+**Status**: Durable applied-outcome marker RESOLVED in v0.66.0 (the cross-restart paired-boundary requirement for Praxis TD-052); the in-process mid-`_handle_fill` partial-mutation guard (migration steps 1 + 2 below) remains.
+
+**Resolved in v0.66.0 (durable marker)**: the dedup sets moved from process-local sets to `InstanceState.processed_outcome_ids` / `processed_dust_close_ids`, serialized via the existing `wal_codec` v1 payload and reconstructed by `StateStore.recover`. The successful `outcome_id` is now persisted atomically with the mutation it guards (the launcher's `append_mutation` writes the whole state), so a boot replay of an already-applied-and-persisted outcome is recognised and returns a no-op success — closing the cross-restart double-apply that paired with the (now non-durable) dedup set. This satisfies the acceptance-addendum requirement that `recover()` rebuild the applied-outcome marker, so Praxis TD-052 boot replay can land safely against this dedup.
+
+**Remaining (in-process partial-mutation guard)**: the migration steps below — reorder `_handle_fill` so raising I/O precedes mutation, and/or an in-flight (`IN_PROGRESS`) marker — are NOT done. Two residual windows remain, both needing the record-before-mutate sequencing:
+- A crash *mid-`_handle_fill`* (between the risk `append_event` and the launcher's `append_mutation`) can leave a persisted risk event whose paired capital/position mutation was not persisted, so a replay re-runs the handler and double-counts that risk event.
+- A periodic `checkpoint()` (separate `threading.Timer`) can interleave between the capital mutation (`order_fill`, under `capital_lock`) and the durable dedup add (now under `positions_lock`) — different lock domains, so `checkpoint` can serialize capital-mutated-without-the-dedup-id and truncate the WAL; a crash before the paired `append_mutation` then recovers a snapshot that replays the outcome. v0.66.0 moved the dedup add into the `positions_lock` domain (matching `account_dust`), which removes the torn-read and narrows this window, but does not eliminate it — the capital mutation is necessarily under `capital_lock`. Full closure needs the dedup id recorded before the mutation under a lock held across both (the `IN_PROGRESS/APPLIED` design).
+
+Both overlap the partial-mutation gap (TD-048/075).
+
 **Origin**: Copilot PR #57 review (post-merge follow-up to round-18 MAJOR-004 part A)
 **Severity**: Low today (currently unreachable — append_event raise + Praxis retry of the exact same outcome_id is narrow); High if MAJOR-004 part B (Praxis boot replay-from-spine) lands without a paired fix here
 **Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py:71-149` (`process`); `nexus/infrastructure/praxis_connector/outcome_processor.py:167-252` (`_handle_fill`)
@@ -1022,3 +1032,16 @@ For a terminal fill with `new_remaining > 0`, `order_fill` releases the working 
 
 **When to fix**: Opportunistically.
 **Migration**: For terminal fills, decrement `working_order_notional` by `pre_fill_remaining` in one exact operation instead of the two-step `fill_with_estimated` + `terminal_residual`.
+
+---
+
+## TD-097: durable `processed_outcome_ids` / `processed_dust_close_ids` dedup sets grow unbounded
+
+**Origin**: Greybeard pre-PR review (TD-086 durable-dedup follow-up)
+**Severity**: Low (slow growth; harmless for the current paper-soak)
+**Module**: `nexus/core/domain/instance_state.py`; `nexus/infrastructure/wal_codec.py`; `nexus/infrastructure/praxis_connector/outcome_processor.py`
+
+TD-086 made the outcome-dedup durable by moving `processed_outcome_ids` and `processed_dust_close_ids` onto `InstanceState`, serialized into every snapshot / WAL `STATE_MUTATION`. They are never pruned, so both sets — and the serialized payload — grow without bound over the instance lifetime. The pre-TD-086 in-memory sets grew during uptime but reset on restart; the durable sets grow permanently across restarts.
+
+**When to fix**: Before a long-lived (multi-month) deployment, or if snapshot size / boot deserialize time becomes material.
+**Migration**: Bound retention to the ids that could still be replayed. Praxis only replays un-acked outcomes at boot, so the dedup set only needs ids within that window — e.g. evict ids older than the maximum spine-replay horizon, or cap the set to a bounded most-recent ring keyed by outcome ordering. Requires a defensible replay-window definition Nexus can compute (or a Praxis-supplied high-water ack mark).
