@@ -838,3 +838,10 @@
 
 - Make the outcome-dedup durable so a boot replay cannot double-apply an already-applied outcome (Nexus#86 / TD-086). `OutcomeProcessor` previously held the processed `outcome_id`s in a process-local set, lost on restart; combined with the mutation being persisted by the launcher's `append_mutation`, a replay of an un-acked-but-already-applied outcome (process killed between `append_mutation` and the Praxis `OutcomeAcked`) re-entered `_handle_fill` and mutated capital and position a second time. The dedup sets now live on [`InstanceState`](nexus/core/domain/instance_state.py) (`processed_outcome_ids`, `processed_dust_close_ids`), so the successful id is persisted atomically with the mutation it guards and restored by `StateStore.recover`; the replay is recognised and returns a no-op success. The same durability now also covers `close_as_dust`. Serialized via the existing `wal_codec` v1 payload with `.get` back-compat, so pre-upgrade snapshots load unchanged
 - Perform the durable dedup-set writes under `positions_lock` (the lock domain `serialize_state` reads under, matching the `account_dust` precedent) instead of only `_dedup_lock`, so a concurrent `SnapshotScheduler.checkpoint()` cannot serialize the set mid-write; the check+add stays atomic under the nested `_dedup_lock` (preserving the PR #83 concurrent-same-id guarantee). A narrow checkpoint-interleave window between the capital mutation and the dedup add remains, tracked in TD-086 (record-before-mutate)
+
+## v0.67.0 on 22nd of June, 2026
+
+### Add
+
+- Add an injectable `clock` to [`CapitalController`](nexus/core/capital_controller/capital_controller.py): reservation creation, the reservation-expiry check, and the expiry purge now read the current UTC time from a supplied source rather than the wall clock. It defaults to wall time so the live path is unchanged; a deterministic replay injects a cursor advanced per bar so reservations expire on simulated time
+- Add `TestInjectedClock` to [`tests/test_capital_controller.py`](tests/test_capital_controller.py): a reservation's `expires_at` is computed from the injected clock and `_purge_expired` honours it
