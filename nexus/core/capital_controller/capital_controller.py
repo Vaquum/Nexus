@@ -73,6 +73,7 @@ class CapitalController:
     Args:
         capital_state: Mutable capital state to guard.
         max_allocation_per_trade_pct: Cap on `order_notional / capital_pool`. Defaults to `MAX_ALLOCATION_PER_TRADE_PCT`.
+        clock: Callable returning the current UTC time (timezone-aware), used for reservation expiry timestamps and the `send_order` / purge expiry checks. Defaults to wall time; a deterministic replay injects a cursor so reservations expire on simulated time.
     '''
 
     def __init__(

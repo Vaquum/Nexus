@@ -844,4 +844,4 @@
 ### Add
 
 - Add an injectable `clock` to [`CapitalController`](nexus/core/capital_controller/capital_controller.py): reservation creation, the reservation-expiry check, and the expiry purge now read the current UTC time from a supplied source rather than the wall clock. It defaults to wall time so the live path is unchanged; a deterministic replay injects a cursor advanced per bar so reservations expire on simulated time
-- Add `TestInjectedClock` to [`tests/test_capital_controller.py`](tests/test_capital_controller.py): a reservation's `expires_at` is computed from the injected clock and `_purge_expired` honours it
+- Add `TestInjectedClock` to [`tests/test_capital_controller.py`](tests/test_capital_controller.py): a reservation's `expires_at` is computed from the injected clock, and both `_purge_expired` and `send_order`'s expiry check honour it
