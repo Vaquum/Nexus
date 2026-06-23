@@ -10,7 +10,7 @@ import heapq
 import logging
 import threading
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -33,6 +33,12 @@ from nexus.core.domain.position import Position
 __all__ = ['CapitalController']
 
 _logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    '''Return the current UTC time.'''
+
+    return datetime.now(tz=timezone.utc)
 
 MAX_ALLOCATION_PER_TRADE_PCT = Decimal('0.15')
 MAX_CAPITAL_UTILIZATION_PCT = Decimal('0.80')
@@ -67,6 +73,7 @@ class CapitalController:
     Args:
         capital_state: Mutable capital state to guard.
         max_allocation_per_trade_pct: Cap on `order_notional / capital_pool`. Defaults to `MAX_ALLOCATION_PER_TRADE_PCT`.
+        clock: Callable returning the current UTC time (timezone-aware), used for reservation expiry timestamps and the `send_order` / purge expiry checks. Defaults to wall time; a deterministic replay injects a cursor so reservations expire on simulated time.
     '''
 
     def __init__(
@@ -74,6 +81,7 @@ class CapitalController:
         capital_state: CapitalState,
         *,
         max_allocation_per_trade_pct: Decimal = MAX_ALLOCATION_PER_TRADE_PCT,
+        clock: Callable[[], datetime] = _utc_now,
     ) -> None:
         if not isinstance(max_allocation_per_trade_pct, Decimal):
             msg = (
@@ -95,6 +103,7 @@ class CapitalController:
             raise ValueError(msg)
         self._state = capital_state
         self._max_allocation_per_trade_pct = max_allocation_per_trade_pct
+        self._clock = clock
         self._lock = threading.Lock()
         self._reservations: dict[str, Reservation] = {}
         self._expiry_heap: list[tuple[datetime, str]] = []
@@ -395,7 +404,7 @@ class CapitalController:
                     ),
                 )
 
-            now = datetime.now(tz=timezone.utc)
+            now = self._clock()
             reservation = Reservation(
                 reservation_id=str(uuid.uuid4()),
                 strategy_id=strategy_id,
@@ -466,7 +475,7 @@ class CapitalController:
 
     def _purge_expired(self, now: datetime | None = None) -> None:
         if now is None:
-            now = datetime.now(tz=timezone.utc)
+            now = self._clock()
 
         while self._expiry_heap and self._expiry_heap[0][0] <= now:
             _, rid = heapq.heappop(self._expiry_heap)
@@ -535,7 +544,7 @@ class CapitalController:
             raise ValueError(msg)
 
         with self._lock:
-            now = datetime.now(tz=timezone.utc)
+            now = self._clock()
 
             if order_id in self._orders:
                 msg = f'order_id already tracked: {order_id}'

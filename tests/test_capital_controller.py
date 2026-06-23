@@ -2251,3 +2251,60 @@ class TestFeeReserveSubUlpClampToZero:
             f'sub-ULP negative drift not clamped: '
             f'fee_reserve={ctrl._state.fee_reserve}'
         )
+
+
+class TestInjectedClock:
+    def test_reservation_expiry_uses_injected_clock(self) -> None:
+        fixed = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(cs, clock=lambda: fixed)
+
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+            ttl_seconds=60,
+        )
+
+        assert result.reservation is not None
+        assert result.reservation.expires_at == fixed + timedelta(seconds=60)
+
+    def test_purge_expired_uses_injected_clock(self) -> None:
+        moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(cs, clock=lambda: moment)
+
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+            ttl_seconds=60,
+        )
+        assert result.reservation is not None
+
+        moment = moment + timedelta(seconds=61)
+        ctrl._purge_expired()
+
+        assert ctrl._state.reservation_notional == _ZERO
+
+    def test_send_order_expiry_uses_injected_clock(self) -> None:
+        moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        cs = CapitalState(capital_pool=_POOL)
+        ctrl = CapitalController(cs, clock=lambda: moment)
+
+        result = ctrl.check_and_reserve(
+            strategy_id='strat_a',
+            order_notional=Decimal('100'),
+            estimated_fees=Decimal('1'),
+            strategy_budget=Decimal('5000'),
+            ttl_seconds=60,
+        )
+        assert result.reservation is not None
+
+        moment = moment + timedelta(seconds=61)
+        send = ctrl.send_order(result.reservation.reservation_id, 'ORD-1')
+
+        assert send.success is False
+        assert 'expired' in send.reason
