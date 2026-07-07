@@ -11,7 +11,64 @@ from datetime import datetime
 
 from nexus.core.domain.enums import OperationalMode
 
-__all__ = ['ModeState', 'StrategyModeState']
+__all__ = ['HaltHold', 'ModeState', 'OperationalHolds', 'StrategyModeState']
+
+
+@dataclass
+class HaltHold:
+    '''A single reason an instance is held in HALTED, sticky until cleared.
+
+    Args:
+        active: Whether this reason currently holds the instance halted.
+        reason: Short description of why the hold was placed.
+        since: When the hold was placed, or `None` when inactive.
+    '''
+
+    active: bool = False
+    reason: str = ''
+    since: datetime | None = None
+
+    def __post_init__(self) -> None:
+        '''Validate invariants at construction time.'''
+
+        if not isinstance(self.active, bool):
+            msg = 'HaltHold.active must be a bool'
+            raise ValueError(msg)
+
+        if not isinstance(self.reason, str):
+            msg = 'HaltHold.reason must be a string'
+            raise ValueError(msg)
+
+        if self.since is not None and not isinstance(self.since, datetime):
+            msg = 'HaltHold.since must be a datetime or None'
+            raise ValueError(msg)
+
+
+@dataclass
+class OperationalHolds:
+    '''The non-health reasons that hold an instance in HALTED.
+
+    Each hold is independent: a health-derived recovery cannot lift a
+    hold, and clearing one hold does not clear the others.
+
+    Args:
+        manual_hold: Hold placed by a manual halt.
+        risk_daily_loss: Hold placed when the daily-loss breaker trips.
+        risk_drawdown: Hold placed when the drawdown breaker trips.
+    '''
+
+    manual_hold: HaltHold = field(default_factory=HaltHold)
+    risk_daily_loss: HaltHold = field(default_factory=HaltHold)
+    risk_drawdown: HaltHold = field(default_factory=HaltHold)
+
+    def any_active(self) -> bool:
+        '''Return whether any hold currently forces HALTED.'''
+
+        return (
+            self.manual_hold.active
+            or self.risk_daily_loss.active
+            or self.risk_drawdown.active
+        )
 
 
 @dataclass
