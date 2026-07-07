@@ -16,9 +16,11 @@ import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
 
+from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
+from nexus.core.mode_controller import ModeController
 
 __all__ = ['HealthLoop']
 
@@ -50,6 +52,7 @@ class HealthLoop:
         state: InstanceState,
         interval_seconds: float = 5.0,
         rolling_loss_refresher: Callable[[InstanceState], None] | None = None,
+        mode_controller: ModeController | None = None,
     ) -> None:
         if (
             isinstance(interval_seconds, bool)
@@ -67,6 +70,7 @@ class HealthLoop:
         self._running = False
         self._lock = threading.Lock()
         self._rolling_loss_refresher = rolling_loss_refresher
+        self._mode_controller = mode_controller
 
     @property
     def running(self) -> bool:
@@ -161,17 +165,32 @@ class HealthLoop:
             if respect_running and not self._running:
                 return
 
-            current_mode = self._state.mode.mode
-            if new_mode == current_mode:
-                return
+            previous_mode = self._state.mode.mode
 
-            self._state.mode = ModeState(
-                mode=new_mode,
-                trigger=_HEALTH_TRIGGER,
-                transitioned_at=datetime.now(tz=timezone.utc),
-            )
+            if self._mode_controller is not None:
+                changed = self._mode_controller.apply_health_mode(new_mode)
+
+            else:
+                changed = self._write_health_mode(new_mode)
+
+            resulting_mode = self._state.mode.mode
+
+        if not changed:
+            return
 
         _log.info(
             'operational mode transition (health)',
-            extra={'from': current_mode.value, 'to': new_mode.value},
+            extra={'from': previous_mode.value, 'to': resulting_mode.value},
         )
+
+    def _write_health_mode(self, new_mode: OperationalMode) -> bool:
+        if new_mode == self._state.mode.mode:
+            return False
+
+        self._state.mode = ModeState(
+            mode=new_mode,
+            trigger=_HEALTH_TRIGGER,
+            transitioned_at=datetime.now(tz=timezone.utc),
+        )
+
+        return True

@@ -13,6 +13,7 @@ from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot, HealthThresholds
 from nexus.core.health_loop import HealthLoop
+from nexus.core.mode_controller import ModeController
 
 
 def _make_state() -> InstanceState:
@@ -310,3 +311,36 @@ def test_tick_swallows_rolling_loss_refresher_exception() -> None:
     loop.tick_once()
 
     assert state.mode.mode == OperationalMode.ACTIVE
+
+
+def test_mode_controller_hook_keeps_manual_halt_through_healthy_tick() -> None:
+    state = _make_state()
+    controller = ModeController(state, threading.Lock())
+    controller.set_manual_halt('manual stop')
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'manual'
+
+
+def test_mode_controller_hook_applies_health_halt() -> None:
+    state = _make_state()
+    controller = ModeController(state, threading.Lock())
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=5000.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'health'
