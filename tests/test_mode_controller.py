@@ -7,6 +7,7 @@ import pytest
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.operational_mode import HaltHold, ModeState
 from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
 from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.core.mode_controller import ModeController
@@ -190,3 +191,45 @@ def test_evaluate_risk_without_thresholds_is_a_noop():
 def test_risk_breaker_thresholds_reject_negative():
     with pytest.raises(ValueError, match='non-negative'):
         RiskBreakerThresholds(max_daily_loss=Decimal('-1'))
+
+
+def test_reconcile_preserves_a_recovered_health_halt():
+    state = _state()
+    state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health', transitioned_at=_TS)
+    controller = _controller(state)
+
+    controller.reconcile()
+
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_reconcile_keeps_a_recovered_manual_hold():
+    state = _state()
+    state.mode_holds.manual_hold = HaltHold(active=True, reason='manual stop', since=_TS)
+    state.mode = ModeState(mode=OperationalMode.HALTED, trigger='manual', transitioned_at=_TS)
+    controller = _controller(state)
+
+    controller.reconcile()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'manual'
+
+
+def test_reconcile_retrips_risk_from_recovered_state():
+    state = _state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
+
+    controller.reconcile()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode_holds.risk_daily_loss.active
+
+
+def test_reconcile_leaves_a_clean_state_active():
+    state = _state()
+    controller = _controller(state)
+
+    controller.reconcile()
+
+    assert state.mode.mode is OperationalMode.ACTIVE

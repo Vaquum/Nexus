@@ -21,6 +21,7 @@ from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
 __all__ = ['ModeController']
 
 _HALTED = OperationalMode.HALTED
+_HEALTH_TRIGGER = 'health'
 _ZERO = Decimal('0')
 
 
@@ -110,6 +111,24 @@ class ModeController:
         with self._lock:
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
+
+    def reconcile(self) -> None:
+        '''Re-derive the mode after a restart, before trading resumes.
+
+        Seeds the health mode from a recovered health-driven mode so a
+        health halt is not lifted, re-trips the risk breakers from the
+        recovered RiskState, and recommits — so a halt that outlived a
+        crash is in force before any startup actions drain.
+        '''
+
+        with self._lock:
+
+            if self._state.mode.trigger == _HEALTH_TRIGGER:
+                self._health_mode = self._state.mode.mode
+
+            self._evaluate_daily_loss_locked()
+            self._evaluate_drawdown_locked()
+            self._recommit()
 
     def _evaluate_daily_loss_locked(self) -> None:
         limit = self._risk_thresholds.max_daily_loss
