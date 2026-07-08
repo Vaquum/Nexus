@@ -7,8 +7,9 @@ import pytest
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
 from nexus.core.domain.risk_state import StrategyRiskState
-from nexus.core.mode_controller import ModeController, RiskBreakerThresholds
+from nexus.core.mode_controller import ModeController
 
 _TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 

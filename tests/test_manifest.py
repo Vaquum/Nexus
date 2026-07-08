@@ -929,3 +929,58 @@ class TestLoadManifestTimers:
 
         with pytest.raises(ValueError, match='duplicate timer_id'):
             load_manifest(path)
+
+
+def _write_min_manifest(tmp_path: Path, risk_block: str = '') -> Path:
+    path = tmp_path / 'manifest.yaml'
+    _write_strategy_file(tmp_path, 'strategies/momentum.py')
+    _write_yaml(
+        path,
+        'account_id: test_acct\n'
+        'allocated_capital: 10000\n'
+        'capital_pool: 10000\n'
+        + risk_block +
+        'strategies:\n'
+        '  - id: momentum\n'
+        '    file: strategies/momentum.py\n'
+        '    signal:\n'
+        '      series: time_15m\n'
+        '      interval_seconds: 900\n'
+        '    capital_pct: 100\n',
+    )
+
+    return path
+
+
+def test_risk_controls_parsed(tmp_path: Path) -> None:
+    path = _write_min_manifest(
+        tmp_path,
+        'risk_controls:\n'
+        '  max_daily_loss: 250\n'
+        '  max_drawdown_pct: 0.05\n',
+    )
+
+    manifest = load_manifest(path)
+
+    assert manifest.risk_controls.max_daily_loss == Decimal('250')
+    assert manifest.risk_controls.max_drawdown_pct == Decimal('0.05')
+    assert manifest.risk_controls.max_drawdown is None
+
+
+def test_risk_controls_absent_defaults_to_empty(tmp_path: Path) -> None:
+    manifest = load_manifest(_write_min_manifest(tmp_path))
+
+    assert manifest.risk_controls.max_daily_loss is None
+    assert manifest.risk_controls.max_drawdown_pct is None
+    assert manifest.risk_controls.max_drawdown is None
+
+
+def test_negative_risk_control_rejected(tmp_path: Path) -> None:
+    path = _write_min_manifest(
+        tmp_path,
+        'risk_controls:\n'
+        '  max_daily_loss: -1\n',
+    )
+
+    with pytest.raises(ValueError, match='non-negative'):
+        load_manifest(path)
