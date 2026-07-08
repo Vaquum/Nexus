@@ -11,9 +11,10 @@ import pytest
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot, HealthThresholds
 from nexus.core.health_loop import HealthLoop
-from nexus.core.mode_controller import ModeController
+from nexus.core.mode_controller import ModeController, RiskBreakerThresholds
 
 
 def _make_state() -> InstanceState:
@@ -344,3 +345,26 @@ def test_mode_controller_hook_applies_health_halt() -> None:
 
     assert state.mode.mode is OperationalMode.HALTED
     assert state.mode.trigger == 'health'
+
+
+def test_mode_controller_hook_evaluates_risk_breaker_on_tick() -> None:
+    state = _make_state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(
+        strategy_id='s1', rolling_loss_24h=Decimal('300'),
+    )
+    controller = ModeController(
+        state,
+        threading.Lock(),
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+    )
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'

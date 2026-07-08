@@ -149,6 +149,9 @@ class HealthLoop:
             except Exception:  # noqa: BLE001 - decay refresh failure must not abort tick
                 _log.exception('rolling-loss refresh failed')
 
+        if self._mode_controller is not None:
+            self._mode_controller.evaluate_risk()
+
         try:
             snapshot = self._snapshot_provider()
         except Exception:  # noqa: BLE001 - intentional catch-all for provider

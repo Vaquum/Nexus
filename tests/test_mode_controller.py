@@ -2,10 +2,13 @@ import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 
+import pytest
+
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
-from nexus.core.mode_controller import ModeController
+from nexus.core.domain.risk_state import StrategyRiskState
+from nexus.core.mode_controller import ModeController, RiskBreakerThresholds
 
 _TS = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -123,3 +126,66 @@ def test_clearing_inactive_hold_is_a_noop():
 
     assert not controller.clear_manual_halt()
     assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def _breaker(state: InstanceState, thresholds: RiskBreakerThresholds) -> ModeController:
+    return ModeController(state, threading.Lock(), clock=lambda: _TS, risk_thresholds=thresholds)
+
+
+def test_daily_loss_breaker_trips_and_auto_clears():
+    state = _state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
+
+    controller.evaluate_risk()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'
+    assert state.mode_holds.risk_daily_loss.active
+
+    state.risk.per_strategy['s1'].rolling_loss_24h = Decimal('100')
+    controller.evaluate_risk()
+
+    assert not state.mode_holds.risk_daily_loss.active
+    assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_daily_loss_sums_across_strategies():
+    state = _state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('150'))
+    state.risk.per_strategy['s2'] = StrategyRiskState(strategy_id='s2', rolling_loss_24h=Decimal('150'))
+    controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
+
+    controller.evaluate_risk()
+
+    assert state.mode_holds.risk_daily_loss.active
+
+
+def test_drawdown_breaker_trips_and_does_not_auto_clear():
+    state = _state()
+    state.risk.max_total_drawdown_pct = Decimal('0.08')
+    controller = _breaker(state, RiskBreakerThresholds(max_drawdown_pct=Decimal('0.05')))
+
+    controller.evaluate_risk()
+
+    assert state.mode_holds.risk_drawdown.active
+
+    state.risk.max_total_drawdown_pct = Decimal('0.01')
+    controller.evaluate_risk()
+
+    assert state.mode_holds.risk_drawdown.active
+
+
+def test_evaluate_risk_without_thresholds_is_a_noop():
+    state = _state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('9999'))
+    controller = ModeController(state, threading.Lock(), clock=lambda: _TS)
+
+    controller.evaluate_risk()
+
+    assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_risk_breaker_thresholds_reject_negative():
+    with pytest.raises(ValueError, match='non-negative'):
+        RiskBreakerThresholds(max_daily_loss=Decimal('-1'))

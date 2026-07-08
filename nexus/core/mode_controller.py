@@ -10,15 +10,48 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState
 
-__all__ = ['ModeController']
+__all__ = ['ModeController', 'RiskBreakerThresholds']
 
 _HALTED = OperationalMode.HALTED
+_ZERO = Decimal('0')
+
+
+@dataclass
+class RiskBreakerThresholds:
+    '''Configured limits that trip the risk breakers; `None` disables one.
+
+    Args:
+        max_daily_loss: Account 24h loss that trips the daily-loss breaker.
+        max_drawdown_pct: Peak total-drawdown fraction that trips the
+            drawdown breaker.
+        max_drawdown: Peak total-drawdown amount that trips the drawdown
+            breaker.
+    '''
+
+    max_daily_loss: Decimal | None = None
+    max_drawdown_pct: Decimal | None = None
+    max_drawdown: Decimal | None = None
+
+    def __post_init__(self) -> None:
+        '''Validate that configured thresholds are finite and non-negative.'''
+
+        for field_name in ('max_daily_loss', 'max_drawdown_pct', 'max_drawdown'):
+            value = getattr(self, field_name)
+
+            if value is None:
+                continue
+
+            if not isinstance(value, Decimal) or not value.is_finite() or value < _ZERO:
+                msg = f'RiskBreakerThresholds.{field_name} must be a finite non-negative Decimal or None'
+                raise ValueError(msg)
 
 
 def _utc_now() -> datetime:
@@ -34,6 +67,7 @@ class ModeController:
         state: Instance state whose mode and holds this controller owns.
         lock: Lock serialising mode and hold writes with state snapshots.
         clock: Source of UTC time for transition and hold timestamps.
+        risk_thresholds: Limits the risk breakers evaluate each tick.
     '''
 
     def __init__(
@@ -41,11 +75,13 @@ class ModeController:
         state: InstanceState,
         lock: threading.Lock,
         clock: Callable[[], datetime] = _utc_now,
+        risk_thresholds: RiskBreakerThresholds | None = None,
     ) -> None:
         self._state = state
         self._lock = lock
         self._clock = clock
         self._health_mode = OperationalMode.ACTIVE
+        self._risk_thresholds = risk_thresholds or RiskBreakerThresholds()
 
     def apply_health_mode(self, health_mode: OperationalMode) -> bool:
         '''Record the latest health-derived mode and recommit the mode.
@@ -92,31 +128,83 @@ class ModeController:
 
         return self._clear_hold('risk_drawdown')
 
+    def evaluate_risk(self) -> None:
+        '''Trip or lift the risk breakers from the current RiskState.
+
+        The daily-loss breaker sums the per-strategy 24h losses and
+        auto-lifts when they decay back under the limit. The drawdown
+        breaker trips on the lifetime-peak total drawdown and does not
+        auto-lift, so a recovered mark cannot silently resume trading.
+        '''
+
+        with self._lock:
+            self._evaluate_daily_loss_locked()
+            self._evaluate_drawdown_locked()
+
+    def _evaluate_daily_loss_locked(self) -> None:
+        limit = self._risk_thresholds.max_daily_loss
+
+        if limit is None:
+            return
+
+        daily_loss = sum(
+            (srs.rolling_loss_24h for srs in self._state.risk.per_strategy.values()),
+            _ZERO,
+        )
+
+        if daily_loss >= limit:
+            self._set_hold_locked('risk_daily_loss', f'24h loss {daily_loss} >= limit {limit}')
+
+        else:
+            self._clear_hold_locked('risk_daily_loss')
+
+    def _evaluate_drawdown_locked(self) -> None:
+        risk = self._state.risk
+        limit_pct = self._risk_thresholds.max_drawdown_pct
+
+        if limit_pct is not None and risk.max_total_drawdown_pct >= limit_pct:
+            self._set_hold_locked(
+                'risk_drawdown', f'drawdown {risk.max_total_drawdown_pct} >= limit {limit_pct}',
+            )
+
+        limit_abs = self._risk_thresholds.max_drawdown
+
+        if limit_abs is not None and risk.max_total_drawdown >= limit_abs:
+            self._set_hold_locked(
+                'risk_drawdown', f'drawdown {risk.max_total_drawdown} >= limit {limit_abs}',
+            )
+
     def _set_hold(self, name: str, reason: str) -> bool:
         with self._lock:
-            hold = getattr(self._state.mode_holds, name)
-
-            if hold.active:
-                return False
-
-            hold.active = True
-            hold.reason = reason
-            hold.since = self._clock()
-
-            return self._recommit()
+            return self._set_hold_locked(name, reason)
 
     def _clear_hold(self, name: str) -> bool:
         with self._lock:
-            hold = getattr(self._state.mode_holds, name)
+            return self._clear_hold_locked(name)
 
-            if not hold.active:
-                return False
+    def _set_hold_locked(self, name: str, reason: str) -> bool:
+        hold = getattr(self._state.mode_holds, name)
 
-            hold.active = False
-            hold.reason = ''
-            hold.since = None
+        if hold.active:
+            return False
 
-            return self._recommit()
+        hold.active = True
+        hold.reason = reason
+        hold.since = self._clock()
+
+        return self._recommit()
+
+    def _clear_hold_locked(self, name: str) -> bool:
+        hold = getattr(self._state.mode_holds, name)
+
+        if not hold.active:
+            return False
+
+        hold.active = False
+        hold.reason = ''
+        hold.since = None
+
+        return self._recommit()
 
     def _recommit(self) -> bool:
         holds = self._state.mode_holds
