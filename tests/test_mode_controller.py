@@ -300,3 +300,23 @@ def test_on_halt_runs_outside_the_lock():
 
     assert done.wait(timeout=2.0), 'on_halt ran under the lock and deadlocked'
     assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_notify_pending_halt_skips_when_no_longer_halted():
+    state = _state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    sources: list[str] = []
+    controller = ModeController(
+        state, threading.Lock(), clock=lambda: _TS,
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+        on_halt=sources.append,
+    )
+
+    controller.evaluate_risk(notify=False)
+    assert state.mode.mode is OperationalMode.HALTED
+
+    state.risk.per_strategy['s1'].rolling_loss_24h = Decimal('100')
+    controller.evaluate_risk(notify=False)
+    controller.notify_pending_halt()
+
+    assert sources == []

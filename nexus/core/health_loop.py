@@ -149,9 +149,6 @@ class HealthLoop:
             except Exception:  # noqa: BLE001 - decay refresh failure must not abort tick
                 _log.exception('rolling-loss refresh failed')
 
-        if self._mode_controller is not None:
-            self._mode_controller.evaluate_risk()
-
         try:
             snapshot = self._snapshot_provider()
         except Exception:  # noqa: BLE001 - intentional catch-all for provider
@@ -171,19 +168,28 @@ class HealthLoop:
             previous_mode = self._state.mode.mode
 
             if self._mode_controller is not None:
-                changed = self._mode_controller.apply_health_mode(new_mode)
+                self._mode_controller.evaluate_risk(notify=False)
+                self._mode_controller.apply_health_mode(new_mode, notify=False)
 
             else:
-                changed = self._write_health_mode(new_mode)
+                self._write_health_mode(new_mode)
 
             resulting_mode = self._state.mode.mode
+            resulting_trigger = self._state.mode.trigger
 
-        if not changed:
+        if self._mode_controller is not None:
+            self._mode_controller.notify_pending_halt()
+
+        if resulting_mode == previous_mode:
             return
 
         _log.info(
-            'operational mode transition (health)',
-            extra={'from': previous_mode.value, 'to': resulting_mode.value},
+            'operational mode transition',
+            extra={
+                'from': previous_mode.value,
+                'to': resulting_mode.value,
+                'trigger': resulting_trigger,
+            },
         )
 
     def _write_health_mode(self, new_mode: OperationalMode) -> bool:

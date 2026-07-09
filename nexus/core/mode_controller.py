@@ -62,11 +62,14 @@ class ModeController:
         self._on_halt = on_halt
         self._pending_halt: str | None = None
 
-    def apply_health_mode(self, health_mode: OperationalMode) -> bool:
+    def apply_health_mode(self, health_mode: OperationalMode, notify: bool = True) -> bool:
         '''Record the latest health-derived mode and recommit the mode.
 
         Args:
             health_mode: Mode the health evaluator derived this tick.
+            notify: Whether to fire a pending on-halt callback here. A caller
+                holding its own lock passes False and drains later via
+                `notify_pending_halt` once that lock is released.
 
         Returns:
             Whether the mode changed.
@@ -76,7 +79,8 @@ class ModeController:
             self._health_mode = health_mode
             changed = self._recommit()
 
-        self._notify_halt()
+        if notify:
+            self.notify_pending_halt()
 
         return changed
 
@@ -110,20 +114,26 @@ class ModeController:
 
         return self._clear_hold('risk_drawdown')
 
-    def evaluate_risk(self) -> None:
+    def evaluate_risk(self, notify: bool = True) -> None:
         '''Trip or lift the risk breakers from the current RiskState.
 
         The daily-loss breaker sums the per-strategy 24h losses and
         auto-lifts when they decay back under the limit. The drawdown
         breaker trips on the lifetime-peak total drawdown and does not
         auto-lift, so a recovered mark cannot silently resume trading.
+
+        Args:
+            notify: Whether to fire a pending on-halt callback here. A caller
+                holding its own lock passes False and drains later via
+                `notify_pending_halt`.
         '''
 
         with self._lock:
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
 
-        self._notify_halt()
+        if notify:
+            self.notify_pending_halt()
 
     def reconcile(self) -> None:
         '''Re-derive the mode after a restart, before trading resumes.
@@ -143,16 +153,21 @@ class ModeController:
             self._evaluate_drawdown_locked()
             self._recommit()
 
-        self._notify_halt()
+        self.notify_pending_halt()
 
-    def _notify_halt(self) -> None:
-        '''Fire the on-halt callback outside the lock for a pending halt.'''
+    def notify_pending_halt(self) -> None:
+        '''Fire the on-halt callback outside the lock for a pending halt.
+
+        Skips when the mode is no longer HALTED by the time it drains, so a
+        halt lifted before the notifier ran does not raise a stale alert.
+        '''
 
         with self._lock:
             source = self._pending_halt
             self._pending_halt = None
+            still_halted = self._state.mode.mode is _HALTED
 
-        if source is None or self._on_halt is None:
+        if source is None or not still_halted or self._on_halt is None:
             return
 
         try:
@@ -197,7 +212,7 @@ class ModeController:
         with self._lock:
             changed = self._set_hold_locked(name, reason)
 
-        self._notify_halt()
+        self.notify_pending_halt()
 
         return changed
 
@@ -205,7 +220,7 @@ class ModeController:
         with self._lock:
             changed = self._clear_hold_locked(name)
 
-        self._notify_halt()
+        self.notify_pending_halt()
 
         return changed
 

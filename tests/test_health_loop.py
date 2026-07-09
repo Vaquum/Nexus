@@ -369,3 +369,29 @@ def test_mode_controller_hook_evaluates_risk_breaker_on_tick() -> None:
 
     assert state.mode.mode is OperationalMode.HALTED
     assert state.mode.trigger == 'risk'
+
+
+def test_health_path_fires_on_halt_outside_the_loop_lock() -> None:
+    state = _make_state()
+    lock_free: list[bool] = []
+    holder: dict[str, HealthLoop] = {}
+
+    def on_halt(_source: str) -> None:
+        acquired = holder['loop']._lock.acquire(blocking=False)
+        lock_free.append(acquired)
+        if acquired:
+            holder['loop']._lock.release()
+
+    controller = ModeController(state, threading.Lock(), on_halt=on_halt)
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=5000.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+    holder['loop'] = loop
+
+    loop.tick_once()
+
+    assert lock_free == [True]
+    assert state.mode.mode is OperationalMode.HALTED
