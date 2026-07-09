@@ -21,7 +21,10 @@ class HaltHold:
     Args:
         active: Whether this reason currently holds the instance halted.
         reason: Short description of why the hold was placed.
-        since: When the hold was placed, or `None` when inactive.
+        since: When the hold was placed, or `None` when no timestamp was
+            recorded. The ModeController sets it on every hold it places;
+            it is not required to be set when `active` is True (a hold
+            decoded or constructed without a timestamp keeps `None`).
     '''
 
     active: bool = False
