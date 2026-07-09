@@ -429,3 +429,27 @@ def test_risk_breaker_thresholds_are_frozen() -> None:
 
     with pytest.raises(FrozenInstanceError):
         thresholds.max_daily_loss = Decimal('1')  # type: ignore[misc]
+
+
+def test_set_hold_reasserts_halt_after_external_mode_drift() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_manual_halt('manual stop')
+    state.mode = ModeState(mode=OperationalMode.ACTIVE, trigger='health', transitioned_at=_TS)
+
+    changed = controller.set_manual_halt('manual stop')
+
+    assert changed
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'manual'
+
+
+def test_clear_hold_reconciles_mode_after_external_drift() -> None:
+    state = _state()
+    controller = _controller(state)
+    state.mode = ModeState(mode=OperationalMode.HALTED, trigger='manual', transitioned_at=_TS)
+
+    changed = controller.clear_manual_halt()
+
+    assert changed
+    assert state.mode.mode is OperationalMode.ACTIVE

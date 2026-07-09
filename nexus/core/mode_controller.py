@@ -275,7 +275,7 @@ class ModeController:
         hold = getattr(self._state.mode_holds, name)
 
         if hold.active:
-            return False
+            return self._recommit()
 
         hold.active = True
         hold.reason = reason
@@ -287,7 +287,7 @@ class ModeController:
         hold = getattr(self._state.mode_holds, name)
 
         if not hold.active:
-            return False
+            return self._recommit()
 
         hold.active = False
         hold.reason = ''
