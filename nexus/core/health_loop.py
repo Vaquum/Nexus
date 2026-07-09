@@ -43,6 +43,11 @@ class HealthLoop:
             Best-effort: any exception is logged at WARN and the rest of
             the tick proceeds — a single bad refresh never aborts the
             health-evaluation loop. None disables the refresh side-effect.
+        mode_controller: Optional ModeController. When supplied, each tick
+            routes the mode write through it (risk breakers then health
+            mode) so a halt hold is honoured; the halt callback drains
+            after this loop's lock is released. Its lock must not be this
+            loop's lock. None uses the direct health-only mode write.
     '''
 
     def __init__(

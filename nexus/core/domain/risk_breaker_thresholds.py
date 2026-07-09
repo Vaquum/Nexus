@@ -27,7 +27,7 @@ class RiskBreakerThresholds:
     max_drawdown: Decimal | None = None
 
     def __post_init__(self) -> None:
-        '''Validate that configured thresholds are finite and non-negative.'''
+        '''Validate that configured thresholds are finite and positive.'''
 
         for field_name in ('max_daily_loss', 'max_drawdown_pct', 'max_drawdown'):
             value = getattr(self, field_name)
@@ -35,6 +35,6 @@ class RiskBreakerThresholds:
             if value is None:
                 continue
 
-            if not isinstance(value, Decimal) or not value.is_finite() or value < _ZERO:
-                msg = f"RiskBreakerThresholds.{field_name} must be a finite non-negative Decimal or None"
+            if not isinstance(value, Decimal) or not value.is_finite() or value <= _ZERO:
+                msg = f"RiskBreakerThresholds.{field_name} must be a finite positive Decimal or None"
                 raise ValueError(msg)

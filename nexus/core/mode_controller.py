@@ -1,9 +1,13 @@
-'''Single writer of instance operational mode.
+'''Arbitrate the instance operational mode against halt holds.
 
-Arbitrates the health-derived mode against the sticky manual and risk
-holds so a healthy tick can never lift a hold. The mode is
-HALTED whenever any hold is active or health itself is HALTED, and the
-health-derived mode otherwise.
+Owns `state.mode_holds` and writes `state.mode` on the
+health-and-hold-arbitrated path: the mode is HALTED whenever any hold
+is active or health itself is HALTED, and the health-derived mode
+otherwise, so a healthy tick can never lift a hold.
+
+The startup and shutdown sequencers still write `state.mode` directly
+and are not yet routed through this controller; until they are, it is
+the sole writer only on the health/hold path, not process-wide.
 '''
 
 from __future__ import annotations
@@ -12,7 +16,6 @@ import logging
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
@@ -25,7 +28,6 @@ _log = logging.getLogger(__name__)
 
 _HALTED = OperationalMode.HALTED
 _HEALTH_TRIGGER = 'health'
-_ZERO = Decimal('0')
 
 
 def _utc_now() -> datetime:
@@ -35,11 +37,19 @@ def _utc_now() -> datetime:
 
 
 class ModeController:
-    '''The only sanctioned writer of `state.mode` and `state.mode_holds`.
+    '''Write `state.mode` and own `state.mode_holds` on the health/hold path.
+
+    Not yet the process-wide sole writer: `StartupSequencer` and
+    `ShutdownSequencer` still set `state.mode` directly. Routing those
+    through this controller is tracked as follow-on wiring.
 
     Args:
         state: Instance state whose mode and holds this controller owns.
         lock: Lock serialising mode and hold writes with state snapshots.
+            Must not be the HealthLoop's own lock: the loop calls this
+            controller while holding that lock and the controller
+            re-acquires this one, so sharing a non-reentrant lock
+            deadlocks.
         clock: Source of UTC time for transition and hold timestamps.
         risk_thresholds: Limits the risk breakers evaluate each tick.
         on_halt: Optional callback invoked with the halt source ('manual',
@@ -188,13 +198,10 @@ class ModeController:
         if limit is None:
             return
 
-        daily_loss = sum(
-            (srs.rolling_loss_24h for srs in self._state.risk.per_strategy.values()),
-            _ZERO,
-        )
+        daily_loss = self._state.risk.rolling_loss_24h
 
-        if daily_loss >= limit:
-            self._set_hold_locked('risk_daily_loss', f"24h loss {daily_loss} >= limit {limit}")
+        if daily_loss > limit:
+            self._set_hold_locked('risk_daily_loss', f"24h loss {daily_loss} > limit {limit}")
 
         else:
             self._clear_hold_locked('risk_daily_loss')
@@ -203,16 +210,16 @@ class ModeController:
         risk = self._state.risk
         limit_pct = self._risk_thresholds.max_drawdown_pct
 
-        if limit_pct is not None and risk.max_total_drawdown_pct >= limit_pct:
+        if limit_pct is not None and risk.max_total_drawdown_pct > limit_pct:
             self._set_hold_locked(
-                'risk_drawdown', f"drawdown {risk.max_total_drawdown_pct} >= limit {limit_pct}",
+                'risk_drawdown', f"drawdown {risk.max_total_drawdown_pct} > limit {limit_pct}",
             )
 
         limit_abs = self._risk_thresholds.max_drawdown
 
-        if limit_abs is not None and risk.max_total_drawdown >= limit_abs:
+        if limit_abs is not None and risk.max_total_drawdown > limit_abs:
             self._set_hold_locked(
-                'risk_drawdown', f"drawdown {risk.max_total_drawdown} >= limit {limit_abs}",
+                'risk_drawdown', f"drawdown {risk.max_total_drawdown} > limit {limit_abs}",
             )
 
     def _set_hold(self, name: str, reason: str) -> bool:

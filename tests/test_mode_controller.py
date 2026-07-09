@@ -189,8 +189,24 @@ def test_evaluate_risk_without_thresholds_is_a_noop() -> None:
 
 
 def test_risk_breaker_thresholds_reject_negative() -> None:
-    with pytest.raises(ValueError, match='non-negative'):
+    with pytest.raises(ValueError, match='positive'):
         RiskBreakerThresholds(max_daily_loss=Decimal('-1'))
+
+
+def test_risk_breaker_thresholds_reject_zero() -> None:
+    with pytest.raises(ValueError, match='positive'):
+        RiskBreakerThresholds(max_drawdown_pct=Decimal('0'))
+
+
+def test_drawdown_breaker_trips_on_absolute_limit() -> None:
+    state = _state()
+    state.risk.max_total_drawdown = Decimal('1500')
+    controller = _breaker(state, RiskBreakerThresholds(max_drawdown=Decimal('1000')))
+
+    controller.evaluate_risk()
+
+    assert state.mode_holds.risk_drawdown.active
+    assert state.mode.mode is OperationalMode.HALTED
 
 
 def test_reconcile_preserves_a_recovered_health_halt() -> None:

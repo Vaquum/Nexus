@@ -850,9 +850,9 @@
 
 ### Add
 
-- Add `ModeController` arbitrating operational mode against sticky manual and risk halt holds, as the sole writer of `state.mode`
+- Add `ModeController` arbitrating operational mode against sticky manual and risk halt holds; it writes `state.mode` on the health-and-hold-arbitrated path. It is not yet the process-wide sole writer — `StartupSequencer` and `ShutdownSequencer` still set `state.mode` directly, and wiring the controller into the launcher (construction, `reconcile` before startup drain, `on_halt`, routing shutdown/manual through holds) is tracked as follow-on live-safety work; this release is the library only
 - Add `HaltHold` / `OperationalHolds` on `InstanceState.mode_holds`, persisted through the WAL codec with backward-compatible decode
-- Add `RiskBreakerThresholds` and `ModeController.evaluate_risk` for daily-loss and drawdown circuit-breakers evaluated on the health tick
+- Add `RiskBreakerThresholds` and `ModeController.evaluate_risk` for daily-loss and drawdown circuit-breakers evaluated on the health tick. Breakers trip on a strict breach (`observed > limit`, matching `risk_stage`), read `RiskState` under `state.risk.lock_cm()` so the per-strategy sum and drawdown reads are consistent against concurrent `OutcomeProcessor` / `MtmLoop` writers, and reject non-positive thresholds (`None` disables a breaker)
 - Add `ModeController.reconcile` to re-derive the mode on restart before startup actions drain
 - Add an optional `on_halt` callback fired outside the lock when the mode transitions to HALTED
 - Route `HealthLoop` mode writes through an optional `ModeController`

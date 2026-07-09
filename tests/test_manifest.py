@@ -982,7 +982,7 @@ def test_negative_risk_control_rejected(tmp_path: Path) -> None:
         '  max_daily_loss: -1\n',
     )
 
-    with pytest.raises(ValueError, match='non-negative'):
+    with pytest.raises(ValueError, match='positive'):
         load_manifest(path)
 
 
