@@ -82,7 +82,8 @@ class ModeController:
                 `notify_pending_halt` once that lock is released.
 
         Returns:
-            Whether the mode changed.
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
         '''
 
         with self._lock:
@@ -111,7 +112,8 @@ class ModeController:
                 `notify_pending_halt`.
 
         Returns:
-            Whether the mode changed.
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
         '''
 
         with self._lock, self._state.risk.lock_cm():
@@ -128,32 +130,62 @@ class ModeController:
         return changed
 
     def set_manual_halt(self, reason: str) -> bool:
-        '''Place the manual hold and recommit the mode.'''
+        '''Place the manual hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
 
         return self._set_hold('manual_hold', reason)
 
     def clear_manual_halt(self) -> bool:
-        '''Lift the manual hold and recommit; never writes ACTIVE directly.'''
+        '''Lift the manual hold and recommit; never writes ACTIVE directly.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
 
         return self._clear_hold('manual_hold')
 
     def set_daily_loss_halt(self, reason: str) -> bool:
-        '''Place the daily-loss hold and recommit the mode.'''
+        '''Place the daily-loss hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
 
         return self._set_hold('risk_daily_loss', reason)
 
     def clear_daily_loss_halt(self) -> bool:
-        '''Lift the daily-loss hold and recommit the mode.'''
+        '''Lift the daily-loss hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
 
         return self._clear_hold('risk_daily_loss')
 
     def set_drawdown_halt(self, reason: str) -> bool:
-        '''Place the drawdown hold and recommit the mode.'''
+        '''Place the drawdown hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
 
         return self._set_hold('risk_drawdown', reason)
 
     def clear_drawdown_halt(self) -> bool:
-        '''Lift the drawdown hold and recommit the mode.'''
+        '''Lift the drawdown hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
 
         return self._clear_hold('risk_drawdown')
 

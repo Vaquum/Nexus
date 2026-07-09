@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime
 from decimal import Decimal
@@ -395,3 +396,31 @@ def test_health_path_fires_on_halt_outside_the_loop_lock() -> None:
 
     assert lock_free == [True]
     assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_health_tick_logs_a_trigger_only_change(caplog: pytest.LogCaptureFixture) -> None:
+    state = _make_state()
+    controller = ModeController(
+        state, threading.Lock(),
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+    )
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=5000.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'health'
+
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+
+    with caplog.at_level(logging.INFO, logger='nexus.core.health_loop'):
+        loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'
+    assert any('operational mode transition' in r.message for r in caplog.records)

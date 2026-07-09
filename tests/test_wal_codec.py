@@ -1057,3 +1057,11 @@ class TestModeHoldsRoundTrip:
         restored = deserialize_state(msgpack.packb(encoded))
 
         assert not restored.mode_holds.any_active()
+
+    def test_present_but_malformed_holds_fails_decode(self) -> None:
+        original = _make_minimal_state()
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
+        encoded['mode_holds'] = []
+
+        with pytest.raises(ValueError, match='Malformed WAL codec payload'):
+            deserialize_state(msgpack.packb(encoded))

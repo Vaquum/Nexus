@@ -427,7 +427,7 @@ def _decode_operational_holds(d: dict[str, Any] | None) -> OperationalHolds:
         Reconstructed operational holds.
     '''
 
-    if not d:
+    if d is None:
         return OperationalHolds()
 
     return OperationalHolds(

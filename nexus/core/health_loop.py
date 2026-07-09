@@ -171,6 +171,7 @@ class HealthLoop:
                 return
 
             previous_mode = self._state.mode.mode
+            previous_trigger = self._state.mode.trigger
 
             if self._mode_controller is not None:
                 self._mode_controller.apply_health_and_risk(new_mode, notify=False)
@@ -184,7 +185,7 @@ class HealthLoop:
         if self._mode_controller is not None:
             self._mode_controller.notify_pending_halt()
 
-        if resulting_mode == previous_mode:
+        if resulting_mode == previous_mode and resulting_trigger == previous_trigger:
             return
 
         _log.info(
