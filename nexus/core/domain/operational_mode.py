@@ -1,7 +1,8 @@
 '''Operational mode state for instance and per-strategy tracking.
 
-Mutable dataclasses holding current mode and what triggered
-the most recent transition.
+Mutable dataclasses holding the current mode and the driver behind it.
+`trigger` names the current driver and updates whenever the driver
+changes; `transitioned_at` moves only when the mode value changes.
 '''
 
 from __future__ import annotations
@@ -11,7 +12,67 @@ from datetime import datetime
 
 from nexus.core.domain.enums import OperationalMode
 
-__all__ = ['ModeState', 'StrategyModeState']
+__all__ = ['HaltHold', 'ModeState', 'OperationalHolds', 'StrategyModeState']
+
+
+@dataclass
+class HaltHold:
+    '''A single reason an instance is held in HALTED, sticky until cleared.
+
+    Args:
+        active: Whether this reason currently holds the instance halted.
+        reason: Short description of why the hold was placed.
+        since: When the hold was placed, or `None` when no timestamp was
+            recorded. The ModeController sets it on every hold it places;
+            it is not required to be set when `active` is True (a hold
+            decoded or constructed without a timestamp keeps `None`).
+    '''
+
+    active: bool = False
+    reason: str = ''
+    since: datetime | None = None
+
+    def __post_init__(self) -> None:
+        '''Validate invariants at construction time.'''
+
+        if not isinstance(self.active, bool):
+            msg = 'HaltHold.active must be a bool'
+            raise ValueError(msg)
+
+        if not isinstance(self.reason, str):
+            msg = 'HaltHold.reason must be a string'
+            raise ValueError(msg)
+
+        if self.since is not None and not isinstance(self.since, datetime):
+            msg = 'HaltHold.since must be a datetime or None'
+            raise ValueError(msg)
+
+
+@dataclass
+class OperationalHolds:
+    '''The non-health reasons that hold an instance in HALTED.
+
+    Each hold is independent: a health-derived recovery cannot lift a
+    hold, and clearing one hold does not clear the others.
+
+    Args:
+        manual_hold: Hold placed by a manual halt.
+        risk_daily_loss: Hold placed when the daily-loss breaker trips.
+        risk_drawdown: Hold placed when the drawdown breaker trips.
+    '''
+
+    manual_hold: HaltHold = field(default_factory=HaltHold)
+    risk_daily_loss: HaltHold = field(default_factory=HaltHold)
+    risk_drawdown: HaltHold = field(default_factory=HaltHold)
+
+    def any_active(self) -> bool:
+        '''Return whether any hold currently forces HALTED.'''
+
+        return (
+            self.manual_hold.active
+            or self.risk_daily_loss.active
+            or self.risk_drawdown.active
+        )
 
 
 @dataclass
@@ -20,8 +81,12 @@ class ModeState:
 
     Args:
         mode: Current operational mode.
-        trigger: What caused the most recent mode transition.
-        transitioned_at: When the most recent transition occurred.
+        trigger: What currently drives the mode ('manual', 'risk',
+            'health', ...). Updated whenever the driver changes, even if
+            the mode value does not — a HALTED instance moving from a
+            manual to a risk hold keeps mode HALTED but changes trigger.
+        transitioned_at: When the mode value last changed. Not updated
+            when only the trigger changes.
     '''
 
     mode: OperationalMode = OperationalMode.ACTIVE

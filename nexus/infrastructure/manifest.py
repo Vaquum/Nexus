@@ -8,12 +8,14 @@ existence and Python syntax.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
 
 __all__ = ['Manifest', 'SignalSpec', 'StrategySpec', 'TimerSpec', 'load_manifest']
 
@@ -176,12 +178,14 @@ class Manifest:
             must not exceed this value.
         capital_pool: Operational allocation in quote asset for this instance.
         strategies: Strategy specifications for this instance.
+        risk_controls: Per-account risk-breaker limits; all-unset by default.
     '''
 
     account_id: str
     allocated_capital: Decimal
     capital_pool: Decimal
     strategies: tuple[StrategySpec, ...]
+    risk_controls: RiskBreakerThresholds = field(default_factory=RiskBreakerThresholds)
 
     def __post_init__(self) -> None:
         '''Validate manifest invariants.'''
@@ -243,6 +247,49 @@ class Manifest:
         if total_pct > _ONE_HUNDRED:
             msg = f'Manifest.strategies capital_pct sum {total_pct} exceeds 100'
             raise ValueError(msg)
+
+
+def _optional_manifest_decimal(raw: Any, field_name: str) -> Decimal | None:
+    '''Parse an optional decimal from a manifest field, or `None`.
+
+    Args:
+        raw: Raw YAML value, or `None` when the key is absent.
+        field_name: Field name for error messages.
+
+    Returns:
+        The parsed `Decimal`, or `None` when `raw` is `None`.
+
+    Raises:
+        ValueError: `raw` is present but not a valid decimal.
+    '''
+
+    if raw is None:
+        return None
+
+    try:
+        return Decimal(str(raw))
+    except InvalidOperation as exc:
+        msg = f"risk_controls.{field_name} must be a decimal, got {raw!r}"
+        raise ValueError(msg) from exc
+
+
+def _parse_risk_controls(data: dict[str, Any]) -> RiskBreakerThresholds:
+    '''Parse the optional `risk_controls` block into RiskBreakerThresholds.'''
+
+    raw = data.get('risk_controls')
+
+    if raw is None:
+        raw = {}
+
+    if not isinstance(raw, dict):
+        msg = 'risk_controls must be a mapping'
+        raise ValueError(msg)
+
+    return RiskBreakerThresholds(
+        max_daily_loss=_optional_manifest_decimal(raw.get('max_daily_loss'), 'max_daily_loss'),
+        max_drawdown_pct=_optional_manifest_decimal(raw.get('max_drawdown_pct'), 'max_drawdown_pct'),
+        max_drawdown=_optional_manifest_decimal(raw.get('max_drawdown'), 'max_drawdown'),
+    )
 
 
 def load_manifest(path: Path) -> Manifest:
@@ -437,6 +484,7 @@ def load_manifest(path: Path) -> Manifest:
         allocated_capital=allocated_capital,
         capital_pool=capital_pool,
         strategies=tuple(specs),
+        risk_controls=_parse_risk_controls(data),
     )
 
     _validate_strategy_files(manifest, path.parent)

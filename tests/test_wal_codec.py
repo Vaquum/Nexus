@@ -13,7 +13,7 @@ import pytest
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
-from nexus.core.domain.operational_mode import ModeState, StrategyModeState
+from nexus.core.domain.operational_mode import HaltHold, ModeState, StrategyModeState
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
 from nexus.infrastructure import wal_codec
@@ -1026,3 +1026,42 @@ class TestProcessedDedupIds:
 
         assert restored.processed_outcome_ids == set()
         assert restored.processed_dust_close_ids == set()
+
+
+class TestModeHoldsRoundTrip:
+    '''Verify mode_holds survive serialize → deserialize.'''
+
+    def test_active_holds_survive_round_trip(self) -> None:
+        original = _make_minimal_state()
+        original.mode_holds.manual_hold = HaltHold(
+            active=True,
+            reason='operator stop',
+            since=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        original.mode_holds.risk_drawdown = HaltHold(active=True, reason='drawdown breach')
+
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.mode_holds.manual_hold.active
+        assert restored.mode_holds.manual_hold.reason == 'operator stop'
+        assert restored.mode_holds.manual_hold.since == datetime(2026, 1, 1, tzinfo=timezone.utc)
+        assert restored.mode_holds.risk_drawdown.active
+        assert restored.mode_holds.risk_drawdown.since is None
+        assert not restored.mode_holds.risk_daily_loss.active
+
+    def test_pre_field_snapshot_defaults_to_empty_holds(self) -> None:
+        original = _make_minimal_state()
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
+        del encoded['mode_holds']
+
+        restored = deserialize_state(msgpack.packb(encoded))
+
+        assert not restored.mode_holds.any_active()
+
+    def test_present_but_malformed_holds_fails_decode(self) -> None:
+        original = _make_minimal_state()
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
+        encoded['mode_holds'] = []
+
+        with pytest.raises(ValueError, match='Malformed WAL codec payload'):
+            deserialize_state(msgpack.packb(encoded))

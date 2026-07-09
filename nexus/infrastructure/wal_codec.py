@@ -17,7 +17,12 @@ from nexus.core.domain.capital_state import SUB_ULP_TOLERANCE as _SUB_ULP_TOLERA
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
-from nexus.core.domain.operational_mode import ModeState, StrategyModeState
+from nexus.core.domain.operational_mode import (
+    HaltHold,
+    ModeState,
+    OperationalHolds,
+    StrategyModeState,
+)
 from nexus.core.domain.position import Position
 from nexus.core.domain.risk_state import RiskState, StrategyRiskState
 from nexus.infrastructure.strategy_event import StrategyEvent
@@ -78,6 +83,7 @@ def serialize_state(state: InstanceState) -> bytes:
         'risk': _encode_risk_state(state.risk),
         'positions': {k: _encode_position(v) for k, v in positions_snapshot.items()},
         'mode': _encode_mode_state(state.mode),
+        'mode_holds': _encode_operational_holds(state.mode_holds),
         'strategy_modes': {
             k: _encode_strategy_mode_state(v) for k, v in strategy_modes_snapshot.items()
         },
@@ -130,6 +136,7 @@ def _decode_state_v1(d: dict[str, Any]) -> InstanceState:
             risk=_decode_risk_state(d['risk']),
             positions={k: _decode_position(v) for k, v in d['positions'].items()},
             mode=_decode_mode_state(d['mode']),
+            mode_holds=_decode_operational_holds(d.get('mode_holds')),
             strategy_modes={
                 k: _decode_strategy_mode_state(v)
                 for k, v in d['strategy_modes'].items()
@@ -390,6 +397,65 @@ def _decode_mode_state(d: dict[str, str]) -> ModeState:
         mode=OperationalMode(d['mode']),
         trigger=d['trigger'],
         transitioned_at=datetime.fromisoformat(d['transitioned_at']),
+    )
+
+
+def _encode_operational_holds(holds: OperationalHolds) -> dict[str, Any]:
+    '''Encode OperationalHolds to a nested dict for msgpack.
+
+    Args:
+        holds: Operational holds to encode.
+
+    Returns:
+        Dict of hold name to encoded HaltHold.
+    '''
+
+    return {
+        'manual_hold': _encode_halt_hold(holds.manual_hold),
+        'risk_daily_loss': _encode_halt_hold(holds.risk_daily_loss),
+        'risk_drawdown': _encode_halt_hold(holds.risk_drawdown),
+    }
+
+
+def _decode_operational_holds(d: dict[str, Any] | None) -> OperationalHolds:
+    '''Decode OperationalHolds, defaulting to empty for pre-field snapshots.
+
+    Args:
+        d: Encoded holds dict, or `None` when absent from an old snapshot.
+
+    Returns:
+        Reconstructed operational holds.
+    '''
+
+    if d is None:
+        return OperationalHolds()
+
+    return OperationalHolds(
+        manual_hold=_decode_halt_hold(d['manual_hold']),
+        risk_daily_loss=_decode_halt_hold(d['risk_daily_loss']),
+        risk_drawdown=_decode_halt_hold(d['risk_drawdown']),
+    )
+
+
+def _encode_halt_hold(hold: HaltHold) -> dict[str, Any]:
+    '''Encode a single HaltHold, `since` as an ISO string or `None`.'''
+
+    return {
+        'active': hold.active,
+        'reason': hold.reason,
+        'since': hold.since.isoformat() if hold.since is not None else None,
+    }
+
+
+def _decode_halt_hold(d: dict[str, Any]) -> HaltHold:
+    '''Decode a single HaltHold from its encoded dict.'''
+
+    since = d['since']
+
+    return HaltHold(
+        active=d['active'],
+        reason=d['reason'],
+        since=datetime.fromisoformat(since) if since is not None else None,
     )
 
 

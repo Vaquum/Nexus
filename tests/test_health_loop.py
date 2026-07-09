@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import datetime
 from decimal import Decimal
@@ -11,8 +12,11 @@ import pytest
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
+from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
+from nexus.core.domain.risk_state import StrategyRiskState
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot, HealthThresholds
 from nexus.core.health_loop import HealthLoop
+from nexus.core.mode_controller import ModeController
 
 
 def _make_state() -> InstanceState:
@@ -310,3 +314,113 @@ def test_tick_swallows_rolling_loss_refresher_exception() -> None:
     loop.tick_once()
 
     assert state.mode.mode == OperationalMode.ACTIVE
+
+
+def test_mode_controller_hook_keeps_manual_halt_through_healthy_tick() -> None:
+    state = _make_state()
+    controller = ModeController(state, threading.Lock())
+    controller.set_manual_halt('manual stop')
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'manual'
+
+
+def test_mode_controller_hook_applies_health_halt() -> None:
+    state = _make_state()
+    controller = ModeController(state, threading.Lock())
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=5000.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'health'
+
+
+def test_mode_controller_hook_evaluates_risk_breaker_on_tick() -> None:
+    state = _make_state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(
+        strategy_id='s1', rolling_loss_24h=Decimal('300'),
+    )
+    controller = ModeController(
+        state,
+        threading.Lock(),
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+    )
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'
+
+
+def test_health_path_fires_on_halt_outside_the_loop_lock() -> None:
+    state = _make_state()
+    lock_free: list[bool] = []
+    holder: dict[str, HealthLoop] = {}
+
+    def on_halt(_source: str) -> None:
+        acquired = holder['loop']._lock.acquire(blocking=False)
+        lock_free.append(acquired)
+        if acquired:
+            holder['loop']._lock.release()
+
+    controller = ModeController(state, threading.Lock(), on_halt=on_halt)
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=5000.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+    holder['loop'] = loop
+
+    loop.tick_once()
+
+    assert lock_free == [True]
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_health_tick_logs_a_trigger_only_change(caplog: pytest.LogCaptureFixture) -> None:
+    state = _make_state()
+    controller = ModeController(
+        state, threading.Lock(),
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+    )
+    loop = HealthLoop(
+        snapshot_provider=lambda: HealthSnapshot(latency_p99_ms=5000.0),
+        evaluator=_make_evaluator(),
+        state=state,
+        mode_controller=controller,
+    )
+
+    loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'health'
+
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+
+    with caplog.at_level(logging.INFO, logger='nexus.core.health_loop'):
+        loop.tick_once()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'
+    assert any('operational mode transition' in r.message for r in caplog.records)
