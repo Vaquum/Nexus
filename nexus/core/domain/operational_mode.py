@@ -1,7 +1,8 @@
 '''Operational mode state for instance and per-strategy tracking.
 
-Mutable dataclasses holding current mode and what triggered
-the most recent transition.
+Mutable dataclasses holding the current mode and the driver behind it.
+`trigger` names the current driver and updates whenever the driver
+changes; `transitioned_at` moves only when the mode value changes.
 '''
 
 from __future__ import annotations
@@ -80,8 +81,12 @@ class ModeState:
 
     Args:
         mode: Current operational mode.
-        trigger: What caused the most recent mode transition.
-        transitioned_at: When the most recent transition occurred.
+        trigger: What currently drives the mode ('manual', 'risk',
+            'health', ...). Updated whenever the driver changes, even if
+            the mode value does not — a HALTED instance moving from a
+            manual to a risk hold keeps mode HALTED but changes trigger.
+        transitioned_at: When the mode value last changed. Not updated
+            when only the trigger changes.
     '''
 
     mode: OperationalMode = OperationalMode.ACTIVE
