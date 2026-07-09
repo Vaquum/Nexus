@@ -277,3 +277,26 @@ def test_on_halt_failure_does_not_break_controller():
     controller.set_manual_halt('manual stop')
 
     assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_on_halt_runs_outside_the_lock():
+    state = _state()
+    holder: dict[str, ModeController] = {}
+
+    def on_halt(_source: str) -> None:
+        holder['controller'].clear_daily_loss_halt()
+
+    controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=on_halt)
+    holder['controller'] = controller
+
+    done = threading.Event()
+
+    def run() -> None:
+        controller.set_manual_halt('manual stop')
+        done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+
+    assert done.wait(timeout=2.0), 'on_halt ran under the lock and deadlocked'
+    assert state.mode.mode is OperationalMode.HALTED

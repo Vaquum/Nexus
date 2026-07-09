@@ -60,6 +60,7 @@ class ModeController:
         self._health_mode = OperationalMode.ACTIVE
         self._risk_thresholds = risk_thresholds or RiskBreakerThresholds()
         self._on_halt = on_halt
+        self._pending_halt: str | None = None
 
     def apply_health_mode(self, health_mode: OperationalMode) -> bool:
         '''Record the latest health-derived mode and recommit the mode.
@@ -73,8 +74,11 @@ class ModeController:
 
         with self._lock:
             self._health_mode = health_mode
+            changed = self._recommit()
 
-            return self._recommit()
+        self._notify_halt()
+
+        return changed
 
     def set_manual_halt(self, reason: str) -> bool:
         '''Place the manual hold and recommit the mode.'''
@@ -119,6 +123,8 @@ class ModeController:
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
 
+        self._notify_halt()
+
     def reconcile(self) -> None:
         '''Re-derive the mode after a restart, before trading resumes.
 
@@ -136,6 +142,23 @@ class ModeController:
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
             self._recommit()
+
+        self._notify_halt()
+
+    def _notify_halt(self) -> None:
+        '''Fire the on-halt callback outside the lock for a pending halt.'''
+
+        with self._lock:
+            source = self._pending_halt
+            self._pending_halt = None
+
+        if source is None or self._on_halt is None:
+            return
+
+        try:
+            self._on_halt(source)
+        except Exception:  # noqa: BLE001 - alerting must not break mode control
+            _log.exception('mode-halt alert callback failed')
 
     def _evaluate_daily_loss_locked(self) -> None:
         limit = self._risk_thresholds.max_daily_loss
@@ -172,11 +195,19 @@ class ModeController:
 
     def _set_hold(self, name: str, reason: str) -> bool:
         with self._lock:
-            return self._set_hold_locked(name, reason)
+            changed = self._set_hold_locked(name, reason)
+
+        self._notify_halt()
+
+        return changed
 
     def _clear_hold(self, name: str) -> bool:
         with self._lock:
-            return self._clear_hold_locked(name)
+            changed = self._clear_hold_locked(name)
+
+        self._notify_halt()
+
+        return changed
 
     def _set_hold_locked(self, name: str, reason: str) -> bool:
         hold = getattr(self._state.mode_holds, name)
@@ -222,12 +253,8 @@ class ModeController:
             transitioned_at=transitioned_at,
         )
 
-        if mode_changed and new_mode is _HALTED and self._on_halt is not None:
-
-            try:
-                self._on_halt(source)
-            except Exception:  # noqa: BLE001 - alerting must not break mode control
-                _log.exception('mode-halt alert callback failed')
+        if mode_changed and new_mode is _HALTED:
+            self._pending_halt = source
 
         return mode_changed
 

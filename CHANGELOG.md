@@ -845,3 +845,15 @@
 
 - Add an injectable `clock` to [`CapitalController`](nexus/core/capital_controller/capital_controller.py): reservation creation, the reservation-expiry check, and the expiry purge now read the current UTC time from a supplied source rather than the wall clock. It defaults to wall time so the live path is unchanged; a deterministic replay injects a cursor advanced per bar so reservations expire on simulated time
 - Add `TestInjectedClock` to [`tests/test_capital_controller.py`](tests/test_capital_controller.py): a reservation's `expires_at` is computed from the injected clock, and both `_purge_expired` and `send_order`'s expiry check honour it
+
+## v0.68.0 on 9th of July, 2026
+
+### Add
+
+- Add `ModeController` arbitrating operational mode against sticky manual and risk halt holds, as the sole writer of `state.mode`
+- Add `HaltHold` / `OperationalHolds` on `InstanceState.mode_holds`, persisted through the WAL codec with backward-compatible decode
+- Add `RiskBreakerThresholds` and `ModeController.evaluate_risk` for daily-loss and drawdown circuit-breakers evaluated on the health tick
+- Add `ModeController.reconcile` to re-derive the mode on restart before startup actions drain
+- Add an optional `on_halt` callback fired outside the lock when the mode transitions to HALTED
+- Route `HealthLoop` mode writes through an optional `ModeController`
+- Parse per-account `risk_controls` from the manifest into `RiskBreakerThresholds`
