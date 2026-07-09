@@ -320,3 +320,47 @@ def test_notify_pending_halt_skips_when_no_longer_halted() -> None:
     controller.notify_pending_halt()
 
     assert sources == []
+
+
+def test_evaluate_risk_acquires_the_risk_lock() -> None:
+    state = _state()
+    state.risk.lock = threading.Lock()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
+    done = threading.Event()
+
+    def run() -> None:
+        controller.evaluate_risk()
+        done.set()
+
+    with state.risk.lock:
+        worker = threading.Thread(target=run)
+        worker.start()
+        blocked = not done.wait(timeout=0.2)
+
+    worker.join(timeout=2.0)
+
+    assert blocked
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_reconcile_acquires_the_risk_lock() -> None:
+    state = _state()
+    state.risk.lock = threading.Lock()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
+    done = threading.Event()
+
+    def run() -> None:
+        controller.reconcile()
+        done.set()
+
+    with state.risk.lock:
+        worker = threading.Thread(target=run)
+        worker.start()
+        blocked = not done.wait(timeout=0.2)
+
+    worker.join(timeout=2.0)
+
+    assert blocked
+    assert state.mode.mode is OperationalMode.HALTED

@@ -122,13 +122,18 @@ class ModeController:
         breaker trips on the lifetime-peak total drawdown and does not
         auto-lift, so a recovered mark cannot silently resume trading.
 
+        The RiskState reads run under `state.risk.lock_cm()` so the
+        per-strategy iteration and drawdown reads see a consistent
+        snapshot relative to concurrent OutcomeProcessor / MtmLoop
+        writers (FINAL-MAJOR-02).
+
         Args:
             notify: Whether to fire a pending on-halt callback here. A caller
                 holding its own lock passes False and drains later via
                 `notify_pending_halt`.
         '''
 
-        with self._lock:
+        with self._lock, self._state.risk.lock_cm():
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
 
@@ -149,8 +154,10 @@ class ModeController:
             if self._state.mode.trigger == _HEALTH_TRIGGER:
                 self._health_mode = self._state.mode.mode
 
-            self._evaluate_daily_loss_locked()
-            self._evaluate_drawdown_locked()
+            with self._state.risk.lock_cm():
+                self._evaluate_daily_loss_locked()
+                self._evaluate_drawdown_locked()
+
             self._recommit()
 
         self.notify_pending_halt()
