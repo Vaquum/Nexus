@@ -173,8 +173,7 @@ class HealthLoop:
             previous_mode = self._state.mode.mode
 
             if self._mode_controller is not None:
-                self._mode_controller.evaluate_risk(notify=False)
-                self._mode_controller.apply_health_mode(new_mode, notify=False)
+                self._mode_controller.apply_health_and_risk(new_mode, notify=False)
 
             else:
                 self._write_health_mode(new_mode)

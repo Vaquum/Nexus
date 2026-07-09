@@ -10,7 +10,7 @@ __all__ = ['RiskBreakerThresholds']
 _ZERO = Decimal('0')
 
 
-@dataclass
+@dataclass(frozen=True)
 class RiskBreakerThresholds:
     '''Configured limits that trip the risk breakers; `None` disables one.
 

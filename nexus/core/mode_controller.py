@@ -94,6 +94,39 @@ class ModeController:
 
         return changed
 
+    def apply_health_and_risk(self, health_mode: OperationalMode, notify: bool = True) -> bool:
+        '''Set the health mode and evaluate the risk breakers in one commit.
+
+        The health tick uses this so the risk-breaker re-evaluation and the
+        health-mode write land under a single hold of the lock. Splitting
+        them into `evaluate_risk` then `apply_health_mode` releases the lock
+        between the two, leaving a window where a reader taking this lock
+        (but not the caller's) sees an intermediate mode the same tick then
+        overwrites.
+
+        Args:
+            health_mode: Mode the health evaluator derived this tick.
+            notify: Whether to fire a pending on-halt callback here. A caller
+                holding its own lock passes False and drains later via
+                `notify_pending_halt`.
+
+        Returns:
+            Whether the mode changed.
+        '''
+
+        with self._lock, self._state.risk.lock_cm():
+            previous = self._state.mode.mode
+            self._health_mode = health_mode
+            self._evaluate_daily_loss_locked()
+            self._evaluate_drawdown_locked()
+            self._recommit()
+            changed = self._state.mode.mode is not previous
+
+        if notify:
+            self.notify_pending_halt()
+
+        return changed
+
     def set_manual_halt(self, reason: str) -> bool:
         '''Place the manual hold and recommit the mode.'''
 

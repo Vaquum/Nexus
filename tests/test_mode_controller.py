@@ -1,4 +1,5 @@
 import threading
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -380,3 +381,51 @@ def test_reconcile_acquires_the_risk_lock() -> None:
 
     assert blocked
     assert state.mode.mode is OperationalMode.HALTED
+
+
+class _CountingLock:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.entries = 0
+
+    def __enter__(self) -> '_CountingLock':
+        self.entries += 1
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self._lock.release()
+
+
+def test_apply_health_and_risk_commits_under_a_single_lock_acquisition() -> None:
+    state = _state()
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    lock = _CountingLock()
+    controller = ModeController(
+        state, lock, clock=lambda: _TS,  # type: ignore[arg-type]
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+    )
+
+    controller.apply_health_and_risk(OperationalMode.ACTIVE, notify=False)
+
+    assert lock.entries == 1
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'
+
+
+def test_apply_health_and_risk_honours_health_halt() -> None:
+    state = _state()
+    controller = _controller(state)
+
+    changed = controller.apply_health_and_risk(OperationalMode.HALTED)
+
+    assert changed
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'health'
+
+
+def test_risk_breaker_thresholds_are_frozen() -> None:
+    thresholds = RiskBreakerThresholds(max_daily_loss=Decimal('250'))
+
+    with pytest.raises(FrozenInstanceError):
+        thresholds.max_daily_loss = Decimal('1')  # type: ignore[misc]
