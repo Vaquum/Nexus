@@ -233,3 +233,47 @@ def test_reconcile_leaves_a_clean_state_active():
     controller.reconcile()
 
     assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_on_halt_fires_with_source_on_halt_transition():
+    state = _state()
+    sources: list[str] = []
+    controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=sources.append)
+
+    controller.set_manual_halt('manual stop')
+
+    assert sources == ['manual']
+
+
+def test_on_halt_does_not_fire_without_a_halt_transition():
+    state = _state()
+    sources: list[str] = []
+    controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=sources.append)
+
+    controller.apply_health_mode(OperationalMode.REDUCE_ONLY)
+
+    assert sources == []
+
+
+def test_on_halt_not_refired_when_already_halted():
+    state = _state()
+    sources: list[str] = []
+    controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=sources.append)
+    controller.set_manual_halt('manual stop')
+
+    controller.set_daily_loss_halt('daily loss')
+
+    assert sources == ['manual']
+
+
+def test_on_halt_failure_does_not_break_controller():
+    state = _state()
+
+    def boom(_source: str) -> None:
+        raise RuntimeError('alert down')
+
+    controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=boom)
+
+    controller.set_manual_halt('manual stop')
+
+    assert state.mode.mode is OperationalMode.HALTED

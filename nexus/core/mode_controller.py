@@ -8,6 +8,7 @@ health-derived mode otherwise.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ from nexus.core.domain.operational_mode import ModeState
 from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
 
 __all__ = ['ModeController']
+
+_log = logging.getLogger(__name__)
 
 _HALTED = OperationalMode.HALTED
 _HEALTH_TRIGGER = 'health'
@@ -39,6 +42,8 @@ class ModeController:
         lock: Lock serialising mode and hold writes with state snapshots.
         clock: Source of UTC time for transition and hold timestamps.
         risk_thresholds: Limits the risk breakers evaluate each tick.
+        on_halt: Optional callback invoked with the halt source ('manual',
+            'risk', or 'health') when the mode transitions to HALTED.
     '''
 
     def __init__(
@@ -47,12 +52,14 @@ class ModeController:
         lock: threading.Lock,
         clock: Callable[[], datetime] = _utc_now,
         risk_thresholds: RiskBreakerThresholds | None = None,
+        on_halt: Callable[[str], None] | None = None,
     ) -> None:
         self._state = state
         self._lock = lock
         self._clock = clock
         self._health_mode = OperationalMode.ACTIVE
         self._risk_thresholds = risk_thresholds or RiskBreakerThresholds()
+        self._on_halt = on_halt
 
     def apply_health_mode(self, health_mode: OperationalMode) -> bool:
         '''Record the latest health-derived mode and recommit the mode.
@@ -214,6 +221,13 @@ class ModeController:
             trigger=source,
             transitioned_at=transitioned_at,
         )
+
+        if mode_changed and new_mode is _HALTED and self._on_halt is not None:
+
+            try:
+                self._on_halt(source)
+            except Exception:  # noqa: BLE001 - alerting must not break mode control
+                _log.exception('mode-halt alert callback failed')
 
         return mode_changed
 
