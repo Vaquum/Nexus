@@ -187,7 +187,7 @@ class ModeController:
         )
 
         if daily_loss >= limit:
-            self._set_hold_locked('risk_daily_loss', f'24h loss {daily_loss} >= limit {limit}')
+            self._set_hold_locked('risk_daily_loss', f"24h loss {daily_loss} >= limit {limit}")
 
         else:
             self._clear_hold_locked('risk_daily_loss')
@@ -198,14 +198,14 @@ class ModeController:
 
         if limit_pct is not None and risk.max_total_drawdown_pct >= limit_pct:
             self._set_hold_locked(
-                'risk_drawdown', f'drawdown {risk.max_total_drawdown_pct} >= limit {limit_pct}',
+                'risk_drawdown', f"drawdown {risk.max_total_drawdown_pct} >= limit {limit_pct}",
             )
 
         limit_abs = self._risk_thresholds.max_drawdown
 
         if limit_abs is not None and risk.max_total_drawdown >= limit_abs:
             self._set_hold_locked(
-                'risk_drawdown', f'drawdown {risk.max_total_drawdown} >= limit {limit_abs}',
+                'risk_drawdown', f"drawdown {risk.max_total_drawdown} >= limit {limit_abs}",
             )
 
     def _set_hold(self, name: str, reason: str) -> bool:

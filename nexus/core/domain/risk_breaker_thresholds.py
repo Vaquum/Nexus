@@ -36,5 +36,5 @@ class RiskBreakerThresholds:
                 continue
 
             if not isinstance(value, Decimal) or not value.is_finite() or value < _ZERO:
-                msg = f'RiskBreakerThresholds.{field_name} must be a finite non-negative Decimal or None'
+                msg = f"RiskBreakerThresholds.{field_name} must be a finite non-negative Decimal or None"
                 raise ValueError(msg)

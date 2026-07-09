@@ -1051,7 +1051,7 @@ class TestModeHoldsRoundTrip:
 
     def test_pre_field_snapshot_defaults_to_empty_holds(self) -> None:
         original = _make_minimal_state()
-        encoded = msgpack.unpackb(serialize_state(original))
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
         del encoded['mode_holds']
 
         restored = deserialize_state(msgpack.packb(encoded))

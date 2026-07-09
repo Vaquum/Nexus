@@ -269,14 +269,17 @@ def _optional_manifest_decimal(raw: Any, field_name: str) -> Decimal | None:
     try:
         return Decimal(str(raw))
     except InvalidOperation as exc:
-        msg = f'risk_controls.{field_name} must be a decimal, got {raw!r}'
+        msg = f"risk_controls.{field_name} must be a decimal, got {raw!r}"
         raise ValueError(msg) from exc
 
 
 def _parse_risk_controls(data: dict[str, Any]) -> RiskBreakerThresholds:
     '''Parse the optional `risk_controls` block into RiskBreakerThresholds.'''
 
-    raw = data.get('risk_controls') or {}
+    raw = data.get('risk_controls')
+
+    if raw is None:
+        raw = {}
 
     if not isinstance(raw, dict):
         msg = 'risk_controls must be a mapping'

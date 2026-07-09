@@ -23,7 +23,7 @@ def _controller(state: InstanceState) -> ModeController:
     return ModeController(state, threading.Lock(), clock=lambda: _TS)
 
 
-def test_manual_halt_sets_halted():
+def test_manual_halt_sets_halted() -> None:
     state = _state()
     controller = _controller(state)
 
@@ -34,7 +34,7 @@ def test_manual_halt_sets_halted():
     assert state.mode_holds.manual_hold.since == _TS
 
 
-def test_healthy_tick_cannot_lift_manual_halt():
+def test_healthy_tick_cannot_lift_manual_halt() -> None:
     state = _state()
     controller = _controller(state)
     controller.set_manual_halt('manual stop')
@@ -45,7 +45,7 @@ def test_healthy_tick_cannot_lift_manual_halt():
     assert state.mode.mode is OperationalMode.HALTED
 
 
-def test_resume_holds_halted_while_risk_hold_active():
+def test_resume_holds_halted_while_risk_hold_active() -> None:
     state = _state()
     controller = _controller(state)
     controller.set_manual_halt('manual stop')
@@ -58,7 +58,7 @@ def test_resume_holds_halted_while_risk_hold_active():
     assert state.mode.trigger == 'risk'
 
 
-def test_resume_returns_to_health_mode_when_no_other_hold():
+def test_resume_returns_to_health_mode_when_no_other_hold() -> None:
     state = _state()
     controller = _controller(state)
     controller.apply_health_mode(OperationalMode.REDUCE_ONLY)
@@ -70,7 +70,7 @@ def test_resume_returns_to_health_mode_when_no_other_hold():
     assert state.mode.trigger == 'health'
 
 
-def test_resume_stays_halted_when_health_is_halted():
+def test_resume_stays_halted_when_health_is_halted() -> None:
     state = _state()
     controller = _controller(state)
     controller.set_manual_halt('manual stop')
@@ -82,7 +82,7 @@ def test_resume_stays_halted_when_health_is_halted():
     assert state.mode.trigger == 'health'
 
 
-def test_health_drives_mode_without_holds():
+def test_health_drives_mode_without_holds() -> None:
     state = _state()
     controller = _controller(state)
 
@@ -91,7 +91,7 @@ def test_health_drives_mode_without_holds():
     assert state.mode.trigger == 'health'
 
 
-def test_all_holds_cleared_and_healthy_returns_active():
+def test_all_holds_cleared_and_healthy_returns_active() -> None:
     state = _state()
     controller = _controller(state)
     controller.set_daily_loss_halt('daily loss breached')
@@ -102,7 +102,7 @@ def test_all_holds_cleared_and_healthy_returns_active():
     assert state.mode.mode is OperationalMode.ACTIVE
 
 
-def test_drawdown_hold_is_independent_of_daily_loss():
+def test_drawdown_hold_is_independent_of_daily_loss() -> None:
     state = _state()
     controller = _controller(state)
     controller.set_daily_loss_halt('daily loss breached')
@@ -114,7 +114,7 @@ def test_drawdown_hold_is_independent_of_daily_loss():
     assert state.mode_holds.risk_drawdown.active
 
 
-def test_repeated_halt_is_idempotent():
+def test_repeated_halt_is_idempotent() -> None:
     state = _state()
     controller = _controller(state)
     controller.set_manual_halt('manual stop')
@@ -122,7 +122,7 @@ def test_repeated_halt_is_idempotent():
     assert not controller.set_manual_halt('manual stop again')
 
 
-def test_clearing_inactive_hold_is_a_noop():
+def test_clearing_inactive_hold_is_a_noop() -> None:
     state = _state()
     controller = _controller(state)
 
@@ -134,7 +134,7 @@ def _breaker(state: InstanceState, thresholds: RiskBreakerThresholds) -> ModeCon
     return ModeController(state, threading.Lock(), clock=lambda: _TS, risk_thresholds=thresholds)
 
 
-def test_daily_loss_breaker_trips_and_auto_clears():
+def test_daily_loss_breaker_trips_and_auto_clears() -> None:
     state = _state()
     state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
     controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
@@ -152,7 +152,7 @@ def test_daily_loss_breaker_trips_and_auto_clears():
     assert state.mode.mode is OperationalMode.ACTIVE
 
 
-def test_daily_loss_sums_across_strategies():
+def test_daily_loss_sums_across_strategies() -> None:
     state = _state()
     state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('150'))
     state.risk.per_strategy['s2'] = StrategyRiskState(strategy_id='s2', rolling_loss_24h=Decimal('150'))
@@ -163,7 +163,7 @@ def test_daily_loss_sums_across_strategies():
     assert state.mode_holds.risk_daily_loss.active
 
 
-def test_drawdown_breaker_trips_and_does_not_auto_clear():
+def test_drawdown_breaker_trips_and_does_not_auto_clear() -> None:
     state = _state()
     state.risk.max_total_drawdown_pct = Decimal('0.08')
     controller = _breaker(state, RiskBreakerThresholds(max_drawdown_pct=Decimal('0.05')))
@@ -178,7 +178,7 @@ def test_drawdown_breaker_trips_and_does_not_auto_clear():
     assert state.mode_holds.risk_drawdown.active
 
 
-def test_evaluate_risk_without_thresholds_is_a_noop():
+def test_evaluate_risk_without_thresholds_is_a_noop() -> None:
     state = _state()
     state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('9999'))
     controller = ModeController(state, threading.Lock(), clock=lambda: _TS)
@@ -188,12 +188,12 @@ def test_evaluate_risk_without_thresholds_is_a_noop():
     assert state.mode.mode is OperationalMode.ACTIVE
 
 
-def test_risk_breaker_thresholds_reject_negative():
+def test_risk_breaker_thresholds_reject_negative() -> None:
     with pytest.raises(ValueError, match='non-negative'):
         RiskBreakerThresholds(max_daily_loss=Decimal('-1'))
 
 
-def test_reconcile_preserves_a_recovered_health_halt():
+def test_reconcile_preserves_a_recovered_health_halt() -> None:
     state = _state()
     state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health', transitioned_at=_TS)
     controller = _controller(state)
@@ -203,7 +203,7 @@ def test_reconcile_preserves_a_recovered_health_halt():
     assert state.mode.mode is OperationalMode.HALTED
 
 
-def test_reconcile_keeps_a_recovered_manual_hold():
+def test_reconcile_keeps_a_recovered_manual_hold() -> None:
     state = _state()
     state.mode_holds.manual_hold = HaltHold(active=True, reason='manual stop', since=_TS)
     state.mode = ModeState(mode=OperationalMode.HALTED, trigger='manual', transitioned_at=_TS)
@@ -215,7 +215,7 @@ def test_reconcile_keeps_a_recovered_manual_hold():
     assert state.mode.trigger == 'manual'
 
 
-def test_reconcile_retrips_risk_from_recovered_state():
+def test_reconcile_retrips_risk_from_recovered_state() -> None:
     state = _state()
     state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
     controller = _breaker(state, RiskBreakerThresholds(max_daily_loss=Decimal('250')))
@@ -226,7 +226,7 @@ def test_reconcile_retrips_risk_from_recovered_state():
     assert state.mode_holds.risk_daily_loss.active
 
 
-def test_reconcile_leaves_a_clean_state_active():
+def test_reconcile_leaves_a_clean_state_active() -> None:
     state = _state()
     controller = _controller(state)
 
@@ -235,7 +235,7 @@ def test_reconcile_leaves_a_clean_state_active():
     assert state.mode.mode is OperationalMode.ACTIVE
 
 
-def test_on_halt_fires_with_source_on_halt_transition():
+def test_on_halt_fires_with_source_on_halt_transition() -> None:
     state = _state()
     sources: list[str] = []
     controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=sources.append)
@@ -245,7 +245,7 @@ def test_on_halt_fires_with_source_on_halt_transition():
     assert sources == ['manual']
 
 
-def test_on_halt_does_not_fire_without_a_halt_transition():
+def test_on_halt_does_not_fire_without_a_halt_transition() -> None:
     state = _state()
     sources: list[str] = []
     controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=sources.append)
@@ -255,7 +255,7 @@ def test_on_halt_does_not_fire_without_a_halt_transition():
     assert sources == []
 
 
-def test_on_halt_not_refired_when_already_halted():
+def test_on_halt_not_refired_when_already_halted() -> None:
     state = _state()
     sources: list[str] = []
     controller = ModeController(state, threading.Lock(), clock=lambda: _TS, on_halt=sources.append)
@@ -266,7 +266,7 @@ def test_on_halt_not_refired_when_already_halted():
     assert sources == ['manual']
 
 
-def test_on_halt_failure_does_not_break_controller():
+def test_on_halt_failure_does_not_break_controller() -> None:
     state = _state()
 
     def boom(_source: str) -> None:
@@ -279,7 +279,7 @@ def test_on_halt_failure_does_not_break_controller():
     assert state.mode.mode is OperationalMode.HALTED
 
 
-def test_on_halt_runs_outside_the_lock():
+def test_on_halt_runs_outside_the_lock() -> None:
     state = _state()
     holder: dict[str, ModeController] = {}
 
@@ -302,7 +302,7 @@ def test_on_halt_runs_outside_the_lock():
     assert state.mode.mode is OperationalMode.HALTED
 
 
-def test_notify_pending_halt_skips_when_no_longer_halted():
+def test_notify_pending_halt_skips_when_no_longer_halted() -> None:
     state = _state()
     state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
     sources: list[str] = []

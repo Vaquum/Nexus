@@ -984,3 +984,13 @@ def test_negative_risk_control_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match='non-negative'):
         load_manifest(path)
+
+
+def test_risk_controls_non_mapping_rejected(tmp_path: Path) -> None:
+    path = _write_min_manifest(
+        tmp_path,
+        'risk_controls: []\n',
+    )
+
+    with pytest.raises(ValueError, match='must be a mapping'):
+        load_manifest(path)
