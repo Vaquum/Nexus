@@ -453,3 +453,31 @@ def test_clear_hold_reconciles_mode_after_external_drift() -> None:
 
     assert changed
     assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_shared_lock_wiring_does_not_deadlock() -> None:
+    state = _state()
+    shared = threading.Lock()
+    state.risk.lock = shared
+    state.risk.per_strategy['s1'] = StrategyRiskState(strategy_id='s1', rolling_loss_24h=Decimal('300'))
+    controller = ModeController(
+        state, shared, clock=lambda: _TS,
+        risk_thresholds=RiskBreakerThresholds(max_daily_loss=Decimal('250')),
+    )
+    done = threading.Event()
+
+    def run() -> None:
+        controller.reconcile()
+        controller.evaluate_risk()
+        controller.apply_health_and_risk(OperationalMode.ACTIVE)
+        done.set()
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    finished = done.wait(timeout=5)
+    worker.join(timeout=1)
+
+    assert finished
+    assert not worker.is_alive()
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'risk'

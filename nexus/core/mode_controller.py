@@ -15,7 +15,9 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
+from typing import Any
 
 from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.instance_state import InstanceState
@@ -116,7 +118,7 @@ class ModeController:
             returns False.
         '''
 
-        with self._lock, self._state.risk.lock_cm():
+        with self._lock, self._risk_reads_cm():
             previous = self._state.mode.mode
             self._health_mode = health_mode
             self._evaluate_daily_loss_locked()
@@ -189,6 +191,21 @@ class ModeController:
 
         return self._clear_hold('risk_drawdown')
 
+    def _risk_reads_cm(self) -> AbstractContextManager[Any]:
+        '''Serialise RiskState reads against concurrent risk writers.
+
+        When the RiskState lock is this controller's own lock (the
+        launcher wires both to the shared positions lock), the already-held
+        mode lock serialises the reads and re-acquiring the same
+        non-reentrant lock would deadlock, so return a no-op. Otherwise
+        acquire the RiskState lock (or a no-op when it is unset).
+        '''
+
+        if self._state.risk.lock is self._lock:
+            return nullcontext()
+
+        return self._state.risk.lock_cm()
+
     def evaluate_risk(self, notify: bool = True) -> None:
         '''Trip or lift the risk breakers from the current RiskState.
 
@@ -197,10 +214,11 @@ class ModeController:
         breaker trips on the lifetime-peak total drawdown and does not
         auto-lift, so a recovered mark cannot silently resume trading.
 
-        The RiskState reads run under `state.risk.lock_cm()` so the
-        per-strategy iteration and drawdown reads see a consistent
-        snapshot relative to concurrent OutcomeProcessor / MtmLoop
-        writers (FINAL-MAJOR-02).
+        The RiskState reads run under `_risk_reads_cm` so the per-strategy
+        iteration and drawdown reads see a consistent snapshot relative to
+        concurrent OutcomeProcessor / MtmLoop writers (FINAL-MAJOR-02); it
+        acquires the RiskState lock, or is a no-op when that lock is the
+        already-held mode lock.
 
         Args:
             notify: Whether to fire a pending on-halt callback here. A caller
@@ -208,7 +226,7 @@ class ModeController:
                 `notify_pending_halt`.
         '''
 
-        with self._lock, self._state.risk.lock_cm():
+        with self._lock, self._risk_reads_cm():
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
 
@@ -229,7 +247,7 @@ class ModeController:
             if self._state.mode.trigger == _HEALTH_TRIGGER:
                 self._health_mode = self._state.mode.mode
 
-            with self._state.risk.lock_cm():
+            with self._risk_reads_cm():
                 self._evaluate_daily_loss_locked()
                 self._evaluate_drawdown_locked()
 

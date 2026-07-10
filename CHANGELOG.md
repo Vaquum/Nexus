@@ -857,3 +857,9 @@
 - Add an optional `on_halt` callback fired outside the lock when the mode transitions to HALTED
 - Route `HealthLoop` mode writes through an optional `ModeController`
 - Parse per-account `risk_controls` from the manifest into `RiskBreakerThresholds`
+
+## v0.69.0 on 10th of July, 2026
+
+### Fix
+
+- Guard the `ModeController` risk-breaker read against a self-deadlock when the RiskState lock is the controller's own lock. The launcher wires `ModeController`, `positions_lock`, and `state.risk.lock` to one shared `threading.Lock`, so `reconcile` / `evaluate_risk` / `apply_health_and_risk` — which since v0.68.0 acquired `state.risk.lock_cm()` inside the already-held mode lock — re-entered the same non-reentrant lock and hung the boot thread in `reconcile` before it reached the run loop, so shutdown never completed. `_risk_reads_cm` now returns a no-op context manager when `state.risk.lock` is the mode lock (the held mode lock already serialises the reads) and acquires the RiskState lock only when it is a distinct object. The v0.68.0 unit tests missed this because they leave `state.risk.lock` unset (`None` → `nullcontext`); only the shared-lock launcher wiring triggers it. New `test_shared_lock_wiring_does_not_deadlock` drives `reconcile` / `evaluate_risk` / `apply_health_and_risk` under the shared-lock wiring and asserts they complete.
