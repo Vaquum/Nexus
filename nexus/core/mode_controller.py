@@ -214,10 +214,11 @@ class ModeController:
         breaker trips on the lifetime-peak total drawdown and does not
         auto-lift, so a recovered mark cannot silently resume trading.
 
-        The RiskState reads run under `state.risk.lock_cm()` so the
-        per-strategy iteration and drawdown reads see a consistent
-        snapshot relative to concurrent OutcomeProcessor / MtmLoop
-        writers (FINAL-MAJOR-02).
+        The RiskState reads run under `_risk_reads_cm` so the per-strategy
+        iteration and drawdown reads see a consistent snapshot relative to
+        concurrent OutcomeProcessor / MtmLoop writers (FINAL-MAJOR-02); it
+        acquires the RiskState lock, or is a no-op when that lock is the
+        already-held mode lock.
 
         Args:
             notify: Whether to fire a pending on-halt callback here. A caller

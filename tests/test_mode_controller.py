@@ -475,8 +475,9 @@ def test_shared_lock_wiring_does_not_deadlock() -> None:
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
     finished = done.wait(timeout=5)
-    worker.join(timeout=5)
+    worker.join(timeout=1)
 
     assert finished
+    assert not worker.is_alive()
     assert state.mode.mode is OperationalMode.HALTED
     assert state.mode.trigger == 'risk'
