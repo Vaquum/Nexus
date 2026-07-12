@@ -210,8 +210,10 @@ class ShutdownSequencer:
 
         Routes through the ModeController's shutdown hold when wired, so
         the HALTED cannot be lifted by a concurrent health tick. Falls
-        back to a direct `state.mode` write only when no controller is
-        supplied (single-threaded test paths).
+        back to a direct `state.mode` write when no controller is supplied
+        — test paths, and any launcher not yet wiring the controller, where
+        a concurrent HealthLoop tick can still lift the HALTED and
+        re-expose the resume-mid-shutdown race this guards against.
         '''
 
         if self._mode_controller is not None:

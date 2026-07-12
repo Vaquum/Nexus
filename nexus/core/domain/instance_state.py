@@ -32,7 +32,13 @@ class InstanceState:
         capital: Capital tracking state.
         risk: Instance-level and per-strategy risk metrics.
         positions: Open positions keyed by trade_id.
-        mode: Instance-level operational mode.
+        mode: Instance-level operational mode committed by `ModeController`
+            from `health_mode` and `mode_holds`.
+        health_mode: Last health-derived mode (the input `ModeController`
+            arbitrates against the holds). Persisted so a health-derived
+            REDUCE_ONLY/HALTED survives a restart even while a hold masks
+            it as HALTED, so clearing the hold restores it rather than
+            resuming ACTIVE.
         mode_holds: Non-health reasons (operator halt, risk breakers) that
             hold the instance in HALTED independently of the health-derived
             mode. Written only by `ModeController`; persisted so a halt and
