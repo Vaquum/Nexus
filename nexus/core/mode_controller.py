@@ -1,13 +1,14 @@
 '''Arbitrate the instance operational mode against halt holds.
 
-Owns `state.mode_holds` and writes `state.mode` on the
-health-and-hold-arbitrated path: the mode is HALTED whenever any hold
-is active or health itself is HALTED, and the health-derived mode
-otherwise, so a healthy tick can never lift a hold.
+Owns `state.health_mode`, `state.mode_holds`, and `state.mode`: the mode
+is HALTED whenever any hold is active or health itself is HALTED, and the
+recovered/last health-derived mode otherwise, so a healthy tick can never
+lift a hold.
 
-The startup and shutdown sequencers still write `state.mode` directly
-and are not yet routed through this controller; until they are, it is
-the sole writer only on the health/hold path, not process-wide.
+On the live path this is the sole writer of `state.mode`. Startup routes
+its boot mode in by writing `state.health_mode` and letting `reconcile`
+commit; shutdown places the shutdown hold rather than writing `state.mode`
+itself. (The replay engine sets `state.mode` on its own separate path.)
 '''
 
 from __future__ import annotations
@@ -29,7 +30,6 @@ __all__ = ['ModeController']
 _log = logging.getLogger(__name__)
 
 _HALTED = OperationalMode.HALTED
-_HEALTH_TRIGGER = 'health'
 
 
 def _utc_now() -> datetime:
@@ -39,11 +39,7 @@ def _utc_now() -> datetime:
 
 
 class ModeController:
-    '''Write `state.mode` and own `state.mode_holds` on the health/hold path.
-
-    Not yet the process-wide sole writer: `StartupSequencer` and
-    `ShutdownSequencer` still set `state.mode` directly. Routing those
-    through this controller is tracked as follow-on wiring.
+    '''Sole writer of `state.mode`; owns `state.health_mode` and the holds.
 
     Args:
         state: Instance state whose mode and holds this controller owns.
@@ -54,8 +50,9 @@ class ModeController:
             deadlocks.
         clock: Source of UTC time for transition and hold timestamps.
         risk_thresholds: Limits the risk breakers evaluate each tick.
-        on_halt: Optional callback invoked with the halt source ('manual',
-            'risk', or 'health') when the mode transitions to HALTED.
+        on_halt: Optional callback invoked with the halt source
+            ('shutdown', 'manual', 'risk', or 'health') when the mode
+            transitions to HALTED.
     '''
 
     def __init__(
@@ -69,7 +66,6 @@ class ModeController:
         self._state = state
         self._lock = lock
         self._clock = clock
-        self._health_mode = OperationalMode.ACTIVE
         self._risk_thresholds = risk_thresholds or RiskBreakerThresholds()
         self._on_halt = on_halt
         self._pending_halt: str | None = None
@@ -89,7 +85,7 @@ class ModeController:
         '''
 
         with self._lock:
-            self._health_mode = health_mode
+            self._state.health_mode = health_mode
             changed = self._recommit()
 
         if notify:
@@ -120,7 +116,7 @@ class ModeController:
 
         with self._lock, self._risk_reads_cm():
             previous = self._state.mode.mode
-            self._health_mode = health_mode
+            self._state.health_mode = health_mode
             self._evaluate_daily_loss_locked()
             self._evaluate_drawdown_locked()
             self._recommit()
@@ -191,6 +187,29 @@ class ModeController:
 
         return self._clear_hold('risk_drawdown')
 
+    def set_shutdown_halt(self, reason: str) -> bool:
+        '''Place the shutdown hold and recommit the mode.
+
+        Held HALTED cannot be lifted by a concurrent health tick, so an
+        in-flight outcome dispatched during shutdown cannot resume trading.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
+
+        return self._set_hold('shutdown_hold', reason)
+
+    def clear_shutdown_halt(self) -> bool:
+        '''Lift the shutdown hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed; a trigger-only recompute
+            returns False.
+        '''
+
+        return self._clear_hold('shutdown_hold')
+
     def _risk_reads_cm(self) -> AbstractContextManager[Any]:
         '''Serialise RiskState reads against concurrent risk writers.
 
@@ -236,16 +255,24 @@ class ModeController:
     def reconcile(self) -> None:
         '''Re-derive the mode after a restart, before trading resumes.
 
-        Seeds the health mode from a recovered health-driven mode so a
-        health halt is not lifted, re-trips the risk breakers from the
-        recovered RiskState, and recommits — so a halt that outlived a
-        crash is in force before any startup actions drain.
+        Re-trips the risk breakers from the recovered RiskState and
+        recommits from the recovered `state.health_mode` and holds, so a
+        halt that outlived a crash is in force before any startup actions
+        drain. `state.health_mode` and the holds are recovered from the
+        snapshot, so no seeding from `state.mode` is needed.
+
+        Clears any recovered shutdown hold first: it is transient to the
+        shutdown that placed it, and the final checkpoint persists it, so a
+        restart would otherwise recover it active and boot HALTED with no
+        way for operator-resume to lift it.
         '''
 
         with self._lock:
 
-            if self._state.mode.trigger == _HEALTH_TRIGGER:
-                self._health_mode = self._state.mode.mode
+            shutdown_hold = self._state.mode_holds.shutdown_hold
+            shutdown_hold.active = False
+            shutdown_hold.reason = ''
+            shutdown_hold.since = None
 
             with self._risk_reads_cm():
                 self._evaluate_daily_loss_locked()
@@ -347,8 +374,8 @@ class ModeController:
 
     def _recommit(self) -> bool:
         holds = self._state.mode_holds
-        halted = holds.any_active() or self._health_mode is _HALTED
-        new_mode = _HALTED if halted else self._health_mode
+        halted = holds.any_active() or self._state.health_mode is _HALTED
+        new_mode = _HALTED if halted else self._state.health_mode
 
         source = self._mode_source(new_mode)
         mode_changed = new_mode is not self._state.mode.mode
@@ -371,11 +398,14 @@ class ModeController:
         return mode_changed
 
     def _mode_source(self, mode: OperationalMode) -> str:
-        '''Return which input drives the mode: manual, risk, or health.'''
+        '''Return which input drives the mode: shutdown, manual, risk, or health.'''
 
         holds = self._state.mode_holds
 
         if mode is _HALTED:
+
+            if holds.shutdown_hold.active:
+                return 'shutdown'
 
             if holds.manual_hold.active:
                 return 'manual'

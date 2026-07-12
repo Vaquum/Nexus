@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.operational_mode import (
     ModeState,
     OperationalHolds,
@@ -31,7 +32,13 @@ class InstanceState:
         capital: Capital tracking state.
         risk: Instance-level and per-strategy risk metrics.
         positions: Open positions keyed by trade_id.
-        mode: Instance-level operational mode.
+        mode: Instance-level operational mode committed by `ModeController`
+            from `health_mode` and `mode_holds`.
+        health_mode: Last health-derived mode (the input `ModeController`
+            arbitrates against the holds). Persisted so a health-derived
+            REDUCE_ONLY/HALTED survives a restart even while a hold masks
+            it as HALTED, so clearing the hold restores it rather than
+            resuming ACTIVE.
         mode_holds: Non-health reasons (operator halt, risk breakers) that
             hold the instance in HALTED independently of the health-derived
             mode. Written only by `ModeController`; persisted so a halt and
@@ -65,6 +72,7 @@ class InstanceState:
     risk: RiskState = field(default_factory=RiskState)
     positions: dict[str, Position] = field(default_factory=dict)
     mode: ModeState = field(default_factory=ModeState)
+    health_mode: OperationalMode = OperationalMode.ACTIVE
     mode_holds: OperationalHolds = field(default_factory=OperationalHolds)
     strategy_modes: dict[str, StrategyModeState] = field(default_factory=dict)
     account_dust: dict[str, Decimal] = field(default_factory=dict)

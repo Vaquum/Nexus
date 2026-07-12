@@ -59,17 +59,21 @@ class OperationalHolds:
         manual_hold: Hold placed by a manual halt.
         risk_daily_loss: Hold placed when the daily-loss breaker trips.
         risk_drawdown: Hold placed when the drawdown breaker trips.
+        shutdown_hold: Hold placed by the shutdown sequence so an
+            in-flight outcome cannot resume trading while shutting down.
     '''
 
     manual_hold: HaltHold = field(default_factory=HaltHold)
     risk_daily_loss: HaltHold = field(default_factory=HaltHold)
     risk_drawdown: HaltHold = field(default_factory=HaltHold)
+    shutdown_hold: HaltHold = field(default_factory=HaltHold)
 
     def any_active(self) -> bool:
         '''Return whether any hold currently forces HALTED.'''
 
         return (
-            self.manual_hold.active
+            self.shutdown_hold.active
+            or self.manual_hold.active
             or self.risk_daily_loss.active
             or self.risk_drawdown.active
         )

@@ -18,6 +18,7 @@ import structlog
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.operational_mode import ModeState
+from nexus.core.mode_controller import ModeController
 from nexus.core.outcome_loop import OutcomeLoop
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
@@ -112,6 +113,7 @@ class ShutdownSequencer:
         outcome_processor: OutcomeProcessor | None = None,
         non_pending_outcome_handler: Callable[[TradeOutcome], None] | None = None,
         positions_lock: threading.Lock | None = None,
+        mode_controller: ModeController | None = None,
     ) -> None:
         if not isinstance(runner, StrategyRunner):
             msg = 'runner must be a StrategyRunner instance'
@@ -168,6 +170,7 @@ class ShutdownSequencer:
         self._exit_contexts: dict[str, OrderContext] = {}
         self._non_pending_outcome_handler = non_pending_outcome_handler
         self._positions_lock = positions_lock
+        self._mode_controller = mode_controller
 
     def shutdown(self) -> None:
         '''Execute the full shutdown sequence.'''
@@ -204,13 +207,25 @@ class ShutdownSequencer:
         any in-flight outcome dispatch's downstream order is rejected
         with `INTAKE_MODE_BLOCKS_ENTER` instead of leaking past
         `_dispatch_shutdown` to the venue.
+
+        Routes through the ModeController's shutdown hold when wired, so
+        the HALTED cannot be lifted by a concurrent health tick. Falls
+        back to a direct `state.mode` write when no controller is supplied
+        — test paths, and any launcher not yet wiring the controller, where
+        a concurrent HealthLoop tick can still lift the HALTED and
+        re-expose the resume-mid-shutdown race this guards against.
         '''
 
-        self._state.mode = ModeState(
-            mode=OperationalMode.HALTED,
-            trigger='shutdown',
-            transitioned_at=datetime.now(tz=timezone.utc),
-        )
+        if self._mode_controller is not None:
+            self._mode_controller.set_shutdown_halt('shutdown')
+
+        else:
+            self._state.mode = ModeState(
+                mode=OperationalMode.HALTED,
+                trigger='shutdown',
+                transitioned_at=datetime.now(tz=timezone.utc),
+            )
+
         _log.info('state mode flipped to HALTED for shutdown')
 
     def _stop_signals(self) -> None:

@@ -812,11 +812,12 @@ class TestExternalIntegrationStubs:
 
         assert sequencer._mode == OperationalMode.REDUCE_ONLY
 
-    def test_determine_mode_mirrors_mode_into_state(self) -> None:
-        '''PT-FIX-26: `_determine_mode` must mirror its decision into
-        `state.mode` so the validator's `_check_operational_mode` (PT-FIX-15)
-        sees the same value the sequencer carries into `StrategyContext`.
-        Sequencer-local `_mode` alone is invisible to the validator.'''
+    def test_determine_mode_writes_health_mode(self) -> None:
+        '''PT-FIX-26: `_determine_mode` writes its decision into
+        `state.health_mode` (the health input); the launcher's
+        `ModeController.reconcile` commits it to `state.mode`, keeping the
+        controller the sole `state.mode` writer. Sequencer-local `_mode`
+        alone is invisible to the controller.'''
 
         state_store = _make_mock_state_store()
         state_store.recover.return_value = InstanceState(
@@ -829,8 +830,8 @@ class TestExternalIntegrationStubs:
         sequencer._determine_mode()
 
         assert sequencer._state is not None
-        assert sequencer._state.mode.mode == OperationalMode.REDUCE_ONLY
-        assert sequencer._state.mode.trigger == 'boot_no_health_data'
+        assert sequencer._state.health_mode == OperationalMode.REDUCE_ONLY
+        assert sequencer._mode == OperationalMode.REDUCE_ONLY
 
 
 class TestStrategyStateRestoration:

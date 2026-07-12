@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -13,7 +12,6 @@ import structlog
 
 from nexus.core.domain.enums import OperationalMode, OrderSide
 from nexus.core.domain.instance_state import InstanceState
-from nexus.core.domain.operational_mode import ModeState
 from nexus.core.domain.position import Position
 from nexus.core.health_evaluator import HealthEvaluator, HealthSnapshot
 from nexus.infrastructure.praxis_connector.praxis_outbound import PraxisOutbound
@@ -664,29 +662,24 @@ class StartupSequencer:
         `_check_operational_mode` stage rather than landing on the venue
         in a permissive ~5 s window before health is known.
 
-        Mirrors the resolved mode into `state.mode` (with a fresh
-        `ModeState`) so the validator sees the same value the
-        sequencer-local `_mode` carries into `StrategyContext`.
+        Writes the resolved mode into `state.health_mode` (the health
+        input); `ModeController.reconcile`, run by the launcher after
+        `start`, commits it to `state.mode` alongside the recovered holds,
+        so the controller stays the sole writer of `state.mode`.
         '''
 
         if self._health_evaluator is not None and self._health_snapshot is not None:
             self._mode = self._health_evaluator.evaluate(self._health_snapshot)
-            trigger = 'boot_health_evaluation'
             _log.info('mode determined from health', mode=self._mode.value)
         else:
             self._mode = OperationalMode.REDUCE_ONLY
-            trigger = 'boot_no_health_data'
             _log.warning(
                 'no health data available, defaulting to REDUCE_ONLY '
                 'until first HealthLoop tick',
             )
 
         if self._state is not None:
-            self._state.mode = ModeState(
-                mode=self._mode,
-                trigger=trigger,
-                transitioned_at=datetime.now(tz=timezone.utc),
-            )
+            self._state.health_mode = self._mode
 
     def _dispatch_startup(self) -> None:
         '''Dispatch on_startup to all strategies.
