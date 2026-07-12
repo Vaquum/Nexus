@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 
 from nexus.core.domain.capital_state import CapitalState
+from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.operational_mode import (
     ModeState,
     OperationalHolds,
@@ -65,6 +66,7 @@ class InstanceState:
     risk: RiskState = field(default_factory=RiskState)
     positions: dict[str, Position] = field(default_factory=dict)
     mode: ModeState = field(default_factory=ModeState)
+    health_mode: OperationalMode = OperationalMode.ACTIVE
     mode_holds: OperationalHolds = field(default_factory=OperationalHolds)
     strategy_modes: dict[str, StrategyModeState] = field(default_factory=dict)
     account_dust: dict[str, Decimal] = field(default_factory=dict)

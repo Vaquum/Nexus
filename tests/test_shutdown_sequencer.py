@@ -14,6 +14,7 @@ import pytest
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OperationalMode, OrderSide
+from nexus.core.mode_controller import ModeController
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.order_types import ExecutionMode, OrderType
 from nexus.core.domain.position import Position
@@ -2086,3 +2087,34 @@ class TestFinalCheckpointLockOwnership:
         )
 
         assert sequencer is not None
+
+
+class TestHaltStateModeRouting:
+
+    def test_halt_state_mode_routes_through_mode_controller(self) -> None:
+        state = _make_instance_state()
+        controller = ModeController(state, threading.Lock())
+        sequencer = ShutdownSequencer(
+            runner=_make_mock_runner(),
+            manifest=_make_manifest(),
+            state_store=_make_mock_state_store(),
+            state=state,
+            strategy_state_path=_PLACEHOLDER_PATH,
+            mode_controller=controller,
+        )
+
+        sequencer._halt_state_mode()
+
+        assert state.mode.mode is OperationalMode.HALTED
+        assert state.mode.trigger == 'shutdown'
+        assert state.mode_holds.shutdown_hold.active
+
+    def test_halt_state_mode_falls_back_without_controller(self) -> None:
+        state = _make_instance_state()
+        sequencer = _make_sequencer(state=state)
+
+        sequencer._halt_state_mode()
+
+        assert state.mode.mode is OperationalMode.HALTED
+        assert state.mode.trigger == 'shutdown'
+        assert not state.mode_holds.shutdown_hold.active

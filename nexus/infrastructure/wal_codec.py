@@ -83,6 +83,7 @@ def serialize_state(state: InstanceState) -> bytes:
         'risk': _encode_risk_state(state.risk),
         'positions': {k: _encode_position(v) for k, v in positions_snapshot.items()},
         'mode': _encode_mode_state(state.mode),
+        'health_mode': state.health_mode.value,
         'mode_holds': _encode_operational_holds(state.mode_holds),
         'strategy_modes': {
             k: _encode_strategy_mode_state(v) for k, v in strategy_modes_snapshot.items()
@@ -136,6 +137,7 @@ def _decode_state_v1(d: dict[str, Any]) -> InstanceState:
             risk=_decode_risk_state(d['risk']),
             positions={k: _decode_position(v) for k, v in d['positions'].items()},
             mode=_decode_mode_state(d['mode']),
+            health_mode=_decode_health_mode(d.get('health_mode')),
             mode_holds=_decode_operational_holds(d.get('mode_holds')),
             strategy_modes={
                 k: _decode_strategy_mode_state(v)
@@ -414,6 +416,7 @@ def _encode_operational_holds(holds: OperationalHolds) -> dict[str, Any]:
         'manual_hold': _encode_halt_hold(holds.manual_hold),
         'risk_daily_loss': _encode_halt_hold(holds.risk_daily_loss),
         'risk_drawdown': _encode_halt_hold(holds.risk_drawdown),
+        'shutdown_hold': _encode_halt_hold(holds.shutdown_hold),
     }
 
 
@@ -430,11 +433,31 @@ def _decode_operational_holds(d: dict[str, Any] | None) -> OperationalHolds:
     if d is None:
         return OperationalHolds()
 
+    raw_shutdown = d.get('shutdown_hold')
+
     return OperationalHolds(
         manual_hold=_decode_halt_hold(d['manual_hold']),
         risk_daily_loss=_decode_halt_hold(d['risk_daily_loss']),
         risk_drawdown=_decode_halt_hold(d['risk_drawdown']),
+        shutdown_hold=_decode_halt_hold(raw_shutdown) if raw_shutdown is not None else HaltHold(),
     )
+
+
+def _decode_health_mode(value: str | None) -> OperationalMode:
+    '''Decode the persisted health mode, defaulting for pre-field snapshots.
+
+    Args:
+        value: Encoded OperationalMode value, or `None` when absent from
+            an old snapshot.
+
+    Returns:
+        The health-derived mode, or ACTIVE when absent.
+    '''
+
+    if value is None:
+        return OperationalMode.ACTIVE
+
+    return OperationalMode(value)
 
 
 def _encode_halt_hold(hold: HaltHold) -> dict[str, Any]:

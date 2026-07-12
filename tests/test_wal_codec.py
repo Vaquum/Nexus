@@ -1065,3 +1065,26 @@ class TestModeHoldsRoundTrip:
 
         with pytest.raises(ValueError, match='Malformed WAL codec payload'):
             deserialize_state(msgpack.packb(encoded))
+
+    def test_health_mode_and_shutdown_hold_round_trip(self) -> None:
+        original = _make_minimal_state()
+        original.health_mode = OperationalMode.REDUCE_ONLY
+        original.mode_holds.shutdown_hold.active = True
+        original.mode_holds.shutdown_hold.reason = 'shutdown'
+
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.health_mode is OperationalMode.REDUCE_ONLY
+        assert restored.mode_holds.shutdown_hold.active
+        assert restored.mode_holds.shutdown_hold.reason == 'shutdown'
+
+    def test_pre_field_snapshot_defaults_health_mode_and_shutdown_hold(self) -> None:
+        original = _make_minimal_state()
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
+        del encoded['health_mode']
+        del encoded['mode_holds']['shutdown_hold']
+
+        restored = deserialize_state(msgpack.packb(encoded))
+
+        assert restored.health_mode is OperationalMode.ACTIVE
+        assert not restored.mode_holds.shutdown_hold.active

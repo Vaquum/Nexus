@@ -212,7 +212,7 @@ def test_drawdown_breaker_trips_on_absolute_limit() -> None:
 
 def test_reconcile_preserves_a_recovered_health_halt() -> None:
     state = _state()
-    state.mode = ModeState(mode=OperationalMode.HALTED, trigger='health', transitioned_at=_TS)
+    state.health_mode = OperationalMode.HALTED
     controller = _controller(state)
 
     controller.reconcile()
@@ -481,3 +481,82 @@ def test_shared_lock_wiring_does_not_deadlock() -> None:
     assert not worker.is_alive()
     assert state.mode.mode is OperationalMode.HALTED
     assert state.mode.trigger == 'risk'
+
+
+def test_shutdown_halt_cannot_be_lifted_by_a_health_tick() -> None:
+    state = _state()
+    controller = _controller(state)
+
+    assert controller.set_shutdown_halt('shutdown')
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'shutdown'
+
+    changed = controller.apply_health_mode(OperationalMode.ACTIVE)
+
+    assert not changed
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'shutdown'
+
+
+def test_shutdown_hold_takes_priority_over_manual_and_risk() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_manual_halt('manual')
+    controller.set_shutdown_halt('shutdown')
+
+    assert state.mode.trigger == 'shutdown'
+
+
+def test_persisted_health_mode_survives_a_restart_under_a_hold() -> None:
+    state = _state()
+    before = _controller(state)
+    before.apply_health_mode(OperationalMode.REDUCE_ONLY)
+    before.set_manual_halt('manual')
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.health_mode is OperationalMode.REDUCE_ONLY
+
+    after = _controller(state)
+    after.reconcile()
+
+    assert state.mode.mode is OperationalMode.HALTED
+
+    after.clear_manual_halt()
+
+    assert state.mode.mode is OperationalMode.REDUCE_ONLY
+    assert state.mode.trigger == 'health'
+
+
+def test_reconcile_commits_the_boot_health_mode_without_clobbering() -> None:
+    state = _state()
+    state.health_mode = OperationalMode.REDUCE_ONLY
+    controller = _controller(state)
+
+    controller.reconcile()
+
+    assert state.mode.mode is OperationalMode.REDUCE_ONLY
+    assert state.mode.trigger == 'health'
+
+
+def test_reconcile_clears_a_persisted_shutdown_hold() -> None:
+    state = _state()
+    state.mode_holds.shutdown_hold = HaltHold(active=True, reason='shutdown', since=_TS)
+    controller = _controller(state)
+
+    controller.reconcile()
+
+    assert not state.mode_holds.shutdown_hold.active
+    assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_reconcile_clears_shutdown_but_keeps_a_manual_hold() -> None:
+    state = _state()
+    state.mode_holds.shutdown_hold = HaltHold(active=True, reason='shutdown', since=_TS)
+    state.mode_holds.manual_hold = HaltHold(active=True, reason='manual stop', since=_TS)
+    controller = _controller(state)
+
+    controller.reconcile()
+
+    assert not state.mode_holds.shutdown_hold.active
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'manual'
