@@ -69,14 +69,14 @@ pip install "vaquum-nexus @ git+https://github.com/Vaquum/Nexus.git"
 
 Nexus requires Python `>=3.10` and is not published on PyPI — install it straight from the repository. There are no optional extras; the runtime dependencies are `structlog`, `orjson`, `msgpack`, `pyyaml`, `polars`, and `numpy`. Live signal consumption additionally reads the Conduit serving manifest from `/opt/conduit` and OHLCV Arrow frames from `/opt/arrow` (both paths configurable); neither mount is needed for the steps below. Report security issues through the routes in the Vulnerabilities section of this README.
 
-1. Fetch the runnable example:
+2. Fetch the runnable example:
 
 ```bash
 git clone https://github.com/Vaquum/Nexus.git
 cd Nexus/examples
 ```
 
-1. Read the manifest — it binds a strategy file to a Conduit series and splits the capital pool:
+3. Read the manifest — it binds a strategy file to a Conduit series and splits the capital pool:
 
 ```yaml
 account_id: example_acct
@@ -93,7 +93,7 @@ strategies:
     capital_pct: 100
 ```
 
-1. Read the strategy's decision hook — the loader requires a class named `Strategy`, and `on_save`, `on_load`, `on_startup`, `on_outcome`, `on_timer`, and `on_shutdown` are also required abstract methods (this excerpt is from [`logreg_binary_evsfd.py`](https://github.com/Vaquum/Nexus/blob/main/examples/strategies/logreg_binary_evsfd.py)):
+4. Read the strategy's decision hook — the loader requires a class named `Strategy`, and `on_save`, `on_load`, `on_startup`, `on_outcome`, `on_timer`, and `on_shutdown` are also required abstract methods (this snippet is adapted from [`logreg_binary_evsfd.py`](https://github.com/Vaquum/Nexus/blob/main/examples/strategies/logreg_binary_evsfd.py)):
 
 ```python
 class Strategy(Strategy):
@@ -115,7 +115,7 @@ class Strategy(Strategy):
         return []
 ```
 
-1. Validate the manifest and configure the instance identity:
+5. Validate the manifest and configure the instance identity:
 
 ```python
 from decimal import Decimal
