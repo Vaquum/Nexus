@@ -874,3 +874,9 @@
 ### Fix
 
 - Make `ModeController` the sole writer of `state.mode` on the live path. `StartupSequencer._determine_mode` now writes its boot decision into `state.health_mode` (the health input) instead of committing a `ModeState` with a `boot_*` trigger; the launcher's `ModeController.reconcile`, which runs after `start`, commits it. This also fixes a boot clobber: previously `_determine_mode` set REDUCE_ONLY (no-health-data safety) and then `reconcile` overwrote it with ACTIVE, because `reconcile` only seeded the health mode when the trigger was `'health'` and the boot trigger was `'boot_no_health_data'`. `ShutdownSequencer._halt_state_mode` now places the shutdown hold through an injected `ModeController` (falling back to a direct `state.mode` write only in single-threaded test paths) so an in-flight outcome cannot resume trading mid-shutdown
+
+## v0.70.1 on 21st of July, 2026
+
+### Update
+
+- Replace the repository-template [`README.md`](README.md) with the real module README following the shared Vaquum module README structure: header block with tagline, anchor nav, and badges, `What Nexus Is Not`, `Capabilities`, `First Strategy` quickstart, `Risk Boundary`, and the standard tail. Every claim is backed by code on `main`; the quickstart manifest and Python snippets were executed verbatim against a fresh install of this version
