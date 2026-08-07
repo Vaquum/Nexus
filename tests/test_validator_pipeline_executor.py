@@ -9,7 +9,6 @@ from typing import Any
 
 import pytest
 
-from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.capital_controller.reservation import Reservation
 from nexus.core.validator import (
     DEFAULT_VALIDATION_STAGE_ORDER,
@@ -20,7 +19,6 @@ from nexus.core.validator import (
     ValidationStage,
     build_default_intake_hooks,
     validate_intake_stage,
-    validate_capital_stage,
 )
 from nexus.instance_config import InstanceConfig
 from nexus.core.domain.instance_state import InstanceState
@@ -440,36 +438,6 @@ class TestValidationPipelineRun:
         )
         assert decision_b.message == decision_a.message
 
-    def test_modify_capital_denial_is_deterministic_for_positive_delta(self) -> None:
-        context = _make_context(
-            action=ValidationAction.MODIFY,
-            order_notional=Decimal('120'),
-            current_order_notional=Decimal('100'),
-            estimated_fees=Decimal('1'),
-            strategy_budget=Decimal('10'),
-        )
-        capital_controller = CapitalController(context.state.capital)
-
-        def capital(_: ValidationRequestContext) -> ValidationDecision:
-            return validate_capital_stage(_, capital_controller)
-
-        validators = dict.fromkeys(DEFAULT_VALIDATION_STAGE_ORDER, _allow)
-        validators[ValidationStage.CAPITAL] = capital
-        pipeline = ValidationPipeline(validators=validators)
-
-        decision_a = pipeline.validate(context)
-        decision_b = pipeline.validate(context)
-
-        assert decision_a.allowed is False
-        assert decision_b.allowed is False
-        assert decision_a.failed_stage == ValidationStage.CAPITAL
-        assert decision_b.failed_stage == ValidationStage.CAPITAL
-        assert decision_a.reason_code == 'CAPITAL_RESERVATION_DENIED'
-        assert decision_b.reason_code == 'CAPITAL_RESERVATION_DENIED'
-        assert decision_a.message is not None
-        assert decision_b.message is not None
-        assert decision_b.message == decision_a.message
-
     def test_late_denial_returns_reservation_for_cleanup(self) -> None:
         created_at = datetime.now(tz=timezone.utc)
         reservation = Reservation(
@@ -540,81 +508,22 @@ class TestValidationPipelineRun:
         assert decision.allowed is True
         assert decision.reservation == reservation
 
-    def test_modify_increase_runs_capital_stage_and_attaches_reservation(self) -> None:
-        context = _make_context(
-            action=ValidationAction.MODIFY,
-            order_notional=Decimal('120'),
-            current_order_notional=Decimal('100'),
-            strategy_budget=Decimal('25'),
-        )
-        capital_controller = CapitalController(context.state.capital)
-
-        def capital(_: ValidationRequestContext) -> ValidationDecision:
-            return validate_capital_stage(_, capital_controller)
-
-        validators = dict.fromkeys(DEFAULT_VALIDATION_STAGE_ORDER, _allow)
-        validators[ValidationStage.CAPITAL] = capital
-        pipeline = ValidationPipeline(validators=validators)
-
-        decision = pipeline.validate(context)
-
-        assert decision.allowed is True
-        assert decision.reservation is not None
-
-    def test_modify_decrease_skips_capital_reservation_and_still_allows(self) -> None:
-        context = _make_context(
-            action=ValidationAction.MODIFY,
-            order_notional=Decimal('80'),
-            current_order_notional=Decimal('100'),
-            strategy_budget=Decimal('0'),
-        )
-        capital_controller = CapitalController(context.state.capital)
-
-        def capital(_: ValidationRequestContext) -> ValidationDecision:
-            return validate_capital_stage(_, capital_controller)
-
-        validators = dict.fromkeys(DEFAULT_VALIDATION_STAGE_ORDER, _allow)
-        validators[ValidationStage.CAPITAL] = capital
-        pipeline = ValidationPipeline(validators=validators)
-
-        decision = pipeline.validate(context)
-
-        assert decision.allowed is True
-        assert decision.reservation is None
-
-    def test_modify_noop_skips_capital_reservation_and_still_allows(self) -> None:
-        context = _make_context(
-            action=ValidationAction.MODIFY,
-            order_notional=Decimal('100'),
-            current_order_notional=Decimal('100'),
-            strategy_budget=Decimal('0'),
-        )
-        capital_controller = CapitalController(context.state.capital)
-
-        def capital(_: ValidationRequestContext) -> ValidationDecision:
-            return validate_capital_stage(_, capital_controller)
-
-        validators = dict.fromkeys(DEFAULT_VALIDATION_STAGE_ORDER, _allow)
-        validators[ValidationStage.CAPITAL] = capital
-        pipeline = ValidationPipeline(validators=validators)
-
-        decision = pipeline.validate(context)
-
-        assert decision.allowed is True
-        assert decision.reservation is None
-
-
 class TestSafetyBypassContract:
     '''The contract behind PT-FIX-32 + PT-FIX-37: every validator stage that
-    gates *new* exposure must be in the EXIT/ABORT/CANCEL bypass set, so a
-    stage that legitimately denies an ENTER (drawdown, stale orderbook,
+    gates *new* exposure must be in the EXIT/ABORT/CANCEL/MODIFY bypass set,
+    so a stage that legitimately denies an ENTER (drawdown, stale orderbook,
     capital pressure, health degradation, platform limit breach) cannot
-    block the strategy from cutting risk.
+    block the strategy from cutting risk or re-parametrizing a live command.
+
+    MODIFY is bypassed alongside the exit actions: an amend re-parametrizes
+    an already-sized command and never changes total notional, so no stage
+    that gates new exposure applies.
 
     INTAKE is the only stage NOT bypassed for safety actions — it handles
     symbol normalization and schema sanity that must run for all actions.
     Operational-mode gating inside INTAKE explicitly allows EXIT in
-    REDUCE_ONLY (PT-FIX-15) and CANCEL/ABORT in HALTED.
+    REDUCE_ONLY (PT-FIX-15) and CANCEL/ABORT in HALTED, and blocks MODIFY
+    under HALTED.
 
     This test pins the bypass set so a future stage addition that should
     bypass for exits cannot silently miss the bypass list.
@@ -622,7 +531,12 @@ class TestSafetyBypassContract:
 
     @pytest.mark.parametrize(
         'action',
-        [ValidationAction.EXIT, ValidationAction.ABORT, ValidationAction.CANCEL],
+        [
+            ValidationAction.EXIT,
+            ValidationAction.ABORT,
+            ValidationAction.CANCEL,
+            ValidationAction.MODIFY,
+        ],
     )
     @pytest.mark.parametrize(
         'gating_stage',

@@ -266,6 +266,8 @@ class TestAction:
             ActionType.MODIFY: Action(
                 action_type=ActionType.MODIFY,
                 command_id='cmd-1',
+                execution_mode=ExecutionMode.TWAP,
+                modify_params={'num_slices': 6},
             ),
             ActionType.ABORT: Action(
                 action_type=ActionType.ABORT,
@@ -287,6 +289,50 @@ class TestAction:
 
         with pytest.raises(ValueError, match='MODIFY requires: command_id'):
             Action(action_type=ActionType.MODIFY)
+
+    def test_modify_requires_execution_mode(self) -> None:
+        '''MODIFY raises when execution_mode is missing.'''
+
+        with pytest.raises(ValueError, match='MODIFY requires: execution_mode'):
+            Action(
+                action_type=ActionType.MODIFY,
+                command_id='cmd-1',
+                modify_params={'num_slices': 6},
+            )
+
+    def test_modify_requires_modify_params(self) -> None:
+        '''MODIFY raises when modify_params is missing.'''
+
+        with pytest.raises(ValueError, match='MODIFY requires: modify_params'):
+            Action(
+                action_type=ActionType.MODIFY,
+                command_id='cmd-1',
+                execution_mode=ExecutionMode.TWAP,
+            )
+
+    def test_modify_params_rejects_empty_mapping(self) -> None:
+        '''An empty modify_params mapping is rejected — an amend with no fields is meaningless.'''
+
+        with pytest.raises(ValueError, match='modify_params must not be empty'):
+            Action(
+                action_type=ActionType.MODIFY,
+                command_id='cmd-1',
+                execution_mode=ExecutionMode.TWAP,
+                modify_params={},
+            )
+
+    def test_modify_params_is_immutable(self) -> None:
+        '''modify_params is frozen into a read-only mapping.'''
+
+        action = Action(
+            action_type=ActionType.MODIFY,
+            command_id='cmd-1',
+            execution_mode=ExecutionMode.TWAP,
+            modify_params={'num_slices': 6},
+        )
+
+        with pytest.raises(TypeError):
+            action.modify_params['num_slices'] = 9  # type: ignore[index]
 
     def test_abort_requires_command_id(self) -> None:
         '''ABORT raises when command_id is missing.'''

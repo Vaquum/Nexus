@@ -75,6 +75,15 @@ def _abort_action(command_id: str = 'cmd_777') -> Action:
     return Action(action_type=ActionType.ABORT, command_id=command_id)
 
 
+def _modify_action(command_id: str = 'cmd_777') -> Action:
+    return Action(
+        action_type=ActionType.MODIFY,
+        command_id=command_id,
+        execution_mode=ExecutionMode.TWAP,
+        modify_params={'num_slices': 6},
+    )
+
+
 def _enter_context(strategy_id: str = 'strat_001') -> ValidationRequestContext:
     return ValidationRequestContext(
         strategy_id=strategy_id,
@@ -87,6 +96,23 @@ def _enter_context(strategy_id: str = 'strat_001') -> ValidationRequestContext:
         symbol='BTCUSDT',
         order_side=OrderSide.BUY,
         order_size=Decimal('0.01'),
+    )
+
+
+def _modify_context(strategy_id: str = 'strat_001') -> ValidationRequestContext:
+    return ValidationRequestContext(
+        strategy_id=strategy_id,
+        order_notional=Decimal('1000'),
+        current_order_notional=Decimal('1000'),
+        estimated_fees=Decimal('1'),
+        strategy_budget=Decimal('5000'),
+        state=_state(),
+        config=_config(),
+        action=ValidationAction.MODIFY,
+        symbol='BTCUSDT',
+        order_side=OrderSide.BUY,
+        order_size=Decimal('0.01'),
+        command_id='cmd_555',
     )
 
 
@@ -368,6 +394,109 @@ class TestSubmitActions:
             praxis_outbound=outbound,
             validator=validator,
             build_context=lambda _a, _s: None,
+            now=_now,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.SUBMIT_FAILED
+        assert 'praxis hung' in (outcome.error or '')
+
+    def test_modify_runs_validator_then_send_modify(self) -> None:
+        '''A validated MODIFY runs the validator, then routes to send_modify.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        ctx = _modify_context()
+
+        results = submit_actions(
+            [_modify_action('cmd_555')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        _action, outcome = results[0]
+        assert outcome.status == SubmissionStatus.SUBMITTED
+        assert outcome.command_id == 'cmd_555'
+        validator.validate.assert_called_once_with(ctx)
+        assert outbound.send_command.call_count == 0
+        outbound.send_modify.assert_called_once()
+        kwargs = outbound.send_modify.call_args.kwargs
+        assert kwargs['command_id'] == 'cmd_555'
+        assert kwargs['account_id'] == 'acc_001'
+        assert kwargs['reason'] == 'runtime_strategy_modify'
+        assert kwargs['execution_mode'] == ExecutionMode.TWAP
+        assert kwargs['modify_params'] == {'num_slices': 6}
+        assert kwargs['created_at'] == _NOW
+
+    def test_modify_rejected_by_validator_does_not_send(self) -> None:
+        '''A MODIFY denied by the validator (e.g. HALTED mode) never reaches send_modify.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.INTAKE,
+            reason_code='INTAKE_MODE_HALTED_BLOCKS_TRADING',
+            message='operational mode HALTED blocks all new trading',
+        )
+        outbound = MagicMock()
+
+        results = submit_actions(
+            [_modify_action('cmd_555')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _modify_context(),
+            now=_now,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.REJECTED
+        assert outcome.decision is not None
+        assert outcome.decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_TRADING'
+        assert outbound.send_modify.call_count == 0
+
+    def test_modify_context_unavailable_is_invalid(self) -> None:
+        '''When the launcher cannot build a MODIFY context, the amend fails closed.'''
+
+        validator = MagicMock()
+        outbound = MagicMock()
+
+        results = submit_actions(
+            [_modify_action('cmd_555')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: None,
+            now=_now,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.INVALID
+        assert validator.validate.call_count == 0
+        assert outbound.send_modify.call_count == 0
+
+    def test_send_modify_failure_marks_submit_failed(self) -> None:
+        '''send_modify raising propagates as SUBMIT_FAILED, not INVALID.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_modify.side_effect = TimeoutError('praxis hung')
+
+        results = submit_actions(
+            [_modify_action('cmd_900')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _modify_context(),
             now=_now,
         )
 

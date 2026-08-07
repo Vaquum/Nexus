@@ -36,6 +36,7 @@ def build_default_intake_hooks(
     *,
     active_command_ids: set[str] | None = None,
     modifiable_command_ids: set[str] | None = None,
+    modifiable_command_ids_provider: Callable[[], set[str]] | None = None,
     max_order_rate: int | None = None,
     now_fn: Callable[[], datetime] | None = None,
 ) -> tuple[IntakeValidationHook, ...]:
@@ -45,7 +46,12 @@ def build_default_intake_hooks(
         config: Instance config carrying duplicate-window and order-rate settings.
         active_command_ids: Active command id set used for ABORT checks.
         modifiable_command_ids: Lifecycle-valid command ids for MODIFY.
-            MODIFY is validated against this set; when ``None``, MODIFY is denied.
+            MODIFY is validated against this set; when ``None`` and no
+            provider is given, MODIFY is denied.
+        modifiable_command_ids_provider: Callable returning the current
+            amendable command id set, re-invoked per validation so a live
+            (tick-to-tick) set reaches the MODIFY check. Takes precedence
+            over ``modifiable_command_ids`` when both are given.
         max_order_rate: Optional max ENTER actions/sec override.
             Defaults to ``config.max_order_rate`` when not provided.
         now_fn: Optional clock override for deterministic tests.
@@ -61,6 +67,7 @@ def build_default_intake_hooks(
                 active_command_ids if active_command_ids is not None else set()
             ),
             modifiable_command_ids=modifiable_command_ids,
+            modifiable_command_ids_provider=modifiable_command_ids_provider,
         ),
     ]
 
@@ -197,8 +204,16 @@ def make_reference_integrity_hook(
     active_command_ids: set[str],
     *,
     modifiable_command_ids: set[str] | None = None,
+    modifiable_command_ids_provider: Callable[[], set[str]] | None = None,
 ) -> IntakeValidationHook:
-    '''Create intake hook for trade/command references and spot-direction rules.'''
+    '''Create intake hook for trade/command references and spot-direction rules.
+
+    MODIFY is validated against the set of currently amendable command
+    ids. That set is live — commands become terminal tick to tick — so a
+    provider callable re-invoked per validation is preferred over a set
+    captured once at construction; when both are given the provider wins,
+    and when neither is given MODIFY is denied.
+    '''
 
     def hook(context: ValidationRequestContext) -> ValidationDecision | None:
         decision: ValidationDecision | None = None
@@ -271,7 +286,13 @@ def make_reference_integrity_hook(
                     )
 
         elif context.action == ValidationAction.MODIFY:
-            if modifiable_command_ids is None:
+            resolved_modifiable = (
+                modifiable_command_ids_provider()
+                if modifiable_command_ids_provider is not None
+                else modifiable_command_ids
+            )
+
+            if resolved_modifiable is None:
                 decision = ValidationDecision(
                     allowed=False,
                     failed_stage=ValidationStage.INTAKE,
@@ -280,7 +301,7 @@ def make_reference_integrity_hook(
                 )
             elif (
                 context.command_id is None
-                or context.command_id not in modifiable_command_ids
+                or context.command_id not in resolved_modifiable
             ):
                 decision = ValidationDecision(
                     allowed=False,
@@ -392,6 +413,7 @@ def validate_intake_stage(
         ValidationAction.EXIT,
         ValidationAction.ABORT,
         ValidationAction.CANCEL,
+        ValidationAction.MODIFY,
     ):
         return ValidationDecision(
             allowed=False,

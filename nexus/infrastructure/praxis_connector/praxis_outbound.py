@@ -10,10 +10,11 @@ import asyncio
 import concurrent.futures
 import inspect
 import logging
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
+from nexus.core.domain.order_types import ExecutionMode
 from nexus.core.health_evaluator import HealthSnapshot
 from nexus.infrastructure.praxis_connector.trade_command import TradeCommand
 
@@ -82,6 +83,7 @@ class PraxisOutbound:
         unregister_fn: Async callable matching Praxis Trading.unregister_account.
         pull_positions_fn: Sync callable matching Praxis Trading.pull_positions.
         submit_abort_fn: Async callable wrapping Praxis Trading.submit_abort.
+        submit_modify_fn: Async callable wrapping Praxis Trading.submit_modify.
         get_health_snapshot_fn: Async callable wrapping Praxis Trading.get_health_snapshot.
         loop: Asyncio event loop running in the Praxis thread.
         timeout: Seconds to wait for async calls to complete.
@@ -95,6 +97,7 @@ class PraxisOutbound:
         unregister_fn: Callable[[str], Coroutine[Any, Any, None]] | None = None,
         pull_positions_fn: Callable[[str], dict[tuple[str, str], Any]] | None = None,
         submit_abort_fn: Callable[..., Coroutine[Any, Any, None]] | None = None,
+        submit_modify_fn: Callable[..., Coroutine[Any, Any, None]] | None = None,
         get_health_snapshot_fn: Callable[[str], Coroutine[Any, Any, HealthSnapshot]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
@@ -108,6 +111,7 @@ class PraxisOutbound:
         self._unregister_fn = unregister_fn
         self._pull_positions_fn = pull_positions_fn
         self._submit_abort_fn = submit_abort_fn
+        self._submit_modify_fn = submit_modify_fn
         self._get_health_snapshot_fn = get_health_snapshot_fn
         self._timeout = timeout
 
@@ -267,6 +271,63 @@ class PraxisOutbound:
             raise
 
         _log.info('abort submitted', extra={'command_id': command_id, 'reason': reason})
+
+    def send_modify(
+        self,
+        *,
+        command_id: str,
+        account_id: str,
+        reason: str,
+        execution_mode: ExecutionMode,
+        modify_params: Mapping[str, object],
+        created_at: datetime,
+    ) -> None:
+        '''Submit trade amend to Praxis via async bridge.
+
+        Args:
+            command_id: Command to amend.
+            account_id: Owning account for the command.
+            reason: Reason for the amend (e.g. 'runtime_strategy_modify').
+            execution_mode: Execution mode of the target command, selecting
+                the amend-parameter shape Praxis builds.
+            modify_params: Mode-specific amend parameters keyed by field
+                name with absolute new values.
+            created_at: Amend creation timestamp (UTC, timezone-aware).
+
+        Raises:
+            RuntimeError: If submit_modify_fn is not configured.
+            TimeoutError: If Praxis does not respond within timeout.
+            Exception: Propagates the original exception raised by submit_modify_fn.
+        '''
+
+        if self._submit_modify_fn is None:
+            msg = 'submit_modify_fn not configured'
+            raise RuntimeError(msg)
+
+        if created_at.tzinfo is None or created_at.utcoffset() != timezone.utc.utcoffset(None):
+            msg = 'send_modify.created_at must be timezone-aware UTC'
+            raise ValueError(msg)
+
+        future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
+            self._submit_modify_fn(
+                command_id=command_id,
+                account_id=account_id,
+                reason=reason,
+                execution_mode=execution_mode,
+                modify_params=modify_params,
+                created_at=created_at,
+            ),
+            self._loop,
+        )
+
+        try:
+            future.result(timeout=self._timeout)
+        except (TimeoutError, concurrent.futures.TimeoutError):
+            future.cancel()
+            _log.error('submit_modify timed out: command_id=%s', command_id)
+            raise
+
+        _log.info('modify submitted', extra={'command_id': command_id, 'reason': reason})
 
     def register_account(self, account_id: str) -> None:
         '''Register account with Praxis Trading.

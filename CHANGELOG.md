@@ -880,3 +880,11 @@
 ### Update
 
 - Replace the repository-template [`README.md`](README.md) with the real module README following the shared Vaquum module README structure: header block with tagline, anchor nav, and badges, `What Nexus Is Not`, `Capabilities`, `First Strategy` quickstart, `Risk Boundary`, and the standard tail. Every claim is backed by code on `main`; the quickstart manifest and Python snippets were executed verbatim against a fresh install of this version
+
+## v0.71.0 on 5th of August, 2026
+
+### Add
+
+- Add a runtime amend path from a strategy `MODIFY` action to Praxis. [`Action`](nexus/strategy/action.py) gains a `modify_params` mapping carrying mode-specific absolute new values (rejected when empty), and a MODIFY action now requires `command_id`, `execution_mode` (selecting the amend-parameter shape), and `modify_params`. [`PraxisOutbound.send_modify`](nexus/infrastructure/praxis_connector/praxis_outbound.py) bridges a validated amend to an injected `submit_modify_fn` (Praxis `Trading.submit_modify`); the launcher wiring `PraxisOutbound` must supply `submit_modify_fn` for a strategy MODIFY to reach Praxis, and without it `send_modify` raises `RuntimeError`
+- Route a strategy `MODIFY` through the validator rather than bypassing it: [`submit_actions`](nexus/strategy/action_submit.py) validates the amend and only then calls `send_modify`, so the intake operational-mode gate (`HALTED` blocks amends, unlike `ABORT`/`CANCEL` which only wind down) and the `modifiable_command_ids` lifecycle check apply. An amend re-parametrizes an already-sized command and never changes total notional, so `MODIFY` joins the exit actions in the capital/risk/health/price/platform bypass set — no new capital is reserved. A validated MODIFY carries no `TradeCommand`, so [`translate_to_trade_command`](nexus/infrastructure/praxis_connector/translate.py) now rejects `MODIFY` fail-fast instead of mapping it to a payload-less `AMEND_ORDER`
+- Add a `modifiable_command_ids_provider` form to [`make_reference_integrity_hook`](nexus/core/validator/intake_stage.py) / `build_default_intake_hooks`, re-invoked per validation so the live (tick-to-tick) amendable-command set reaches the MODIFY check; the provider takes precedence over a statically captured set, and MODIFY stays denied when neither is supplied

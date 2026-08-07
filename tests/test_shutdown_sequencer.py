@@ -321,7 +321,7 @@ class TestSubmitActions:
                 Action(action_type=ActionType.EXIT, trade_id='t-1', size=Decimal('1')),
                 Action(action_type=ActionType.ABORT, command_id='cmd-2'),
                 Action(action_type=ActionType.ENTER, direction=OrderSide.BUY, size=Decimal('1'), execution_mode=ExecutionMode.SINGLE_SHOT, order_type=OrderType.MARKET, deadline=300),
-                Action(action_type=ActionType.MODIFY, command_id='cmd-3'),
+                Action(action_type=ActionType.MODIFY, command_id='cmd-3', execution_mode=ExecutionMode.TWAP, modify_params={'num_slices': 6}),
             ],
         }
 

@@ -133,6 +133,13 @@ def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bo
     exit critical (drawdown, degraded venue health, capital pressure,
     stale orderbook) prevent the strategy from cutting risk.
 
+    MODIFY joins them for the capital-type stages. An amend
+    re-parametrizes an already-sized command — retargeting a scheme's
+    slices/cadence, a bracket leg's price, an iceberg's display, a
+    ladder's rung distribution — and never changes total notional, so
+    the original ENTER reservation still covers it: an amend reserves
+    no new capital and must not be re-gated on exposure.
+
     The bypass set has grown incrementally as each gating stage was
     audited:
     - CAPITAL / HEALTH / PLATFORM_LIMITS — original safety bypass.
@@ -144,7 +151,9 @@ def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bo
 
     `INTAKE` is deliberately NOT in the bypass set — it handles
     symbol normalization, schema sanity, and operational-mode gating
-    that must apply to every action. The intake stage's
+    that must apply to every action. For MODIFY this is the whole
+    point: intake enforces the HALTED-blocks-amends gate and the
+    `modifiable_command_ids` lifecycle check. The intake stage's
     `INTAKE_ORDER_NOTIONAL_ZERO` check is exempted for safety
     actions inside that stage's logic (PT-FIX-33), not via this
     bypass set.
@@ -154,6 +163,7 @@ def _should_bypass_stage(action: ValidationAction, stage: ValidationStage) -> bo
         ValidationAction.EXIT,
         ValidationAction.ABORT,
         ValidationAction.CANCEL,
+        ValidationAction.MODIFY,
     ):
         return False
 

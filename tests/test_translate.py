@@ -75,7 +75,12 @@ def _exit_action() -> Action:
 
 
 def _modify_action() -> Action:
-    return Action(action_type=ActionType.MODIFY, command_id='cmd_003')
+    return Action(
+        action_type=ActionType.MODIFY,
+        command_id='cmd_003',
+        execution_mode=ExecutionMode.TWAP,
+        modify_params={'num_slices': 6},
+    )
 
 
 def _abort_action() -> Action:
@@ -208,11 +213,10 @@ def test_exit_translation() -> None:
     assert cmd.strategy_id == 'strat_001'
 
 
-def test_modify_translation_omits_strategy_id() -> None:
-    '''AMEND_ORDER carries no per-action strategy attribution; the venue
-    side already knows the owning strategy via the original NEW_ORDER's
-    `strategy_id`. TradeCommand invariants reject `strategy_id is not None`
-    on AMEND.
+def test_modify_translation_raises() -> None:
+    '''MODIFY does not translate to a TradeCommand; a validated MODIFY
+    routes to PraxisOutbound.send_modify carrying its amend parameters,
+    so translate rejects it fail-fast.
     '''
 
     action = _modify_action()
@@ -221,10 +225,8 @@ def test_modify_translation_omits_strategy_id() -> None:
     config = _config()
     now = _now()
 
-    cmd = translate_to_trade_command(action, context, decision, config, now)
-
-    assert cmd.command_type == TradeCommandType.AMEND_ORDER
-    assert cmd.strategy_id is None
+    with pytest.raises(ValueError, match='does not handle MODIFY'):
+        translate_to_trade_command(action, context, decision, config, now)
 
 
 def test_cancel_translation_omits_strategy_id() -> None:
@@ -260,29 +262,6 @@ def test_exit_translation_fills_submission_defaults() -> None:
     assert cmd.execution_mode == ExecutionMode.SINGLE_SHOT
     assert cmd.order_type == OrderType.MARKET
     assert cmd.deadline == 60
-
-
-def test_modify_translation() -> None:
-    action = _modify_action()
-    context = _modify_context()
-    decision = ValidationDecision(allowed=True)
-    config = _config()
-    now = _now()
-
-    cmd = translate_to_trade_command(action, context, decision, config, now)
-
-    assert cmd.command_type == TradeCommandType.AMEND_ORDER
-    assert cmd.command_id == 'cmd_003'
-    assert cmd.notional == Decimal('1500')
-    assert cmd.side is None
-    assert cmd.size is None
-    assert cmd.stp_mode is None
-    assert cmd.execution_mode is None
-    assert cmd.order_type is None
-    assert cmd.execution_params is None
-    assert cmd.deadline is None
-    assert cmd.maker_preference is None
-    assert cmd.reference_price is None
 
 
 def test_abort_translation() -> None:
@@ -491,21 +470,6 @@ def test_exit_translation_omits_quote_qty() -> None:
 
     assert cmd.quote_qty is None
     assert cmd.size == Decimal('0.01')
-
-
-def test_modify_translation_omits_quote_qty() -> None:
-    '''AMEND_ORDER never carries quote_qty (TradeCommand invariant).'''
-
-    action = _modify_action()
-    context = _modify_context()
-    decision = ValidationDecision(allowed=True)
-    config = _config()
-    now = _now()
-
-    cmd = translate_to_trade_command(action, context, decision, config, now)
-
-    assert cmd.quote_qty is None
-    assert cmd.size is None
 
 
 def test_cancel_translation_omits_quote_qty() -> None:
