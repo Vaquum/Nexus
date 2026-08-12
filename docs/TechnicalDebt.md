@@ -1045,3 +1045,16 @@ TD-086 made the outcome-dedup durable by moving `processed_outcome_ids` and `pro
 
 **When to fix**: Before a long-lived (multi-month) deployment, or if snapshot size / boot deserialize time becomes material.
 **Migration**: Bound retention to the ids that could still be replayed. Praxis only replays un-acked outcomes at boot, so the dedup set only needs ids within that window — e.g. evict ids older than the maximum spine-replay horizon, or cap the set to a bounded most-recent ring keyed by outcome ordering. Requires a defensible replay-window definition Nexus can compute (or a Praxis-supplied high-water ack mark).
+
+---
+
+## TD-098: `_processed_fund_transaction_ids` dedup set is unbounded and not persisted
+
+**Origin**: Greybeard pre-PR review
+**Severity**: Low (fund transactions are rare; the redelivery consequence is a duplicate log line only)
+**Module**: `nexus/infrastructure/praxis_connector/outcome_processor.py`
+
+`OutcomeProcessor.process_fund_transaction` dedups on `fund_transaction_id` via an in-memory `_processed_fund_transaction_ids` set. Unlike its durable siblings `processed_outcome_ids` / `processed_dust_close_ids` (TD-097), this set lives only on the processor instance: it is never pruned (grows without bound over uptime) and is not serialized into the WAL (resets on restart, so a fund transaction redelivered after a restart is re-logged). The consequence is bounded to a duplicate INFO log line, since a fund transaction is informational and never adjusts capital.
+
+**When to fix**: Alongside the TD-097 dedup-retention work, or if a restart-redelivery duplicate log proves noisy.
+**Migration**: Fold the fund-transaction dedup into the same bounded-retention scheme chosen for TD-097 (evict beyond the replay/redelivery window), and — if restart idempotence is wanted — persist it on `InstanceState` next to `processed_outcome_ids`.
