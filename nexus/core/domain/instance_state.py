@@ -16,6 +16,7 @@ from nexus.core.domain.enums import OperationalMode
 from nexus.core.domain.operational_mode import (
     ModeState,
     OperationalHolds,
+    ReduceOnlyHolds,
     StrategyModeState,
 )
 from nexus.core.domain.position import Position
@@ -74,6 +75,7 @@ class InstanceState:
     mode: ModeState = field(default_factory=ModeState)
     health_mode: OperationalMode = OperationalMode.ACTIVE
     mode_holds: OperationalHolds = field(default_factory=OperationalHolds)
+    reduce_only_holds: ReduceOnlyHolds = field(default_factory=ReduceOnlyHolds)
     strategy_modes: dict[str, StrategyModeState] = field(default_factory=dict)
     account_dust: dict[str, Decimal] = field(default_factory=dict)
     processed_outcome_ids: set[str] = field(default_factory=set)

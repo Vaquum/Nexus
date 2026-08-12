@@ -30,6 +30,7 @@ __all__ = ['ModeController']
 _log = logging.getLogger(__name__)
 
 _HALTED = OperationalMode.HALTED
+_REDUCE_ONLY = OperationalMode.REDUCE_ONLY
 
 
 def _utc_now() -> datetime:
@@ -146,6 +147,45 @@ class ModeController:
         '''
 
         return self._clear_hold('manual_hold')
+
+    def set_reconciliation_halt(self, reason: str) -> bool:
+        '''Place the reconciliation HALT hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._set_hold('reconciliation_hold', reason)
+
+    def clear_reconciliation_halt(self) -> bool:
+        '''Lift the reconciliation HALT hold and recommit.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._clear_hold('reconciliation_hold')
+
+    def set_reconciliation_reduce_only(self, reason: str) -> bool:
+        '''Place the reconciliation REDUCE_ONLY hold and recommit the mode.
+
+        A HALT hold (or health-derived HALT) outranks this; REDUCE_ONLY
+        applies only when nothing forces HALTED.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._set_reduce_hold('reconciliation', reason)
+
+    def clear_reconciliation_reduce_only(self) -> bool:
+        '''Lift the reconciliation REDUCE_ONLY hold and recommit.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._clear_reduce_hold('reconciliation')
 
     def set_daily_loss_halt(self, reason: str) -> bool:
         '''Place the daily-loss hold and recommit the mode.
@@ -372,10 +412,46 @@ class ModeController:
 
         return self._recommit()
 
+    def _set_reduce_hold(self, name: str, reason: str) -> bool:
+        with self._lock:
+            hold = getattr(self._state.reduce_only_holds, name)
+
+            if not hold.active:
+                hold.active = True
+                hold.reason = reason
+                hold.since = self._clock()
+
+            changed = self._recommit()
+
+        self.notify_pending_halt()
+
+        return changed
+
+    def _clear_reduce_hold(self, name: str) -> bool:
+        with self._lock:
+            hold = getattr(self._state.reduce_only_holds, name)
+
+            if hold.active:
+                hold.active = False
+                hold.reason = ''
+                hold.since = None
+
+            changed = self._recommit()
+
+        self.notify_pending_halt()
+
+        return changed
+
     def _recommit(self) -> bool:
         holds = self._state.mode_holds
-        halted = holds.any_active() or self._state.health_mode is _HALTED
-        new_mode = _HALTED if halted else self._state.health_mode
+        reduce_holds = self._state.reduce_only_holds
+
+        if holds.any_active() or self._state.health_mode is _HALTED:
+            new_mode = _HALTED
+        elif reduce_holds.any_active() or self._state.health_mode is _REDUCE_ONLY:
+            new_mode = _REDUCE_ONLY
+        else:
+            new_mode = self._state.health_mode
 
         source = self._mode_source(new_mode)
         mode_changed = new_mode is not self._state.mode.mode
@@ -412,5 +488,11 @@ class ModeController:
 
             if holds.risk_daily_loss.active or holds.risk_drawdown.active:
                 return 'risk'
+
+            if holds.reconciliation_hold.active:
+                return 'reconciliation'
+
+        elif mode is _REDUCE_ONLY and self._state.reduce_only_holds.reconciliation.active:
+            return 'reconciliation'
 
         return 'health'

@@ -16,6 +16,7 @@ from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.risk_state import StrategyRiskState
+from nexus.infrastructure.praxis_connector.fund_transaction import FundTransaction
 from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.process_result import ProcessResult
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
@@ -66,6 +67,7 @@ class OutcomeProcessor:
             positions_lock if positions_lock is not None else nullcontext()
         )
         self._dedup_lock = threading.Lock()
+        self._processed_fund_transaction_ids: set[str] = set()
 
     def process(
         self,
@@ -708,6 +710,47 @@ class OutcomeProcessor:
                 'account_dust_total': str(self._state.account_dust[symbol]),
                 'reason': reason,
                 'dust_close_id': dust_close_id,
+            },
+        )
+
+        return True
+
+    def process_fund_transaction(self, fund: FundTransaction) -> bool:
+        '''Record a Praxis-reported deposit/withdrawal for Manager awareness.
+
+        A detected fund transaction is informational only: it is logged for
+        the operator/Manager but does NOT adjust the capital pool. The
+        tradeable pool (`CapitalState.capital_pool`) is a static manifest
+        ceiling with no runtime mutator, so not calling into
+        `CapitalController` here keeps "a deposit does not increase the pool"
+        true by construction.
+
+        Idempotent on `fund_transaction_id`; a redelivery is a no-op.
+
+        Args:
+            fund: The detected deposit/withdrawal.
+
+        Returns:
+            True if recorded; False on a duplicate.
+        '''
+
+        with self._dedup_lock:
+            if fund.fund_transaction_id in self._processed_fund_transaction_ids:
+                _log.debug(
+                    'duplicate fund transaction dropped: fund_transaction_id=%s',
+                    fund.fund_transaction_id,
+                )
+                return False
+
+            self._processed_fund_transaction_ids.add(fund.fund_transaction_id)
+
+        _log.info(
+            'fund transaction recorded (capital pool unchanged)',
+            extra={
+                'account_id': fund.account_id,
+                'fund_transaction_id': fund.fund_transaction_id,
+                'direction': fund.direction,
+                'amount': str(fund.amount),
             },
         )
 

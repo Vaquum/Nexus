@@ -1049,6 +1049,39 @@ class TestModeHoldsRoundTrip:
         assert restored.mode_holds.risk_drawdown.since is None
         assert not restored.mode_holds.risk_daily_loss.active
 
+    def test_reconciliation_hold_survives_round_trip(self) -> None:
+        original = _make_minimal_state()
+        original.mode_holds.reconciliation_hold = HaltHold(
+            active=True, reason='mismatch on USDT',
+        )
+
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.mode_holds.reconciliation_hold.active
+        assert restored.mode_holds.reconciliation_hold.reason == 'mismatch on USDT'
+
+    def test_reduce_only_hold_survives_round_trip(self) -> None:
+        original = _make_minimal_state()
+        original.reduce_only_holds.reconciliation = HaltHold(
+            active=True, reason='mismatch on BTC',
+        )
+
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.reduce_only_holds.reconciliation.active
+        assert restored.reduce_only_holds.reconciliation.reason == 'mismatch on BTC'
+
+    def test_pre_field_snapshot_defaults_reconciliation_and_reduce_only(self) -> None:
+        original = _make_minimal_state()
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
+        del encoded['mode_holds']['reconciliation_hold']
+        del encoded['reduce_only_holds']
+
+        restored = deserialize_state(msgpack.packb(encoded))
+
+        assert not restored.mode_holds.reconciliation_hold.active
+        assert not restored.reduce_only_holds.any_active()
+
     def test_pre_field_snapshot_defaults_to_empty_holds(self) -> None:
         original = _make_minimal_state()
         encoded = msgpack.unpackb(serialize_state(original), raw=False)
