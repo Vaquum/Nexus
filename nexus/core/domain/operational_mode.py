@@ -12,7 +12,13 @@ from datetime import datetime
 
 from nexus.core.domain.enums import OperationalMode
 
-__all__ = ['HaltHold', 'ModeState', 'OperationalHolds', 'StrategyModeState']
+__all__ = [
+    'HaltHold',
+    'ModeState',
+    'OperationalHolds',
+    'ReduceOnlyHolds',
+    'StrategyModeState',
+]
 
 
 @dataclass
@@ -61,12 +67,15 @@ class OperationalHolds:
         risk_drawdown: Hold placed when the drawdown breaker trips.
         shutdown_hold: Hold placed by the shutdown sequence so an
             in-flight outcome cannot resume trading while shutting down.
+        reconciliation_hold: Hold placed when a reconciliation mismatch is
+            reported and the account's response policy is HALT.
     '''
 
     manual_hold: HaltHold = field(default_factory=HaltHold)
     risk_daily_loss: HaltHold = field(default_factory=HaltHold)
     risk_drawdown: HaltHold = field(default_factory=HaltHold)
     shutdown_hold: HaltHold = field(default_factory=HaltHold)
+    reconciliation_hold: HaltHold = field(default_factory=HaltHold)
 
     def any_active(self) -> bool:
         '''Return whether any hold currently forces HALTED.'''
@@ -76,7 +85,29 @@ class OperationalHolds:
             or self.manual_hold.active
             or self.risk_daily_loss.active
             or self.risk_drawdown.active
+            or self.reconciliation_hold.active
         )
+
+
+@dataclass
+class ReduceOnlyHolds:
+    '''The reasons that force REDUCE_ONLY (block entries, allow exits).
+
+    Independent of `OperationalHolds`: a HALT hold outranks these, and
+    REDUCE_ONLY applies only when no HALT hold and no health-derived HALT
+    is active.
+
+    Args:
+        reconciliation: Hold placed when a reconciliation mismatch is
+            reported and the account's response policy is REDUCE_ONLY.
+    '''
+
+    reconciliation: HaltHold = field(default_factory=HaltHold)
+
+    def any_active(self) -> bool:
+        '''Return whether any hold currently forces REDUCE_ONLY.'''
+
+        return self.reconciliation.active
 
 
 @dataclass

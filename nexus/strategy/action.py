@@ -46,9 +46,12 @@ class Action:
             to `size` for ENTER MARKET BUY orders — the venue determines
             the resulting base quantity from live liquidity. Mutually
             exclusive with `size` on ENTER; must be unset for EXIT.
-        execution_mode: How to execute (e.g. SingleShot). Required for ENTER.
+        execution_mode: How to execute (e.g. SingleShot). Required for ENTER;
+            required for MODIFY to select the amend-parameter shape.
         order_type: Order type (e.g. Market, Limit). Required for ENTER.
         execution_params: Mode-specific parameters. Optional.
+        modify_params: Mode-specific amend parameters, keyed by field
+            name with absolute new values. Required for MODIFY.
         deadline: Timeout in seconds. Required for ENTER.
         trade_id: Existing trade reference. Required for EXIT.
         command_id: Existing command reference. Required for MODIFY, ABORT.
@@ -63,6 +66,7 @@ class Action:
     execution_mode: ExecutionMode | None = None
     order_type: OrderType | None = None
     execution_params: Mapping[str, object] | None = None
+    modify_params: Mapping[str, object] | None = None
     deadline: int | None = None
     trade_id: str | None = None
     command_id: str | None = None
@@ -112,6 +116,19 @@ class Action:
                 self,
                 'execution_params',
                 MappingProxyType(dict(self.execution_params)),
+            )
+
+        if self.modify_params is not None:
+            if not isinstance(self.modify_params, Mapping):
+                msg = 'modify_params must be a Mapping or None'
+                raise ValueError(msg)
+            if not self.modify_params:
+                msg = 'modify_params must not be empty'
+                raise ValueError(msg)
+            object.__setattr__(
+                self,
+                'modify_params',
+                MappingProxyType(dict(self.modify_params)),
             )
 
         if self.deadline is not None and (
@@ -209,8 +226,15 @@ class Action:
                 raise ValueError(msg)
 
         elif self.action_type == ActionType.MODIFY:
+            missing = []
             if self.command_id is None:
-                msg = 'MODIFY requires: command_id'
+                missing.append('command_id')
+            if self.execution_mode is None:
+                missing.append('execution_mode')
+            if self.modify_params is None:
+                missing.append('modify_params')
+            if missing:
+                msg = f"MODIFY requires: {', '.join(missing)}"
                 raise ValueError(msg)
 
         elif self.action_type == ActionType.ABORT:

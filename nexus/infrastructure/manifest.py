@@ -15,6 +15,9 @@ from typing import Any
 
 import yaml
 
+from nexus.core.domain.reconciliation_mismatch_response import (
+    ReconciliationMismatchResponse,
+)
 from nexus.core.domain.risk_breaker_thresholds import RiskBreakerThresholds
 
 __all__ = ['Manifest', 'SignalSpec', 'StrategySpec', 'TimerSpec', 'load_manifest']
@@ -179,6 +182,8 @@ class Manifest:
         capital_pool: Operational allocation in quote asset for this instance.
         strategies: Strategy specifications for this instance.
         risk_controls: Per-account risk-breaker limits; all-unset by default.
+        reconciliation_mismatch_response: How the account reacts to a
+            Praxis-reported balance mismatch; defaults to HALT (fail-safe).
     '''
 
     account_id: str
@@ -186,6 +191,9 @@ class Manifest:
     capital_pool: Decimal
     strategies: tuple[StrategySpec, ...]
     risk_controls: RiskBreakerThresholds = field(default_factory=RiskBreakerThresholds)
+    reconciliation_mismatch_response: ReconciliationMismatchResponse = (
+        ReconciliationMismatchResponse.HALT
+    )
 
     def __post_init__(self) -> None:
         '''Validate manifest invariants.'''
@@ -270,6 +278,24 @@ def _optional_manifest_decimal(raw: Any, field_name: str) -> Decimal | None:
         return Decimal(str(raw))
     except InvalidOperation as exc:
         msg = f"risk_controls.{field_name} must be a decimal, got {raw!r}"
+        raise ValueError(msg) from exc
+
+
+def _parse_reconciliation_mismatch_response(
+    data: dict[str, Any],
+) -> ReconciliationMismatchResponse:
+    '''Parse the optional `reconciliation_mismatch_response` value (default HALT).'''
+
+    raw = data.get('reconciliation_mismatch_response')
+
+    if raw is None:
+        return ReconciliationMismatchResponse.HALT
+
+    try:
+        return ReconciliationMismatchResponse(raw)
+    except ValueError as exc:
+        allowed = ', '.join(member.value for member in ReconciliationMismatchResponse)
+        msg = f'reconciliation_mismatch_response must be one of {allowed}'
         raise ValueError(msg) from exc
 
 
@@ -485,6 +511,7 @@ def load_manifest(path: Path) -> Manifest:
         capital_pool=capital_pool,
         strategies=tuple(specs),
         risk_controls=_parse_risk_controls(data),
+        reconciliation_mismatch_response=_parse_reconciliation_mismatch_response(data),
     )
 
     _validate_strategy_files(manifest, path.parent)

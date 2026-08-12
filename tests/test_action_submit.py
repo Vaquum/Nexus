@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from structlog.contextvars import get_contextvars
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.capital_controller.reservation import Reservation
@@ -18,12 +20,17 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.position import Position
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 from nexus.core.stp_mode import STPMode
+from nexus.core.validator import (
+    make_reference_integrity_hook,
+    validate_intake_stage,
+)
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
     ValidationDecision,
     ValidationRequestContext,
     ValidationStage,
 )
+from nexus.infrastructure.observability import clear_context
 from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
@@ -75,6 +82,15 @@ def _abort_action(command_id: str = 'cmd_777') -> Action:
     return Action(action_type=ActionType.ABORT, command_id=command_id)
 
 
+def _modify_action(command_id: str = 'cmd_777') -> Action:
+    return Action(
+        action_type=ActionType.MODIFY,
+        command_id=command_id,
+        execution_mode=ExecutionMode.TWAP,
+        modify_params={'num_slices': 6},
+    )
+
+
 def _enter_context(strategy_id: str = 'strat_001') -> ValidationRequestContext:
     return ValidationRequestContext(
         strategy_id=strategy_id,
@@ -87,6 +103,23 @@ def _enter_context(strategy_id: str = 'strat_001') -> ValidationRequestContext:
         symbol='BTCUSDT',
         order_side=OrderSide.BUY,
         order_size=Decimal('0.01'),
+    )
+
+
+def _modify_context(strategy_id: str = 'strat_001') -> ValidationRequestContext:
+    return ValidationRequestContext(
+        strategy_id=strategy_id,
+        order_notional=Decimal('1000'),
+        current_order_notional=Decimal('1000'),
+        estimated_fees=Decimal('1'),
+        strategy_budget=Decimal('5000'),
+        state=_state(),
+        config=_config(),
+        action=ValidationAction.MODIFY,
+        symbol='BTCUSDT',
+        order_side=OrderSide.BUY,
+        order_size=Decimal('0.01'),
+        command_id='cmd_555',
     )
 
 
@@ -375,6 +408,132 @@ class TestSubmitActions:
         assert outcome.status == SubmissionStatus.SUBMIT_FAILED
         assert 'praxis hung' in (outcome.error or '')
 
+    def test_modify_runs_validator_then_send_modify(self) -> None:
+        '''A validated MODIFY runs the validator, then routes to send_modify.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        ctx = _modify_context()
+
+        results = submit_actions(
+            [_modify_action('cmd_555')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        _action, outcome = results[0]
+        assert outcome.status == SubmissionStatus.SUBMITTED
+        assert outcome.command_id == 'cmd_555'
+        validator.validate.assert_called_once_with(ctx)
+        assert outbound.send_command.call_count == 0
+        outbound.send_modify.assert_called_once()
+        kwargs = outbound.send_modify.call_args.kwargs
+        assert kwargs['command_id'] == 'cmd_555'
+        assert kwargs['account_id'] == 'acc_001'
+        assert kwargs['reason'] == 'runtime_strategy_modify'
+        assert kwargs['execution_mode'] == ExecutionMode.TWAP
+        assert kwargs['modify_params'] == {'num_slices': 6}
+        assert kwargs['created_at'] == _NOW
+
+    def test_modify_outcome_carries_validator_decision(self) -> None:
+        '''A submitted MODIFY outcome preserves the validator decision.'''
+
+        decision = ValidationDecision(allowed=True)
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        ctx = _modify_context()
+
+        results = submit_actions(
+            [_modify_action('cmd_556')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        _action, outcome = results[0]
+        assert outcome.status == SubmissionStatus.SUBMITTED
+        assert outcome.decision is decision
+
+    def test_modify_rejected_by_validator_does_not_send(self) -> None:
+        '''A MODIFY denied by the validator (e.g. HALTED mode) never reaches send_modify.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(
+            allowed=False,
+            failed_stage=ValidationStage.INTAKE,
+            reason_code='INTAKE_MODE_HALTED_BLOCKS_TRADING',
+            message='operational mode HALTED blocks all new trading',
+        )
+        outbound = MagicMock()
+
+        results = submit_actions(
+            [_modify_action('cmd_555')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _modify_context(),
+            now=_now,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.REJECTED
+        assert outcome.decision is not None
+        assert outcome.decision.reason_code == 'INTAKE_MODE_HALTED_BLOCKS_TRADING'
+        assert outbound.send_modify.call_count == 0
+
+    def test_modify_context_unavailable_is_invalid(self) -> None:
+        '''When the launcher cannot build a MODIFY context, the amend fails closed.'''
+
+        validator = MagicMock()
+        outbound = MagicMock()
+
+        results = submit_actions(
+            [_modify_action('cmd_555')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: None,
+            now=_now,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.INVALID
+        assert validator.validate.call_count == 0
+        assert outbound.send_modify.call_count == 0
+
+    def test_send_modify_failure_marks_submit_failed(self) -> None:
+        '''send_modify raising propagates as SUBMIT_FAILED, not INVALID.'''
+
+        validator = MagicMock()
+        validator.validate.return_value = ValidationDecision(allowed=True)
+        outbound = MagicMock()
+        outbound.send_modify.side_effect = TimeoutError('praxis hung')
+
+        results = submit_actions(
+            [_modify_action('cmd_900')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: _modify_context(),
+            now=_now,
+        )
+
+        outcome = results[0][1]
+        assert outcome.status == SubmissionStatus.SUBMIT_FAILED
+        assert 'praxis hung' in (outcome.error or '')
+
     def test_empty_actions_list_returns_empty(self) -> None:
         '''An empty action list yields an empty results list and touches nothing.'''
 
@@ -617,11 +776,6 @@ class TestPendingExitIncrement:
         position size; tick 2 submits a second EXIT for the same
         trade_id — the validator's intake stage sees `pending_exit > 0`
         and denies with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.'''
-
-        from nexus.core.validator import (
-            make_reference_integrity_hook,
-            validate_intake_stage,
-        )
 
         state = _state_with_position(size=Decimal('1.0'))
 
@@ -1092,8 +1246,6 @@ class TestFinalMajor03PendingExitLockCoverage:
         sum-of-decrements, with no lost update from torn RMW.
         '''
 
-        import threading as _threading
-
         position = Position(
             trade_id='t1',
             strategy_id='strat_001',
@@ -1104,7 +1256,7 @@ class TestFinalMajor03PendingExitLockCoverage:
             avg_cost_basis=Decimal('100'),
         )
 
-        lock = _threading.Lock()
+        lock = threading.Lock()
         increments = 1000
         decrements = 500
         increment_size = Decimal('1')
@@ -1125,8 +1277,8 @@ class TestFinalMajor03PendingExitLockCoverage:
         position.pending_exit = Decimal('0')
 
         all_threads = [
-            _threading.Thread(target=increment_many),
-            _threading.Thread(target=decrement_many),
+            threading.Thread(target=increment_many),
+            threading.Thread(target=decrement_many),
         ]
         for t in all_threads:
             t.start()
@@ -1153,8 +1305,6 @@ class TestFinalMajor03PendingExitLockCoverage:
         path with no contention.
         '''
 
-        import threading as _threading
-
         state = _state_with_position()
         ctx = _exit_context(state)
         validator = MagicMock()
@@ -1170,7 +1320,7 @@ class TestFinalMajor03PendingExitLockCoverage:
             validator=validator,
             build_context=lambda _a, _s: ctx,
             now=_now,
-            positions_lock=_threading.Lock(),
+            positions_lock=threading.Lock(),
         )
 
         assert state.positions['t1'].pending_exit == Decimal('0.5')
@@ -1192,10 +1342,6 @@ class TestPerActionBoundContext:
 
     def test_validator_sees_bound_strategy_and_action_type(self) -> None:
         '''The validator runs *inside* the per-action with-block.'''
-
-        from structlog.contextvars import get_contextvars  # local import to keep top of file lean
-
-        from nexus.infrastructure.observability import clear_context
 
         clear_context()
         captured: dict[str, object] = {}
@@ -1227,10 +1373,6 @@ class TestPerActionBoundContext:
     def test_contextvars_unbound_after_submit_returns(self) -> None:
         '''Per-action keys do not leak past the submit_actions call.'''
 
-        from structlog.contextvars import get_contextvars
-
-        from nexus.infrastructure.observability import clear_context
-
         clear_context()
 
         validator = MagicMock()
@@ -1258,10 +1400,6 @@ class TestPerActionBoundContext:
 
     def test_exit_action_binds_trade_id(self) -> None:
         '''An EXIT action with a trade_id binds trade_id for the iteration.'''
-
-        from structlog.contextvars import get_contextvars
-
-        from nexus.infrastructure.observability import clear_context
 
         clear_context()
         captured: dict[str, object] = {}
@@ -1296,10 +1434,6 @@ class TestPerActionBoundContext:
 
     def test_abort_action_binds_command_id(self) -> None:
         '''An ABORT action with command_id binds command_id for the iteration.'''
-
-        from structlog.contextvars import get_contextvars
-
-        from nexus.infrastructure.observability import clear_context
 
         clear_context()
         captured: dict[str, object] = {}

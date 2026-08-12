@@ -560,3 +560,65 @@ def test_reconcile_clears_shutdown_but_keeps_a_manual_hold() -> None:
     assert not state.mode_holds.shutdown_hold.active
     assert state.mode.mode is OperationalMode.HALTED
     assert state.mode.trigger == 'manual'
+
+
+def test_reconciliation_halt_sets_halted() -> None:
+    state = _state()
+    controller = _controller(state)
+
+    assert controller.set_reconciliation_halt('mismatch on USDT')
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'reconciliation'
+    assert state.mode_holds.reconciliation_hold.active
+
+
+def test_reconciliation_reduce_only_sets_reduce_only() -> None:
+    state = _state()
+    controller = _controller(state)
+
+    assert controller.set_reconciliation_reduce_only('mismatch on USDT')
+    assert state.mode.mode is OperationalMode.REDUCE_ONLY
+    assert state.mode.trigger == 'reconciliation'
+    assert state.reduce_only_holds.reconciliation.active
+
+
+def test_reconciliation_halt_outranks_reduce_only_hold() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_reconciliation_reduce_only('mismatch')
+
+    controller.set_reconciliation_halt('mismatch')
+
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_reduce_only_hold_yields_to_health_halted() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_reconciliation_reduce_only('mismatch')
+
+    controller.apply_health_mode(OperationalMode.HALTED)
+
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_clear_reconciliation_reduce_only_returns_active() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_reconciliation_reduce_only('mismatch')
+
+    controller.clear_reconciliation_reduce_only()
+
+    assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_clear_reconciliation_halt_returns_to_health() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.apply_health_mode(OperationalMode.REDUCE_ONLY)
+    controller.set_reconciliation_halt('mismatch')
+
+    controller.clear_reconciliation_halt()
+
+    assert state.mode.mode is OperationalMode.REDUCE_ONLY
+    assert state.mode.trigger == 'health'

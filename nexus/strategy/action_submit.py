@@ -2,10 +2,19 @@
 
 Used by `PredictLoop._tick` and `TimerLoop._tick` to push the
 `list[Action]` returned from a strategy callback through the
-validator and into Praxis. ENTER/EXIT/MODIFY go through
-`ValidationPipeline.validate` → `translate_to_trade_command` →
-`PraxisOutbound.send_command`. ABORT bypasses the validator and
-goes directly to `PraxisOutbound.send_abort`.
+validator and into Praxis. ENTER/EXIT/MODIFY all run
+`ValidationPipeline.validate`; ENTER/EXIT then translate to a
+`TradeCommand` for `PraxisOutbound.send_command`, while a validated
+MODIFY routes to `PraxisOutbound.send_modify` carrying its amend
+parameters. For MODIFY the pipeline runs INTAKE only — the
+operational-mode gate (HALTED blocks amends) and the
+`modifiable_command_ids` lifecycle check — and skips the
+capital/risk/health/price/platform stages (MODIFY shares the exit
+actions' bypass set): an amend re-parametrizes an already-sized
+command, never changes total notional, and reserves no new capital.
+ABORT alone skips the validator entirely
+(`PraxisOutbound.send_abort`): it only winds down exposure and must
+stay available even under HALT.
 
 Callers inject `build_context(action, strategy_id)` which returns
 a fully-populated `ValidationRequestContext` or `None` when the
@@ -54,6 +63,7 @@ __all__ = [
 _log = logging.getLogger(__name__)
 
 _RUNTIME_ABORT_REASON = 'runtime_strategy_abort'
+_RUNTIME_MODIFY_REASON = 'runtime_strategy_modify'
 _SEND_TIMEOUT_REASON = 'send_command timed out'
 
 
@@ -267,6 +277,13 @@ def submit_actions(
                         status=SubmissionStatus.REJECTED,
                         decision=decision,
                     ),
+                ))
+                continue
+
+            if action.action_type == ActionType.MODIFY:
+                results.append((
+                    action,
+                    _submit_modify(action, config, praxis_outbound, now(), decision),
                 ))
                 continue
 
@@ -526,9 +543,10 @@ def bridge_to_capital(
           guard; should never trip in production.
         * `status == SUBMITTED` and `command_id` set, but
           `decision is None` or `decision.reservation is None` —
-          covers ABORT (validator bypassed entirely, decision is
-          None) and EXIT/MODIFY (validator runs but does not
-          reserve capital).
+          `decision is None` covers ABORT (which bypasses the
+          validator); `decision.reservation is None` covers EXIT and
+          MODIFY (the validator runs and the outcome carries its
+          decision, but neither reserves capital).
     '''
 
     if outcome.status != SubmissionStatus.SUBMITTED:
@@ -595,4 +613,63 @@ def _submit_abort(
     return SubmissionOutcome(
         status=SubmissionStatus.SUBMITTED,
         command_id=action.command_id,
+    )
+
+
+def _submit_modify(
+    action: Action,
+    config: InstanceConfig,
+    praxis_outbound: PraxisOutbound,
+    now: datetime,
+    decision: ValidationDecision,
+) -> SubmissionOutcome:
+    if action.command_id is None:
+        return SubmissionOutcome(
+            status=SubmissionStatus.INVALID,
+            decision=decision,
+            error='modify missing command_id',
+        )
+
+    if action.execution_mode is None:
+        return SubmissionOutcome(
+            status=SubmissionStatus.INVALID,
+            decision=decision,
+            error='modify missing execution_mode',
+        )
+
+    if action.modify_params is None:
+        return SubmissionOutcome(
+            status=SubmissionStatus.INVALID,
+            decision=decision,
+            error='modify missing modify_params',
+        )
+
+    try:
+        praxis_outbound.send_modify(
+            command_id=action.command_id,
+            account_id=config.account_id,
+            reason=_RUNTIME_MODIFY_REASON,
+            execution_mode=action.execution_mode,
+            modify_params=action.modify_params,
+            created_at=now,
+        )
+    except Exception as e:  # noqa: BLE001 - per-action submit failure is local
+        _log.exception(
+            'send_modify failed',
+            extra={'command_id': action.command_id},
+        )
+        return SubmissionOutcome(
+            status=SubmissionStatus.SUBMIT_FAILED,
+            decision=decision,
+            error=str(e),
+        )
+
+    _log.info(
+        'modify submitted',
+        extra={'command_id': action.command_id},
+    )
+    return SubmissionOutcome(
+        status=SubmissionStatus.SUBMITTED,
+        command_id=action.command_id,
+        decision=decision,
     )

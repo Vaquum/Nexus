@@ -21,6 +21,7 @@ from nexus.core.domain.operational_mode import (
     HaltHold,
     ModeState,
     OperationalHolds,
+    ReduceOnlyHolds,
     StrategyModeState,
 )
 from nexus.core.domain.position import Position
@@ -85,6 +86,7 @@ def serialize_state(state: InstanceState) -> bytes:
         'mode': _encode_mode_state(state.mode),
         'health_mode': state.health_mode.value,
         'mode_holds': _encode_operational_holds(state.mode_holds),
+        'reduce_only_holds': _encode_reduce_only_holds(state.reduce_only_holds),
         'strategy_modes': {
             k: _encode_strategy_mode_state(v) for k, v in strategy_modes_snapshot.items()
         },
@@ -139,6 +141,7 @@ def _decode_state_v1(d: dict[str, Any]) -> InstanceState:
             mode=_decode_mode_state(d['mode']),
             health_mode=_decode_health_mode(d.get('health_mode')),
             mode_holds=_decode_operational_holds(d.get('mode_holds')),
+            reduce_only_holds=_decode_reduce_only_holds(d.get('reduce_only_holds')),
             strategy_modes={
                 k: _decode_strategy_mode_state(v)
                 for k, v in d['strategy_modes'].items()
@@ -417,6 +420,7 @@ def _encode_operational_holds(holds: OperationalHolds) -> dict[str, Any]:
         'risk_daily_loss': _encode_halt_hold(holds.risk_daily_loss),
         'risk_drawdown': _encode_halt_hold(holds.risk_drawdown),
         'shutdown_hold': _encode_halt_hold(holds.shutdown_hold),
+        'reconciliation_hold': _encode_halt_hold(holds.reconciliation_hold),
     }
 
 
@@ -434,12 +438,39 @@ def _decode_operational_holds(d: dict[str, Any] | None) -> OperationalHolds:
         return OperationalHolds()
 
     raw_shutdown = d.get('shutdown_hold')
+    raw_reconciliation = d.get('reconciliation_hold')
 
     return OperationalHolds(
         manual_hold=_decode_halt_hold(d['manual_hold']),
         risk_daily_loss=_decode_halt_hold(d['risk_daily_loss']),
         risk_drawdown=_decode_halt_hold(d['risk_drawdown']),
         shutdown_hold=_decode_halt_hold(raw_shutdown) if raw_shutdown is not None else HaltHold(),
+        reconciliation_hold=(
+            _decode_halt_hold(raw_reconciliation)
+            if raw_reconciliation is not None else HaltHold()
+        ),
+    )
+
+
+def _encode_reduce_only_holds(holds: ReduceOnlyHolds) -> dict[str, Any]:
+    '''Encode ReduceOnlyHolds to a nested dict for msgpack.'''
+
+    return {'reconciliation': _encode_halt_hold(holds.reconciliation)}
+
+
+def _decode_reduce_only_holds(d: dict[str, Any] | None) -> ReduceOnlyHolds:
+    '''Decode ReduceOnlyHolds, defaulting to empty for pre-field snapshots.'''
+
+    if d is None:
+        return ReduceOnlyHolds()
+
+    raw_reconciliation = d.get('reconciliation')
+
+    return ReduceOnlyHolds(
+        reconciliation=(
+            _decode_halt_hold(raw_reconciliation)
+            if raw_reconciliation is not None else HaltHold()
+        ),
     )
 
 

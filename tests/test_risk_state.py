@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+import threading
 from decimal import Decimal
 
 import pytest
@@ -528,8 +530,6 @@ class TestRiskStateLockField:
         opt-in by the launcher post-construction.
         '''
 
-        import threading
-
         rs = RiskState()
         assert rs.lock is None
 
@@ -540,8 +540,6 @@ class TestRiskStateLockField:
         '''lock with `repr=False` so __repr__ does not depend on
         threading-object identity (would change between processes).
         '''
-
-        import threading
 
         rs = RiskState()
         rs.lock = threading.Lock()
@@ -554,8 +552,6 @@ class TestRiskStateLockField:
         coordination-state-aware.
         '''
 
-        import threading
-
         rs1 = RiskState()
         rs2 = RiskState()
         rs1.lock = threading.Lock()
@@ -567,9 +563,6 @@ class TestRiskStateLockField:
         attribute (default None) — it does NOT silently drop the field
         the way a __post_init__-only attribute would.
         '''
-
-        import dataclasses
-        import threading
 
         rs = RiskState()
         rs.lock = threading.Lock()

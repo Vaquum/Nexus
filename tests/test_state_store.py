@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import threading
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -729,9 +730,6 @@ class TestFinalMajor04WalAppendAtomicity:
         (no torn appends).
         '''
 
-        import threading
-        from tempfile import TemporaryDirectory
-
         with TemporaryDirectory() as tmp:
             store = StateStore(Path(tmp))
 
@@ -785,9 +783,6 @@ class TestFinalMajor04WalAppendAtomicity:
         survive in the snapshot, appends after the checkpoint survive
         in the post-truncate WAL. No append silently dropped.
         '''
-
-        import threading
-        from tempfile import TemporaryDirectory
 
         srs = StrategyRiskState(strategy_id='strat_a')
         state = InstanceState(

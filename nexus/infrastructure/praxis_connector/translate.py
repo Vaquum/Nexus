@@ -20,7 +20,6 @@ __all__ = ['translate_to_trade_command']
 _ACTION_TO_COMMAND_TYPE: dict[ValidationAction, TradeCommandType] = {
     ValidationAction.ENTER: TradeCommandType.NEW_ORDER,
     ValidationAction.EXIT: TradeCommandType.NEW_ORDER,
-    ValidationAction.MODIFY: TradeCommandType.AMEND_ORDER,
     ValidationAction.ABORT: TradeCommandType.CANCEL_ORDER,
     ValidationAction.CANCEL: TradeCommandType.CANCEL_ORDER,
 }
@@ -57,7 +56,8 @@ def translate_to_trade_command(
 
     Raises:
         ValueError: If decision is not allowed, command_id is missing,
-            or now is not UTC.
+            now is not UTC, or the action is MODIFY (a validated MODIFY
+            routes to `PraxisOutbound.send_modify`, not through translate).
     '''
 
     if not decision.allowed:
@@ -70,6 +70,14 @@ def translate_to_trade_command(
 
     if not context.command_id:
         msg = 'translate_to_trade_command requires non-empty command_id'
+        raise ValueError(msg)
+
+    if context.action == ValidationAction.MODIFY:
+        msg = (
+            'translate_to_trade_command does not handle MODIFY; a validated '
+            'MODIFY routes to PraxisOutbound.send_modify carrying its amend '
+            'parameters, not to a TradeCommand'
+        )
         raise ValueError(msg)
 
     command_type = _ACTION_TO_COMMAND_TYPE[context.action]

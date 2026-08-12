@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vaquum-nexus"
-version = "0.70.1"
+version = "0.72.0"
 description = "Layer for intelligence and decision-making between signal generation and trade execution."
 readme = "README.md"
 authors = [
@@ -79,9 +79,9 @@ ignore = [
   "S608",    # Possible SQL injection vector through string-based query construction
   "S311",    # Standard pseudo-random generators are not suitable for cryptographic purposes
   "N806",    # Variable in function should be lowercase
-  "PLC0415", # Import should be at the top-level of a file
   "PLR0912", # Too many branches
   "PLR0915", # Too many statements
+  "PLR0917", # Too many positional arguments (siblings PLR0913/0912/0915 already suppressed)
   "RUF002",  # Docstring contains ambiguous unicode character
   "PT",      # flake8-pytest-style
   "N803",    # Argument name should be lowercase

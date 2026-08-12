@@ -63,8 +63,6 @@ def test_lock_identity_mismatch_rejected_at_construction() -> None:
     guard at shutdown_sequencer.py:188-204.
     '''
 
-    import threading
-
     state = _make_state()
     positions_lock = threading.Lock()
     state.risk.lock = threading.Lock()
@@ -78,8 +76,6 @@ def test_lock_identity_mismatch_rejected_at_construction() -> None:
 
 
 def test_lock_identity_match_accepted() -> None:
-    import threading
-
     state = _make_state()
     positions_lock = threading.Lock()
     state.risk.lock = positions_lock
@@ -92,8 +88,6 @@ def test_lock_identity_match_accepted() -> None:
 
 
 def test_no_positions_lock_accepts_any_risk_lock() -> None:
-    import threading
-
     state = _make_state()
     state.risk.lock = threading.Lock()
 
@@ -275,8 +269,6 @@ def test_provider_can_reacquire_risk_lock_without_deadlock() -> None:
     provider that explicitly acquires state.risk.lock and asserts
     tick_once() returns inside a small wall-clock budget.
     '''
-
-    import threading
 
     state = _make_state()
     state.positions['t1'] = _make_position('t1', OrderSide.BUY, '1.0', '70000')

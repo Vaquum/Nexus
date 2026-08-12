@@ -9,7 +9,7 @@ import pytest
 
 from nexus.core.domain.enums import BreachLevel
 from nexus.core.domain.instance_state import InstanceState
-from nexus.core.domain.risk_state import RiskState
+from nexus.core.domain.risk_state import RiskState, StrategyRiskState
 from nexus.core.validator import (
     RiskStageLimits,
     ValidationRequestContext,
@@ -141,7 +141,6 @@ class TestRollingLossEnforcement:
         rolling_loss_7d: Decimal = Decimal('0'),
         rolling_loss_30d: Decimal = Decimal('0'),
     ) -> InstanceState:
-        from nexus.core.domain.risk_state import StrategyRiskState
         state = InstanceState.fresh(Decimal('10000'))
         state.risk.per_strategy['strat_a'] = StrategyRiskState(
             strategy_id='strat_a',

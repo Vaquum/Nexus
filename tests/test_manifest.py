@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from nexus.core.domain.reconciliation_mismatch_response import (
+    ReconciliationMismatchResponse,
+)
 from nexus.infrastructure.manifest import (
     Manifest,
     SignalSpec,
@@ -292,6 +295,59 @@ class TestLoadManifest:
         assert manifest.strategies[1].strategy_id == 'mean_rev'
         assert manifest.strategies[0].signal.series == 'time_15m'
         assert manifest.strategies[0].signal.interval_seconds == 900
+
+    def _write_minimal(self, tmp_path: Path, extra: str = '') -> Path:
+        path = tmp_path / 'manifest.yaml'
+        _write_strategy_file(tmp_path, 'strategies/momentum.py')
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            + extra
+            + 'strategies:\n'
+            '  - id: momentum\n'
+            '    file: strategies/momentum.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n',
+        )
+        return path
+
+    def test_reconciliation_mismatch_response_defaults_to_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        manifest = load_manifest(self._write_minimal(tmp_path))
+
+        assert (
+            manifest.reconciliation_mismatch_response
+            is ReconciliationMismatchResponse.HALT
+        )
+
+    def test_reconciliation_mismatch_response_parses_explicit(
+        self, tmp_path: Path,
+    ) -> None:
+        manifest = load_manifest(
+            self._write_minimal(
+                tmp_path, extra='reconciliation_mismatch_response: REDUCE_ONLY\n',
+            ),
+        )
+
+        assert (
+            manifest.reconciliation_mismatch_response
+            is ReconciliationMismatchResponse.REDUCE_ONLY
+        )
+
+    def test_reconciliation_mismatch_response_invalid_raises(
+        self, tmp_path: Path,
+    ) -> None:
+        path = self._write_minimal(
+            tmp_path, extra='reconciliation_mismatch_response: NOPE\n',
+        )
+
+        with pytest.raises(ValueError, match='reconciliation_mismatch_response'):
+            load_manifest(path)
 
     def test_file_not_found_raises(self) -> None:
         '''Missing manifest file raises FileNotFoundError.'''

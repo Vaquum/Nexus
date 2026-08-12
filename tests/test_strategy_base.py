@@ -316,7 +316,7 @@ class TestEventCallbacks:
                 _params: StrategyParams,
                 _context: StrategyContext,
             ) -> list[Action]:
-                return [Action(action_type=ActionType.MODIFY, command_id='cmd-1')]
+                return [Action(action_type=ActionType.MODIFY, command_id='cmd-1', execution_mode=ExecutionMode.TWAP, modify_params={'num_slices': 6})]
 
             def on_shutdown(
                 self,

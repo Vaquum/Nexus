@@ -578,6 +578,54 @@ class TestRfcStageOneHooks:
 
         assert decision.allowed is True
 
+    def test_reference_integrity_modify_provider_resolves_per_call(self) -> None:
+        live: set[str] = set()
+        ref_hook = make_reference_integrity_hook(
+            active_command_ids=set(),
+            modifiable_command_ids_provider=lambda: live,
+        )
+
+        denied = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_live',
+                order_side=None,
+            ),
+            hooks=(ref_hook,),
+        )
+        assert denied.allowed is False
+        assert denied.reason_code == 'INTAKE_COMMAND_REFERENCE_INVALID'
+
+        live.add('cmd_live')
+
+        allowed = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_live',
+                order_side=None,
+            ),
+            hooks=(ref_hook,),
+        )
+        assert allowed.allowed is True
+
+    def test_reference_integrity_modify_provider_takes_precedence(self) -> None:
+        ref_hook = make_reference_integrity_hook(
+            active_command_ids=set(),
+            modifiable_command_ids={'cmd_static'},
+            modifiable_command_ids_provider=lambda: {'cmd_live'},
+        )
+
+        decision = validate_intake_stage(
+            _make_context(
+                action=ValidationAction.MODIFY,
+                command_id='cmd_static',
+                order_side=None,
+            ),
+            hooks=(ref_hook,),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'INTAKE_COMMAND_REFERENCE_INVALID'
+
     def test_reference_integrity_modify_requires_positive_size(self) -> None:
         ref_hook = make_reference_integrity_hook(
             active_command_ids={'cmd_ok'},
