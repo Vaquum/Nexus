@@ -281,7 +281,10 @@ def submit_actions(
                 continue
 
             if action.action_type == ActionType.MODIFY:
-                results.append((action, _submit_modify(action, config, praxis_outbound, now())))
+                results.append((
+                    action,
+                    _submit_modify(action, config, praxis_outbound, now(), decision),
+                ))
                 continue
 
             try:
@@ -540,9 +543,10 @@ def bridge_to_capital(
           guard; should never trip in production.
         * `status == SUBMITTED` and `command_id` set, but
           `decision is None` or `decision.reservation is None` —
-          covers ABORT and MODIFY (whose submit helpers return no
-          decision) and EXIT (validator runs but reserves no
-          capital).
+          `decision is None` covers ABORT (which bypasses the
+          validator); `decision.reservation is None` covers EXIT and
+          MODIFY (the validator runs and the outcome carries its
+          decision, but neither reserves capital).
     '''
 
     if outcome.status != SubmissionStatus.SUBMITTED:
@@ -617,22 +621,26 @@ def _submit_modify(
     config: InstanceConfig,
     praxis_outbound: PraxisOutbound,
     now: datetime,
+    decision: ValidationDecision,
 ) -> SubmissionOutcome:
     if action.command_id is None:
         return SubmissionOutcome(
             status=SubmissionStatus.INVALID,
+            decision=decision,
             error='modify missing command_id',
         )
 
     if action.execution_mode is None:
         return SubmissionOutcome(
             status=SubmissionStatus.INVALID,
+            decision=decision,
             error='modify missing execution_mode',
         )
 
     if action.modify_params is None:
         return SubmissionOutcome(
             status=SubmissionStatus.INVALID,
+            decision=decision,
             error='modify missing modify_params',
         )
 
@@ -652,6 +660,7 @@ def _submit_modify(
         )
         return SubmissionOutcome(
             status=SubmissionStatus.SUBMIT_FAILED,
+            decision=decision,
             error=str(e),
         )
 
@@ -662,4 +671,5 @@ def _submit_modify(
     return SubmissionOutcome(
         status=SubmissionStatus.SUBMITTED,
         command_id=action.command_id,
+        decision=decision,
     )

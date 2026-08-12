@@ -440,6 +440,29 @@ class TestSubmitActions:
         assert kwargs['modify_params'] == {'num_slices': 6}
         assert kwargs['created_at'] == _NOW
 
+    def test_modify_outcome_carries_validator_decision(self) -> None:
+        '''A submitted MODIFY outcome preserves the validator decision.'''
+
+        decision = ValidationDecision(allowed=True)
+        validator = MagicMock()
+        validator.validate.return_value = decision
+        outbound = MagicMock()
+        ctx = _modify_context()
+
+        results = submit_actions(
+            [_modify_action('cmd_556')],
+            strategy_id='strat_001',
+            config=_config(),
+            praxis_outbound=outbound,
+            validator=validator,
+            build_context=lambda _a, _s: ctx,
+            now=_now,
+        )
+
+        _action, outcome = results[0]
+        assert outcome.status == SubmissionStatus.SUBMITTED
+        assert outcome.decision is decision
+
     def test_modify_rejected_by_validator_does_not_send(self) -> None:
         '''A MODIFY denied by the validator (e.g. HALTED mode) never reaches send_modify.'''
 
