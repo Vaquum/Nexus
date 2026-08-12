@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
-from nexus.infrastructure.loss_derivation import RollingLosses, derive_rolling_losses
+from nexus.infrastructure.loss_derivation import (
+    RollingLosses,
+    derive_rolling_losses,
+    derive_strategy_realized_pnl,
+)
 from nexus.infrastructure.strategy_event import StrategyEvent
 
 _NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc)
@@ -148,8 +152,6 @@ class TestFinalTd02OutcomeIdDedup:
     '''
 
     def test_duplicate_outcome_id_loss_counted_once(self) -> None:
-        from nexus.infrastructure.loss_derivation import derive_rolling_losses
-
         e1 = StrategyEvent(
             strategy_id='strat_a',
             event_type='trade_outcome',
@@ -178,8 +180,6 @@ class TestFinalTd02OutcomeIdDedup:
         break recovery semantics for old WAL files.
         '''
 
-        from nexus.infrastructure.loss_derivation import derive_rolling_losses
-
         e1 = StrategyEvent(
             strategy_id='strat_a',
             event_type='trade_outcome',
@@ -202,8 +202,6 @@ class TestFinalTd02OutcomeIdDedup:
         repeats.
         '''
 
-        from nexus.infrastructure.loss_derivation import derive_rolling_losses
-
         e1 = StrategyEvent(
             strategy_id='strat_a',
             event_type='trade_outcome',
@@ -224,10 +222,6 @@ class TestFinalTd02OutcomeIdDedup:
 
     def test_strategy_realized_pnl_dedup(self) -> None:
         '''Same dedup rule applies to derive_strategy_realized_pnl.'''
-
-        from nexus.infrastructure.loss_derivation import (
-            derive_strategy_realized_pnl,
-        )
 
         e1 = StrategyEvent(
             strategy_id='strat_a',

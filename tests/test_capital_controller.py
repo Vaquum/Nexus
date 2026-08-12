@@ -12,6 +12,7 @@ import pytest
 
 from nexus.core.capital_controller.capital_controller import (
     CapitalController,
+    DEFAULT_TTL_SECONDS,
     MAX_ALLOCATION_PER_TRADE_PCT,
     MAX_CAPITAL_UTILIZATION_PCT,
 )
@@ -21,6 +22,7 @@ from nexus.core.capital_controller.tracked_order import OrderLifecycleState
 from nexus.core.domain.capital_state import CapitalState
 from nexus.core.domain.enums import OrderSide
 from nexus.core.domain.position import Position
+from nexus.infrastructure.praxis_connector.praxis_outbound import _DEFAULT_TIMEOUT
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
@@ -623,9 +625,6 @@ class TestSendOrderBoundaryRace:
         '''Structural: TTL > send_command timeout (30s) so a slow
         send_command cannot consume the entire reservation window.
         '''
-
-        from nexus.core.capital_controller.capital_controller import DEFAULT_TTL_SECONDS
-        from nexus.infrastructure.praxis_connector.praxis_outbound import _DEFAULT_TIMEOUT
 
         assert DEFAULT_TTL_SECONDS > _DEFAULT_TIMEOUT
 

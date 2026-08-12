@@ -19,6 +19,7 @@ stumble over junk between valid records.
 
 from __future__ import annotations
 
+import struct
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -332,10 +333,9 @@ def _write_record_with_length(path: Path, length: int) -> None:
     '''Write a WAL file: magic + a single record header declaring `length`,
     with no actual payload bytes following.
     '''
-    import struct as _struct
     with path.open('wb') as f:
         f.write(b'NXWAL\x00\x01\x00')
-        f.write(_struct.pack('>II', length, 0))
+        f.write(struct.pack('>II', length, 0))
 
 
 def test_read_safe_caps_record_length_at_remaining_file_size(tmp_path: Path) -> None:

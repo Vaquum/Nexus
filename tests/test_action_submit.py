@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from structlog.contextvars import get_contextvars
 
 from nexus.core.capital_controller.capital_controller import CapitalController
 from nexus.core.capital_controller.reservation import Reservation
@@ -18,12 +20,17 @@ from nexus.core.domain.instance_state import InstanceState
 from nexus.core.domain.position import Position
 from nexus.core.domain.order_types import ExecutionMode, MakerPreference, OrderType
 from nexus.core.stp_mode import STPMode
+from nexus.core.validator import (
+    make_reference_integrity_hook,
+    validate_intake_stage,
+)
 from nexus.core.validator.pipeline_models import (
     ValidationAction,
     ValidationDecision,
     ValidationRequestContext,
     ValidationStage,
 )
+from nexus.infrastructure.observability import clear_context
 from nexus.infrastructure.praxis_connector.order_context import OrderContext
 from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProcessor
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
@@ -747,11 +754,6 @@ class TestPendingExitIncrement:
         trade_id — the validator's intake stage sees `pending_exit > 0`
         and denies with `INTAKE_EXIT_SIZE_EXCEEDS_REMAINING`.'''
 
-        from nexus.core.validator import (
-            make_reference_integrity_hook,
-            validate_intake_stage,
-        )
-
         state = _state_with_position(size=Decimal('1.0'))
 
         ctx1 = _exit_context(state, order_size=Decimal('1.0'))
@@ -1221,8 +1223,6 @@ class TestFinalMajor03PendingExitLockCoverage:
         sum-of-decrements, with no lost update from torn RMW.
         '''
 
-        import threading as _threading
-
         position = Position(
             trade_id='t1',
             strategy_id='strat_001',
@@ -1233,7 +1233,7 @@ class TestFinalMajor03PendingExitLockCoverage:
             avg_cost_basis=Decimal('100'),
         )
 
-        lock = _threading.Lock()
+        lock = threading.Lock()
         increments = 1000
         decrements = 500
         increment_size = Decimal('1')
@@ -1254,8 +1254,8 @@ class TestFinalMajor03PendingExitLockCoverage:
         position.pending_exit = Decimal('0')
 
         all_threads = [
-            _threading.Thread(target=increment_many),
-            _threading.Thread(target=decrement_many),
+            threading.Thread(target=increment_many),
+            threading.Thread(target=decrement_many),
         ]
         for t in all_threads:
             t.start()
@@ -1282,8 +1282,6 @@ class TestFinalMajor03PendingExitLockCoverage:
         path with no contention.
         '''
 
-        import threading as _threading
-
         state = _state_with_position()
         ctx = _exit_context(state)
         validator = MagicMock()
@@ -1299,7 +1297,7 @@ class TestFinalMajor03PendingExitLockCoverage:
             validator=validator,
             build_context=lambda _a, _s: ctx,
             now=_now,
-            positions_lock=_threading.Lock(),
+            positions_lock=threading.Lock(),
         )
 
         assert state.positions['t1'].pending_exit == Decimal('0.5')
@@ -1321,10 +1319,6 @@ class TestPerActionBoundContext:
 
     def test_validator_sees_bound_strategy_and_action_type(self) -> None:
         '''The validator runs *inside* the per-action with-block.'''
-
-        from structlog.contextvars import get_contextvars  # local import to keep top of file lean
-
-        from nexus.infrastructure.observability import clear_context
 
         clear_context()
         captured: dict[str, object] = {}
@@ -1356,10 +1350,6 @@ class TestPerActionBoundContext:
     def test_contextvars_unbound_after_submit_returns(self) -> None:
         '''Per-action keys do not leak past the submit_actions call.'''
 
-        from structlog.contextvars import get_contextvars
-
-        from nexus.infrastructure.observability import clear_context
-
         clear_context()
 
         validator = MagicMock()
@@ -1387,10 +1377,6 @@ class TestPerActionBoundContext:
 
     def test_exit_action_binds_trade_id(self) -> None:
         '''An EXIT action with a trade_id binds trade_id for the iteration.'''
-
-        from structlog.contextvars import get_contextvars
-
-        from nexus.infrastructure.observability import clear_context
 
         clear_context()
         captured: dict[str, object] = {}
@@ -1425,10 +1411,6 @@ class TestPerActionBoundContext:
 
     def test_abort_action_binds_command_id(self) -> None:
         '''An ABORT action with command_id binds command_id for the iteration.'''
-
-        from structlog.contextvars import get_contextvars
-
-        from nexus.infrastructure.observability import clear_context
 
         clear_context()
         captured: dict[str, object] = {}

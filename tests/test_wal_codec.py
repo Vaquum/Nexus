@@ -19,6 +19,7 @@ from nexus.core.domain.risk_state import RiskState, StrategyRiskState
 from nexus.infrastructure import wal_codec
 from nexus.infrastructure.strategy_event import StrategyEvent
 from nexus.infrastructure.wal_codec import (
+    _decode_position,
     deserialize_event,
     deserialize_state,
     serialize_event,
@@ -212,8 +213,6 @@ class TestRoundTrip:
     def test_legacy_position_decode_defaults_avg_cost_basis_to_entry_price(self) -> None:
         '''Pre-fix snapshots written without avg_cost_basis must decode to
         entry_price (best-effort default — fees lost but recoverable).'''
-
-        from nexus.infrastructure.wal_codec import _decode_position
 
         legacy_dict = {
             'trade_id': 't_legacy',

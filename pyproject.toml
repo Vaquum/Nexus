@@ -79,7 +79,6 @@ ignore = [
   "S608",    # Possible SQL injection vector through string-based query construction
   "S311",    # Standard pseudo-random generators are not suitable for cryptographic purposes
   "N806",    # Variable in function should be lowercase
-  "PLC0415", # Import should be at the top-level of a file
   "PLR0912", # Too many branches
   "PLR0915", # Too many statements
   "PLR0917", # Too many positional arguments (siblings PLR0913/0912/0915 already suppressed)

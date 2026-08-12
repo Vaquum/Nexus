@@ -7,7 +7,7 @@ import threading
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -28,7 +28,10 @@ from nexus.infrastructure.praxis_connector.outcome_processor import OutcomeProce
 from nexus.infrastructure.praxis_connector.praxis_inbound import PraxisInbound
 from nexus.infrastructure.praxis_connector.trade_outcome import TradeOutcome
 from nexus.infrastructure.praxis_connector.trade_outcome_type import TradeOutcomeType
-from nexus.infrastructure.state_store import StateStore
+from nexus.infrastructure.state_store import (
+    StateSnapshotLocks,
+    StateStore,
+)
 from nexus.instance_config import InstanceConfig
 from nexus.startup.shutdown_sequencer import ShutdownSequencer
 from nexus.strategy.action import Action, ActionType
@@ -251,9 +254,7 @@ class TestDispatchShutdown:
         exception escapes.
         '''
 
-        import threading as _t
-
-        lock = _t.Lock()
+        lock = threading.Lock()
         runner = _make_mock_runner()
         runner.dispatch_shutdown.return_value = []
         state = InstanceState(capital=CapitalState(capital_pool=Decimal('10000')))
@@ -276,7 +277,7 @@ class TestDispatchShutdown:
             positions_lock=lock,
         )
 
-        stop_event = _t.Event()
+        stop_event = threading.Event()
         mutator_failures: list[Exception] = []
 
         def mutator() -> None:
@@ -298,7 +299,7 @@ class TestDispatchShutdown:
             except Exception as exc:
                 mutator_failures.append(exc)
 
-        thread = _t.Thread(target=mutator, daemon=True)
+        thread = threading.Thread(target=mutator, daemon=True)
         thread.start()
         try:
             for _ in range(20):
@@ -634,11 +635,6 @@ class TestFinalCheckpoint:
         self,
         tmp_path: Path,
     ) -> None:
-        from nexus.infrastructure.state_store import (
-            StateSnapshotLocks,
-            StateStore,
-        )
-
         positions_lock = threading.Lock()
         state = _make_instance_state()
         state.risk.lock = positions_lock
@@ -1603,9 +1599,6 @@ class TestSubmitExitMissingPositionRace:
         it) but the OrderContext construction fails. Pre-fix:
         `pending_exit` ends at order_size. Post-fix: stays at zero.
         '''
-
-        import threading
-        from unittest.mock import patch
 
         config = InstanceConfig(
             account_id='acc_001',
