@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from nexus.core.domain.bracket_protection_failure_response import (
+    BracketProtectionFailureResponse,
+)
 from nexus.core.domain.reconciliation_mismatch_response import (
     ReconciliationMismatchResponse,
 )
@@ -347,6 +350,44 @@ class TestLoadManifest:
         )
 
         with pytest.raises(ValueError, match='reconciliation_mismatch_response'):
+            load_manifest(path)
+
+    def test_bracket_protection_failure_response_defaults_to_flatten_then_halt(
+        self, tmp_path: Path,
+    ) -> None:
+        manifest = load_manifest(self._write_minimal(tmp_path))
+
+        assert (
+            manifest.bracket_protection_failure_response
+            is BracketProtectionFailureResponse.FLATTEN_THEN_HALT
+        )
+
+    def test_bracket_protection_failure_response_parses_explicit(
+        self, tmp_path: Path,
+    ) -> None:
+        manifest = load_manifest(
+            self._write_minimal(
+                tmp_path,
+                extra='bracket_protection_failure_response: REDUCE_ONLY\n',
+            ),
+        )
+
+        assert (
+            manifest.bracket_protection_failure_response
+            is BracketProtectionFailureResponse.REDUCE_ONLY
+        )
+
+    def test_bracket_protection_failure_response_invalid_raises(
+        self, tmp_path: Path,
+    ) -> None:
+        path = self._write_minimal(
+            tmp_path,
+            extra='bracket_protection_failure_response: NOPE\n',
+        )
+
+        with pytest.raises(
+            ValueError, match='bracket_protection_failure_response',
+        ):
             load_manifest(path)
 
     def test_file_not_found_raises(self) -> None:

@@ -15,6 +15,9 @@ from typing import Any
 
 import yaml
 
+from nexus.core.domain.bracket_protection_failure_response import (
+    BracketProtectionFailureResponse,
+)
 from nexus.core.domain.reconciliation_mismatch_response import (
     ReconciliationMismatchResponse,
 )
@@ -184,6 +187,9 @@ class Manifest:
         risk_controls: Per-account risk-breaker limits; all-unset by default.
         reconciliation_mismatch_response: How the account reacts to a
             Praxis-reported balance mismatch; defaults to HALT (fail-safe).
+        bracket_protection_failure_response: How the account reacts when a
+            bracket protective-OCO amend leaves the position naked; defaults
+            to FLATTEN_THEN_HALT (fail-safe).
     '''
 
     account_id: str
@@ -193,6 +199,9 @@ class Manifest:
     risk_controls: RiskBreakerThresholds = field(default_factory=RiskBreakerThresholds)
     reconciliation_mismatch_response: ReconciliationMismatchResponse = (
         ReconciliationMismatchResponse.HALT
+    )
+    bracket_protection_failure_response: BracketProtectionFailureResponse = (
+        BracketProtectionFailureResponse.FLATTEN_THEN_HALT
     )
 
     def __post_init__(self) -> None:
@@ -296,6 +305,26 @@ def _parse_reconciliation_mismatch_response(
     except ValueError as exc:
         allowed = ', '.join(member.value for member in ReconciliationMismatchResponse)
         msg = f'reconciliation_mismatch_response must be one of {allowed}'
+        raise ValueError(msg) from exc
+
+
+def _parse_bracket_protection_failure_response(
+    data: dict[str, Any],
+) -> BracketProtectionFailureResponse:
+    '''Parse the optional `bracket_protection_failure_response` value.'''
+
+    raw = data.get('bracket_protection_failure_response')
+
+    if raw is None:
+        return BracketProtectionFailureResponse.FLATTEN_THEN_HALT
+
+    try:
+        return BracketProtectionFailureResponse(raw)
+    except ValueError as exc:
+        allowed = ', '.join(
+            member.value for member in BracketProtectionFailureResponse
+        )
+        msg = f'bracket_protection_failure_response must be one of {allowed}'
         raise ValueError(msg) from exc
 
 
@@ -512,6 +541,9 @@ def load_manifest(path: Path) -> Manifest:
         strategies=tuple(specs),
         risk_controls=_parse_risk_controls(data),
         reconciliation_mismatch_response=_parse_reconciliation_mismatch_response(data),
+        bracket_protection_failure_response=(
+            _parse_bracket_protection_failure_response(data)
+        ),
     )
 
     _validate_strategy_files(manifest, path.parent)
