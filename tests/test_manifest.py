@@ -386,7 +386,11 @@ class TestLoadManifest:
         )
 
         with pytest.raises(
-            ValueError, match='bracket_protection_failure_response',
+            ValueError,
+            match=(
+                'bracket_protection_failure_response must be one of '
+                'FLATTEN_THEN_HALT, REDUCE_ONLY'
+            ),
         ):
             load_manifest(path)
 
