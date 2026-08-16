@@ -622,3 +622,88 @@ def test_clear_reconciliation_halt_returns_to_health() -> None:
 
     assert state.mode.mode is OperationalMode.REDUCE_ONLY
     assert state.mode.trigger == 'health'
+
+
+def test_protection_halt_sets_halted() -> None:
+    state = _state()
+    controller = _controller(state)
+
+    assert controller.set_protection_halt('naked position on command cmd-1')
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'protection'
+    assert state.mode_holds.protection_hold.active
+
+
+def test_protection_reduce_only_sets_reduce_only() -> None:
+    state = _state()
+    controller = _controller(state)
+
+    assert controller.set_protection_reduce_only('naked position on command cmd-1')
+    assert state.mode.mode is OperationalMode.REDUCE_ONLY
+    assert state.mode.trigger == 'protection'
+    assert state.reduce_only_holds.protection.active
+
+
+def test_protection_halt_outranks_reduce_only_hold() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_protection_reduce_only('naked')
+
+    controller.set_protection_halt('naked')
+
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_protection_reduce_only_yields_to_health_halted() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_protection_reduce_only('naked')
+
+    controller.apply_health_mode(OperationalMode.HALTED)
+
+    assert state.mode.mode is OperationalMode.HALTED
+
+
+def test_clear_protection_reduce_only_returns_active() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_protection_reduce_only('naked')
+
+    controller.clear_protection_reduce_only()
+
+    assert state.mode.mode is OperationalMode.ACTIVE
+
+
+def test_clear_protection_halt_returns_to_health() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.apply_health_mode(OperationalMode.REDUCE_ONLY)
+    controller.set_protection_halt('naked')
+
+    controller.clear_protection_halt()
+
+    assert state.mode.mode is OperationalMode.REDUCE_ONLY
+    assert state.mode.trigger == 'health'
+
+
+def test_reconciliation_trigger_outranks_protection_when_both_halt() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_protection_halt('naked')
+
+    controller.set_reconciliation_halt('mismatch')
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'reconciliation'
+
+
+def test_protection_hold_survives_clearing_reconciliation_hold() -> None:
+    state = _state()
+    controller = _controller(state)
+    controller.set_reconciliation_halt('mismatch')
+    controller.set_protection_halt('naked')
+
+    controller.clear_reconciliation_halt()
+
+    assert state.mode.mode is OperationalMode.HALTED
+    assert state.mode.trigger == 'protection'

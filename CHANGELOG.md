@@ -903,3 +903,10 @@
 
 - Add [`BracketProtectionFailureResponse`](nexus/core/domain/bracket_protection_failure_response.py) — `FLATTEN_THEN_HALT` or `REDUCE_ONLY` — the per-account policy for how an account reacts when a bracket protective-OCO amend leaves the position naked
 - Add per-account `bracket_protection_failure_response` to [`Manifest`](nexus/infrastructure/manifest.py), defaulting to `FLATTEN_THEN_HALT` (fail-safe: flatten the reconciled remaining position, then halt), sourced alongside `reconciliation_mismatch_response` so a mixed book configures each account independently
+
+## v0.74.0 on 16th of August, 2026
+
+### Add
+
+- Add a bracket-protection hold to [`ModeController`](nexus/core/mode_controller.py). A new `protection_hold` on `OperationalHolds` and a `protection` reason on `ReduceOnlyHolds` are arbitrated in `_recommit` exactly like the reconciliation holds — HALT outranks REDUCE_ONLY outranks the health-derived mode — with `set_protection_halt` / `set_protection_reduce_only` (and their clears). Both persist through the WAL codec with a backward-compatible decode (a pre-field snapshot defaults them inactive). The holds are operator-cleared: there is no "protection restored" event, so a subsequent clean cycle does not auto-resume the account
+- Add the Praxis-side protection-remediation inbound. [`ProtectionRemediation`](nexus/infrastructure/praxis_connector/protection_remediation.py) mirrors the Praxis signal that a bracket's protective OCO could not be restored and was remediated locally. [`ProtectionRemediationHandler`](nexus/reconciler/protection_remediation_handler.py) applies the account's `bracket_protection_failure_response`: `FLATTEN_THEN_HALT` drives the durable HALT hold (Praxis has already flattened), `REDUCE_ONLY` forces the reduce-only hold, so the operational-mode posture survives a restart

@@ -421,6 +421,7 @@ def _encode_operational_holds(holds: OperationalHolds) -> dict[str, Any]:
         'risk_drawdown': _encode_halt_hold(holds.risk_drawdown),
         'shutdown_hold': _encode_halt_hold(holds.shutdown_hold),
         'reconciliation_hold': _encode_halt_hold(holds.reconciliation_hold),
+        'protection_hold': _encode_halt_hold(holds.protection_hold),
     }
 
 
@@ -439,6 +440,7 @@ def _decode_operational_holds(d: dict[str, Any] | None) -> OperationalHolds:
 
     raw_shutdown = d.get('shutdown_hold')
     raw_reconciliation = d.get('reconciliation_hold')
+    raw_protection = d.get('protection_hold')
 
     return OperationalHolds(
         manual_hold=_decode_halt_hold(d['manual_hold']),
@@ -449,13 +451,20 @@ def _decode_operational_holds(d: dict[str, Any] | None) -> OperationalHolds:
             _decode_halt_hold(raw_reconciliation)
             if raw_reconciliation is not None else HaltHold()
         ),
+        protection_hold=(
+            _decode_halt_hold(raw_protection)
+            if raw_protection is not None else HaltHold()
+        ),
     )
 
 
 def _encode_reduce_only_holds(holds: ReduceOnlyHolds) -> dict[str, Any]:
     '''Encode ReduceOnlyHolds to a nested dict for msgpack.'''
 
-    return {'reconciliation': _encode_halt_hold(holds.reconciliation)}
+    return {
+        'reconciliation': _encode_halt_hold(holds.reconciliation),
+        'protection': _encode_halt_hold(holds.protection),
+    }
 
 
 def _decode_reduce_only_holds(d: dict[str, Any] | None) -> ReduceOnlyHolds:
@@ -465,11 +474,16 @@ def _decode_reduce_only_holds(d: dict[str, Any] | None) -> ReduceOnlyHolds:
         return ReduceOnlyHolds()
 
     raw_reconciliation = d.get('reconciliation')
+    raw_protection = d.get('protection')
 
     return ReduceOnlyHolds(
         reconciliation=(
             _decode_halt_hold(raw_reconciliation)
             if raw_reconciliation is not None else HaltHold()
+        ),
+        protection=(
+            _decode_halt_hold(raw_protection)
+            if raw_protection is not None else HaltHold()
         ),
     )
 

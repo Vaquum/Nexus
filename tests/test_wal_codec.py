@@ -1070,6 +1070,39 @@ class TestModeHoldsRoundTrip:
         assert restored.reduce_only_holds.reconciliation.active
         assert restored.reduce_only_holds.reconciliation.reason == 'mismatch on BTC'
 
+    def test_protection_hold_survives_round_trip(self) -> None:
+        original = _make_minimal_state()
+        original.mode_holds.protection_hold = HaltHold(
+            active=True, reason='naked position on cmd-1',
+        )
+
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.mode_holds.protection_hold.active
+        assert restored.mode_holds.protection_hold.reason == 'naked position on cmd-1'
+
+    def test_protection_reduce_only_hold_survives_round_trip(self) -> None:
+        original = _make_minimal_state()
+        original.reduce_only_holds.protection = HaltHold(
+            active=True, reason='naked position on cmd-2',
+        )
+
+        restored = deserialize_state(serialize_state(original))
+
+        assert restored.reduce_only_holds.protection.active
+        assert restored.reduce_only_holds.protection.reason == 'naked position on cmd-2'
+
+    def test_pre_field_snapshot_defaults_protection_holds(self) -> None:
+        original = _make_minimal_state()
+        encoded = msgpack.unpackb(serialize_state(original), raw=False)
+        del encoded['mode_holds']['protection_hold']
+        del encoded['reduce_only_holds']['protection']
+
+        restored = deserialize_state(msgpack.packb(encoded))
+
+        assert not restored.mode_holds.protection_hold.active
+        assert not restored.reduce_only_holds.protection.active
+
     def test_pre_field_snapshot_defaults_reconciliation_and_reduce_only(self) -> None:
         original = _make_minimal_state()
         encoded = msgpack.unpackb(serialize_state(original), raw=False)

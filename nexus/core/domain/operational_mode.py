@@ -69,6 +69,9 @@ class OperationalHolds:
             in-flight outcome cannot resume trading while shutting down.
         reconciliation_hold: Hold placed when a reconciliation mismatch is
             reported and the account's response policy is HALT.
+        protection_hold: Hold placed when a bracket protective-OCO amend
+            leaves the position naked and the account's response policy is
+            FLATTEN_THEN_HALT.
     '''
 
     manual_hold: HaltHold = field(default_factory=HaltHold)
@@ -76,6 +79,7 @@ class OperationalHolds:
     risk_drawdown: HaltHold = field(default_factory=HaltHold)
     shutdown_hold: HaltHold = field(default_factory=HaltHold)
     reconciliation_hold: HaltHold = field(default_factory=HaltHold)
+    protection_hold: HaltHold = field(default_factory=HaltHold)
 
     def any_active(self) -> bool:
         '''Return whether any hold currently forces HALTED.'''
@@ -86,6 +90,7 @@ class OperationalHolds:
             or self.risk_daily_loss.active
             or self.risk_drawdown.active
             or self.reconciliation_hold.active
+            or self.protection_hold.active
         )
 
 
@@ -100,14 +105,18 @@ class ReduceOnlyHolds:
     Args:
         reconciliation: Hold placed when a reconciliation mismatch is
             reported and the account's response policy is REDUCE_ONLY.
+        protection: Hold placed when a bracket protective-OCO amend leaves
+            the position naked and the account's response policy is
+            REDUCE_ONLY.
     '''
 
     reconciliation: HaltHold = field(default_factory=HaltHold)
+    protection: HaltHold = field(default_factory=HaltHold)
 
     def any_active(self) -> bool:
         '''Return whether any hold currently forces REDUCE_ONLY.'''
 
-        return self.reconciliation.active
+        return self.reconciliation.active or self.protection.active
 
 
 @dataclass
