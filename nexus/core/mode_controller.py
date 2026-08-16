@@ -187,6 +187,45 @@ class ModeController:
 
         return self._clear_reduce_hold('reconciliation')
 
+    def set_protection_halt(self, reason: str) -> bool:
+        '''Place the bracket-protection HALT hold and recommit the mode.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._set_hold('protection_hold', reason)
+
+    def clear_protection_halt(self) -> bool:
+        '''Lift the bracket-protection HALT hold and recommit.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._clear_hold('protection_hold')
+
+    def set_protection_reduce_only(self, reason: str) -> bool:
+        '''Place the bracket-protection REDUCE_ONLY hold and recommit the mode.
+
+        A HALT hold (or health-derived HALT) outranks this; REDUCE_ONLY
+        applies only when nothing forces HALTED.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._set_reduce_hold('protection', reason)
+
+    def clear_protection_reduce_only(self) -> bool:
+        '''Lift the bracket-protection REDUCE_ONLY hold and recommit.
+
+        Returns:
+            Whether the mode value changed.
+        '''
+
+        return self._clear_reduce_hold('protection')
+
     def set_daily_loss_halt(self, reason: str) -> bool:
         '''Place the daily-loss hold and recommit the mode.
 
@@ -474,25 +513,36 @@ class ModeController:
         return mode_changed
 
     def _mode_source(self, mode: OperationalMode) -> str:
-        '''Return which input drives the mode: shutdown, manual, risk, or health.'''
+        '''Return which input drives the mode.
+
+        For HALTED, the highest-priority active hold in order shutdown,
+        manual, risk, reconciliation, protection; for REDUCE_ONLY, the
+        active reduce-only hold in order reconciliation, protection;
+        otherwise health.
+        '''
 
         holds = self._state.mode_holds
+        reduce_holds = self._state.reduce_only_holds
 
         if mode is _HALTED:
+            halt_sources = (
+                (holds.shutdown_hold.active, 'shutdown'),
+                (holds.manual_hold.active, 'manual'),
+                (holds.risk_daily_loss.active or holds.risk_drawdown.active, 'risk'),
+                (holds.reconciliation_hold.active, 'reconciliation'),
+                (holds.protection_hold.active, 'protection'),
+            )
+            for active, source in halt_sources:
+                if active:
+                    return source
 
-            if holds.shutdown_hold.active:
-                return 'shutdown'
-
-            if holds.manual_hold.active:
-                return 'manual'
-
-            if holds.risk_daily_loss.active or holds.risk_drawdown.active:
-                return 'risk'
-
-            if holds.reconciliation_hold.active:
-                return 'reconciliation'
-
-        elif mode is _REDUCE_ONLY and self._state.reduce_only_holds.reconciliation.active:
-            return 'reconciliation'
+        elif mode is _REDUCE_ONLY:
+            reduce_sources = (
+                (reduce_holds.reconciliation.active, 'reconciliation'),
+                (reduce_holds.protection.active, 'protection'),
+            )
+            for active, source in reduce_sources:
+                if active:
+                    return source
 
         return 'health'
