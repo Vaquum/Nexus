@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from decimal import Decimal
+from types import MappingProxyType
 
 from nexus.instance_config import InstanceConfig
 from nexus.core.validator.pipeline_models import (
@@ -87,6 +89,9 @@ class PriceStageLimits:
     max_staleness_ms: int | None = None
     max_spread_bps: Decimal | None = None
     max_deviation_bps: Decimal | None = None
+    max_deviation_bps_by_strategy: Mapping[str, Decimal] = field(
+        default_factory=dict,
+    )
     reference_price_source: str | None = None
 
     def __post_init__(self) -> None:
@@ -114,6 +119,54 @@ class PriceStageLimits:
                     'non-negative Decimal or None'
                 )
                 raise ValueError(msg)
+
+        if not isinstance(self.max_deviation_bps_by_strategy, Mapping):
+            msg = (
+                'PriceStageLimits.max_deviation_bps_by_strategy must be a '
+                'mapping'
+            )
+            raise ValueError(msg)
+
+        normalized_deviation_caps: dict[str, Decimal] = {}
+        for raw_strategy_id, cap in self.max_deviation_bps_by_strategy.items():
+            if not isinstance(raw_strategy_id, str):
+                msg = (
+                    'PriceStageLimits.max_deviation_bps_by_strategy keys must '
+                    'be non-empty strings'
+                )
+                raise ValueError(msg)
+
+            strategy_id = raw_strategy_id.strip()
+            if not strategy_id:
+                msg = (
+                    'PriceStageLimits.max_deviation_bps_by_strategy keys must '
+                    'be non-empty strings'
+                )
+                raise ValueError(msg)
+            if strategy_id in normalized_deviation_caps:
+                msg = (
+                    'PriceStageLimits.max_deviation_bps_by_strategy contains '
+                    'duplicate keys after normalization'
+                )
+                raise ValueError(msg)
+            if (
+                not isinstance(cap, Decimal)
+                or not cap.is_finite()
+                or cap < _ZERO_DECIMAL
+            ):
+                msg = (
+                    'PriceStageLimits.max_deviation_bps_by_strategy values must '
+                    'be finite non-negative Decimals'
+                )
+                raise ValueError(msg)
+
+            normalized_deviation_caps[strategy_id] = cap
+
+        object.__setattr__(
+            self,
+            'max_deviation_bps_by_strategy',
+            MappingProxyType(normalized_deviation_caps),
+        )
 
         if self.reference_price_source is not None and (
             not isinstance(self.reference_price_source, str)
@@ -149,6 +202,9 @@ def build_price_stage_limits_from_config(config: InstanceConfig) -> PriceStageLi
         max_staleness_ms=max_staleness_ms,
         max_spread_bps=config.max_spread_bps,
         max_deviation_bps=config.price_deviation_max_bps,
+        max_deviation_bps_by_strategy=dict(
+            config.price_deviation_max_bps_by_strategy,
+        ),
         reference_price_source=config.reference_price_source,
     )
 
@@ -197,7 +253,6 @@ def validate_price_stage(
 ) -> ValidationDecision:
     '''Validate price stage using optional snapshot and configured limits.'''
 
-    _ = context
     decision: ValidationDecision | None = None
 
     if limits.max_staleness_ms is not None:
@@ -254,7 +309,11 @@ def validate_price_stage(
                 ),
             )
 
-    if limits.max_deviation_bps is not None and decision is None:
+    effective_deviation_cap = limits.max_deviation_bps_by_strategy.get(
+        context.strategy_id.strip(), limits.max_deviation_bps,
+    )
+
+    if effective_deviation_cap is not None and decision is None:
         if limits.reference_price_source is None:
             decision = ValidationDecision(
                 allowed=False,
@@ -263,6 +322,16 @@ def validate_price_stage(
                 message=(
                     'Price system data unavailable: reference_price_source '
                     'missing for deviation validation'
+                ),
+            )
+        elif context.reference_price is None:
+            decision = ValidationDecision(
+                allowed=False,
+                failed_stage=ValidationStage.PRICE,
+                reason_code='PRICE_SYSTEM_DATA_UNAVAILABLE',
+                message=(
+                    'Price system data unavailable: action reference_price '
+                    'missing for a strategy with a deviation collar'
                 ),
             )
         elif (
@@ -289,14 +358,14 @@ def validate_price_stage(
                 reason_code='PRICE_SNAPSHOT_INVALID',
                 message='Price snapshot reference source is inconsistent',
             )
-        elif snapshot.deviation_bps > limits.max_deviation_bps:
+        elif snapshot.deviation_bps > effective_deviation_cap:
             decision = ValidationDecision(
                 allowed=False,
                 failed_stage=ValidationStage.PRICE,
                 reason_code='PRICE_DEVIATION_LIMIT',
                 message=(
                     f'deviation {snapshot.deviation_bps}bps exceeded '
-                    f'limit {limits.max_deviation_bps}bps'
+                    f'limit {effective_deviation_cap}bps'
                 ),
             )
 

@@ -318,6 +318,35 @@ class TestLoadManifest:
         )
         return path
 
+    def test_max_price_deviation_bps_defaults_to_none(self, tmp_path: Path) -> None:
+        manifest = load_manifest(self._write_minimal(tmp_path))
+
+        assert manifest.strategies[0].max_price_deviation_bps is None
+
+    def test_max_price_deviation_bps_parses_per_strategy(
+        self, tmp_path: Path,
+    ) -> None:
+        path = tmp_path / 'manifest.yaml'
+        _write_strategy_file(tmp_path, 'strategies/momentum.py')
+        _write_yaml(
+            path,
+            'account_id: test_acct\n'
+            'allocated_capital: 10000\n'
+            'capital_pool: 10000\n'
+            'strategies:\n'
+            '  - id: momentum\n'
+            '    file: strategies/momentum.py\n'
+            '    signal:\n'
+            '      series: time_15m\n'
+            '      interval_seconds: 900\n'
+            '    capital_pct: 100\n'
+            '    max_price_deviation_bps: 25\n',
+        )
+
+        manifest = load_manifest(path)
+
+        assert manifest.strategies[0].max_price_deviation_bps == Decimal('25')
+
     def test_reconciliation_mismatch_response_defaults_to_halt(
         self, tmp_path: Path,
     ) -> None:

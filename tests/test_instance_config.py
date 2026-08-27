@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -75,6 +75,84 @@ def test_reference_price_source_is_normalized() -> None:
     )
 
     assert cfg.reference_price_source == 'origo_mid'
+
+
+def test_per_strategy_deviation_map_accepted() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        price_deviation_max_bps_by_strategy={'strat_a': Decimal('25')},
+        reference_price_source='origo_mid',
+    )
+
+    assert cfg.price_deviation_max_bps_by_strategy == {'strat_a': Decimal('25')}
+
+
+def test_per_strategy_deviation_map_requires_reference_source() -> None:
+    with pytest.raises(ValueError, match='reference_price_source is required'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            price_deviation_max_bps_by_strategy={'strat_a': Decimal('25')},
+        )
+
+
+def test_per_strategy_deviation_map_is_frozen() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        price_deviation_max_bps_by_strategy={'strat_a': Decimal('25')},
+        reference_price_source='origo_mid',
+    )
+
+    with pytest.raises(TypeError):
+        cast(dict[str, Decimal], cfg.price_deviation_max_bps_by_strategy)['strat_a'] = (
+            Decimal('99')
+        )
+
+
+def test_per_strategy_deviation_map_normalizes_keys() -> None:
+    cfg = InstanceConfig(
+        account_id='acc_001',
+        venue='binance_spot',
+        price_deviation_max_bps_by_strategy={'  strat_a  ': Decimal('25')},
+        reference_price_source='origo_mid',
+    )
+
+    assert cfg.price_deviation_max_bps_by_strategy == {'strat_a': Decimal('25')}
+
+
+def test_per_strategy_deviation_map_rejects_duplicate_after_normalization() -> None:
+    with pytest.raises(ValueError, match='duplicate keys after normalization'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            price_deviation_max_bps_by_strategy={
+                'strat_a': Decimal('25'),
+                ' strat_a ': Decimal('30'),
+            },
+            reference_price_source='origo_mid',
+        )
+
+
+def test_per_strategy_deviation_map_rejects_non_mapping() -> None:
+    with pytest.raises(ValueError, match='must be a mapping'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            price_deviation_max_bps_by_strategy=cast(Any, [('strat_a', Decimal('5'))]),
+            reference_price_source='origo_mid',
+        )
+
+
+def test_per_strategy_deviation_map_rejects_negative_cap() -> None:
+    with pytest.raises(ValueError, match='price_deviation_max_bps_by_strategy'):
+        InstanceConfig(
+            account_id='acc_001',
+            venue='binance_spot',
+            price_deviation_max_bps_by_strategy={'strat_a': Decimal('-1')},
+            reference_price_source='origo_mid',
+        )
 
 
 def test_valid_creation_with_capital_pct() -> None:

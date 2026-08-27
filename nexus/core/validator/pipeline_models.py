@@ -76,6 +76,11 @@ class ValidationRequestContext:
         strategy_budget: Current strategy budget ceiling (quote units).
         state: Current runtime instance state snapshot.
         config: Runtime instance configuration.
+        reference_price: The strategy's own decision price for this action
+            (`Action.reference_price`), used by the Stage-3 price-deviation
+            collar as the reference against the venue book mid. `None` when
+            the strategy emitted no reference price; a strategy with a
+            configured deviation limit that omits it is rejected fail-closed.
         intended_full_close: True only on EXIT actions where the
             strategy emitted `Action.size == position.size -
             position.pending_exit` at the launcher boundary, i.e.
@@ -102,6 +107,7 @@ class ValidationRequestContext:
     trade_id: str | None = None
     command_id: str | None = 'cmd_default'
     current_order_notional: Decimal | None = None
+    reference_price: Decimal | None = None
     intended_full_close: bool = False
 
     def __post_init__(self) -> None:
@@ -172,6 +178,17 @@ class ValidationRequestContext:
             msg = (
                 'ValidationRequestContext.current_order_notional must be a finite '
                 'non-negative Decimal or None'
+            )
+            raise ValueError(msg)
+
+        if self.reference_price is not None and (
+            not isinstance(self.reference_price, Decimal)
+            or not self.reference_price.is_finite()
+            or self.reference_price <= _ZERO
+        ):
+            msg = (
+                'ValidationRequestContext.reference_price must be a finite '
+                'positive Decimal or None'
             )
             raise ValueError(msg)
 

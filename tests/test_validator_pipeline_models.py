@@ -103,6 +103,22 @@ class TestValidationRequestContext:
         with pytest.raises(ValueError, match='current_order_notional'):
             _make_context(current_order_notional=Decimal('-1'))
 
+    def test_reference_price_defaults_to_none(self) -> None:
+        assert _make_context().reference_price is None
+
+    def test_positive_reference_price_accepted(self) -> None:
+        assert _make_context(
+            reference_price=Decimal('50000'),
+        ).reference_price == Decimal('50000')
+
+    def test_non_positive_reference_price_rejected(self) -> None:
+        with pytest.raises(ValueError, match='reference_price'):
+            _make_context(reference_price=Decimal('0'))
+
+    def test_nan_reference_price_rejected(self) -> None:
+        with pytest.raises(ValueError, match='reference_price'):
+            _make_context(reference_price=Decimal('NaN'))
+
     def test_non_validation_action_rejected(self) -> None:
         with pytest.raises(ValueError, match='action'):
             _make_context(action=cast(ValidationAction, cast(Any, 'ENTER')))

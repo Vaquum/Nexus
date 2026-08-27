@@ -117,6 +117,10 @@ class StrategySpec:
         signal: Conduit signal-source specification.
         capital_pct: Capital allocation percentage for this strategy.
         timers: Optional timer specifications for on_timer callbacks.
+        max_price_deviation_bps: Optional per-strategy pre-trade price-deviation
+            collar in bps. When set, an ENTER whose `action.reference_price`
+            deviates from the venue book mid by more than this many bps is
+            rejected; the strategy creator opts in by configuring it.
     '''
 
     strategy_id: str
@@ -124,6 +128,7 @@ class StrategySpec:
     signal: SignalSpec
     capital_pct: Decimal
     timers: tuple[TimerSpec, ...] = ()
+    max_price_deviation_bps: Decimal | None = None
 
     def __post_init__(self) -> None:
         '''Validate strategy specification invariants.'''
@@ -153,6 +158,17 @@ class StrategySpec:
 
         if self.capital_pct <= _ZERO or self.capital_pct > _ONE_HUNDRED:
             msg = 'StrategySpec.capital_pct must be in (0, 100]'
+            raise ValueError(msg)
+
+        if self.max_price_deviation_bps is not None and (
+            not isinstance(self.max_price_deviation_bps, Decimal)
+            or not self.max_price_deviation_bps.is_finite()
+            or self.max_price_deviation_bps < _ZERO
+        ):
+            msg = (
+                'StrategySpec.max_price_deviation_bps must be a finite '
+                'non-negative Decimal or None'
+            )
             raise ValueError(msg)
 
         if not isinstance(self.timers, tuple):
@@ -524,6 +540,11 @@ def load_manifest(path: Path) -> Manifest:
             msg = f'Strategy {strategy_id!r} capital_pct is not a valid number: {raw_capital_pct!r}'
             raise ValueError(msg) from e
 
+        max_price_deviation_bps = _optional_manifest_decimal(
+            raw_spec.get('max_price_deviation_bps'),
+            f'strategy {strategy_id!r} max_price_deviation_bps',
+        )
+
         specs.append(
             StrategySpec(
                 strategy_id=strategy_id,
@@ -531,6 +552,7 @@ def load_manifest(path: Path) -> Manifest:
                 signal=signal_spec,
                 capital_pct=capital_pct,
                 timers=tuple(timer_specs),
+                max_price_deviation_bps=max_price_deviation_bps,
             )
         )
 
