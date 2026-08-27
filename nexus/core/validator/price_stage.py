@@ -310,7 +310,7 @@ def validate_price_stage(
             )
 
     effective_deviation_cap = limits.max_deviation_bps_by_strategy.get(
-        context.strategy_id, limits.max_deviation_bps,
+        context.strategy_id.strip(), limits.max_deviation_bps,
     )
 
     if effective_deviation_cap is not None and decision is None:

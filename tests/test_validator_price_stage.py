@@ -197,6 +197,21 @@ class TestPriceStage:
         assert decision.allowed is False
         assert decision.reason_code == 'PRICE_DEVIATION_LIMIT'
 
+    def test_per_strategy_cap_resolves_for_padded_strategy_id(self) -> None:
+        decision = validate_price_stage(
+            _make_context(strategy_id=' strat_a '),
+            PriceStageLimits(
+                max_deviation_bps_by_strategy={'strat_a': Decimal('10')},
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('11'),
+                reference_price_source='origo_mid',
+            ),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'PRICE_DEVIATION_LIMIT'
+
     def test_per_strategy_cap_overrides_account_level(self) -> None:
         decision = validate_price_stage(
             _make_context(strategy_id='strat_a'),
