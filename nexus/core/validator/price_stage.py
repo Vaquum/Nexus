@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal
+from types import MappingProxyType
 
 from nexus.instance_config import InstanceConfig
 from nexus.core.validator.pipeline_models import (
@@ -126,11 +127,26 @@ class PriceStageLimits:
             )
             raise ValueError(msg)
 
-        for strategy_id, cap in self.max_deviation_bps_by_strategy.items():
-            if not isinstance(strategy_id, str) or not strategy_id.strip():
+        normalized_deviation_caps: dict[str, Decimal] = {}
+        for raw_strategy_id, cap in self.max_deviation_bps_by_strategy.items():
+            if not isinstance(raw_strategy_id, str):
                 msg = (
                     'PriceStageLimits.max_deviation_bps_by_strategy keys must '
                     'be non-empty strings'
+                )
+                raise ValueError(msg)
+
+            strategy_id = raw_strategy_id.strip()
+            if not strategy_id:
+                msg = (
+                    'PriceStageLimits.max_deviation_bps_by_strategy keys must '
+                    'be non-empty strings'
+                )
+                raise ValueError(msg)
+            if strategy_id in normalized_deviation_caps:
+                msg = (
+                    'PriceStageLimits.max_deviation_bps_by_strategy contains '
+                    'duplicate keys after normalization'
                 )
                 raise ValueError(msg)
             if (
@@ -143,6 +159,14 @@ class PriceStageLimits:
                     'be finite non-negative Decimals'
                 )
                 raise ValueError(msg)
+
+            normalized_deviation_caps[strategy_id] = cap
+
+        object.__setattr__(
+            self,
+            'max_deviation_bps_by_strategy',
+            MappingProxyType(normalized_deviation_caps),
+        )
 
         if self.reference_price_source is not None and (
             not isinstance(self.reference_price_source, str)

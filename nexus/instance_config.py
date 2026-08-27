@@ -149,11 +149,26 @@ class InstanceConfig:
             )
             raise ValueError(msg)
 
-        for strategy_id, cap in self.price_deviation_max_bps_by_strategy.items():
-            if not isinstance(strategy_id, str) or not strategy_id.strip():
+        normalized_deviation_caps: dict[str, Decimal] = {}
+        for raw_strategy_id, cap in self.price_deviation_max_bps_by_strategy.items():
+            if not isinstance(raw_strategy_id, str):
                 msg = (
                     'InstanceConfig.price_deviation_max_bps_by_strategy keys '
                     'must be non-empty strings'
+                )
+                raise ValueError(msg)
+
+            strategy_id = raw_strategy_id.strip()
+            if not strategy_id:
+                msg = (
+                    'InstanceConfig.price_deviation_max_bps_by_strategy keys '
+                    'must be non-empty strings'
+                )
+                raise ValueError(msg)
+            if strategy_id in normalized_deviation_caps:
+                msg = (
+                    'InstanceConfig.price_deviation_max_bps_by_strategy contains '
+                    'duplicate keys after normalization'
                 )
                 raise ValueError(msg)
             if not isinstance(cap, Decimal) or not cap.is_finite() or cap < _ZERO:
@@ -162,6 +177,14 @@ class InstanceConfig:
                     'must be finite non-negative Decimals'
                 )
                 raise ValueError(msg)
+
+            normalized_deviation_caps[strategy_id] = cap
+
+        object.__setattr__(
+            self,
+            'price_deviation_max_bps_by_strategy',
+            MappingProxyType(normalized_deviation_caps),
+        )
 
         if self.reference_price_source is not None:
             if not isinstance(self.reference_price_source, str):

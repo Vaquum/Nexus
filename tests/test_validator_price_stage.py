@@ -59,6 +59,29 @@ class TestPriceContracts:
                 max_deviation_bps_by_strategy=cast(Any, [('s', Decimal('5'))]),
             )
 
+    def test_per_strategy_cap_map_is_frozen(self) -> None:
+        limits = PriceStageLimits(
+            max_deviation_bps_by_strategy={'s': Decimal('5')},
+        )
+
+        with pytest.raises(TypeError):
+            cast(dict[str, Decimal], limits.max_deviation_bps_by_strategy)['s'] = (
+                Decimal('9')
+            )
+
+    def test_per_strategy_cap_map_normalizes_keys(self) -> None:
+        limits = PriceStageLimits(
+            max_deviation_bps_by_strategy={'  s  ': Decimal('5')},
+        )
+
+        assert limits.max_deviation_bps_by_strategy == {'s': Decimal('5')}
+
+    def test_per_strategy_cap_map_rejects_duplicate_after_normalization(self) -> None:
+        with pytest.raises(ValueError, match='duplicate keys after normalization'):
+            PriceStageLimits(
+                max_deviation_bps_by_strategy={'s': Decimal('5'), ' s ': Decimal('6')},
+            )
+
     def test_rejects_negative_per_strategy_cap(self) -> None:
         with pytest.raises(ValueError, match='max_deviation_bps_by_strategy'):
             PriceStageLimits(max_deviation_bps_by_strategy={'s': Decimal('-1')})
