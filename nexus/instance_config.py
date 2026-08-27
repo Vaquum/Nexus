@@ -47,8 +47,13 @@ class InstanceConfig:
         book_staleness_max_seconds: Optional Stage-3 price staleness threshold
             in seconds.
         max_spread_bps: Optional Stage-3 max spread threshold in bps.
-        price_deviation_max_bps: Optional Stage-3 max deviation threshold in
-            bps.
+        price_deviation_max_bps: Optional account-level Stage-3 max deviation
+            threshold in bps, applied to strategies without a per-strategy
+            override.
+        price_deviation_max_bps_by_strategy: Optional per-strategy Stage-3 max
+            deviation caps in bps, keyed by strategy_id. A strategy's own cap
+            overrides the account-level `price_deviation_max_bps`; a strategy
+            absent from the map falls back to the account-level cap.
         reference_price_source: Optional Stage-3 reference price source
             identifier used for deviation checks.
         stp_mode: Self-trade prevention mode for order submission. Determines
@@ -69,6 +74,9 @@ class InstanceConfig:
     book_staleness_max_seconds: int | None = None
     max_spread_bps: Decimal | None = None
     price_deviation_max_bps: Decimal | None = None
+    price_deviation_max_bps_by_strategy: Mapping[str, Decimal] = field(
+        default_factory=dict,
+    )
     reference_price_source: str | None = None
     stp_mode: STPMode = STPMode.CANCEL_TAKER
     capital_pct: Mapping[str, Decimal] = field(default_factory=dict)
@@ -134,6 +142,27 @@ class InstanceConfig:
                 )
                 raise ValueError(msg)
 
+        if not isinstance(self.price_deviation_max_bps_by_strategy, Mapping):
+            msg = (
+                'InstanceConfig.price_deviation_max_bps_by_strategy must be a '
+                'mapping'
+            )
+            raise ValueError(msg)
+
+        for strategy_id, cap in self.price_deviation_max_bps_by_strategy.items():
+            if not isinstance(strategy_id, str) or not strategy_id.strip():
+                msg = (
+                    'InstanceConfig.price_deviation_max_bps_by_strategy keys '
+                    'must be non-empty strings'
+                )
+                raise ValueError(msg)
+            if not isinstance(cap, Decimal) or not cap.is_finite() or cap < _ZERO:
+                msg = (
+                    'InstanceConfig.price_deviation_max_bps_by_strategy values '
+                    'must be finite non-negative Decimals'
+                )
+                raise ValueError(msg)
+
         if self.reference_price_source is not None:
             if not isinstance(self.reference_price_source, str):
                 msg = 'InstanceConfig.reference_price_source must be a string'
@@ -165,11 +194,12 @@ class InstanceConfig:
 
         if (
             self.price_deviation_max_bps is not None
-            and self.reference_price_source is None
-        ):
+            or self.price_deviation_max_bps_by_strategy
+        ) and self.reference_price_source is None:
             msg = (
                 'InstanceConfig.reference_price_source is required when '
-                'price_deviation_max_bps is set'
+                'price_deviation_max_bps or price_deviation_max_bps_by_strategy '
+                'is set'
             )
             raise ValueError(msg)
 

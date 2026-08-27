@@ -32,6 +32,7 @@ def _make_context(**overrides: Any) -> ValidationRequestContext:
         'order_notional': Decimal('100'),
         'estimated_fees': Decimal('1'),
         'strategy_budget': Decimal('5000'),
+        'reference_price': Decimal('50000'),
         'state': InstanceState.fresh(Decimal('10000')),
         'config': config,
     }
@@ -51,6 +52,16 @@ class TestPriceContracts:
     def test_rejects_negative_spread_limit(self) -> None:
         with pytest.raises(ValueError, match='max_spread_bps'):
             PriceStageLimits(max_spread_bps=Decimal('-1'))
+
+    def test_rejects_non_mapping_per_strategy_cap(self) -> None:
+        with pytest.raises(ValueError, match='must be a mapping'):
+            PriceStageLimits(
+                max_deviation_bps_by_strategy=cast(Any, [('s', Decimal('5'))]),
+            )
+
+    def test_rejects_negative_per_strategy_cap(self) -> None:
+        with pytest.raises(ValueError, match='max_deviation_bps_by_strategy'):
+            PriceStageLimits(max_deviation_bps_by_strategy={'s': Decimal('-1')})
 
     def test_rejects_negative_snapshot_spread(self) -> None:
         with pytest.raises(ValueError, match='spread_bps'):
@@ -147,6 +158,66 @@ class TestPriceStage:
         )
         assert decision.allowed is False
         assert decision.reason_code == 'PRICE_DEVIATION_LIMIT'
+
+    def test_per_strategy_cap_denies_over_that_strategys_limit(self) -> None:
+        decision = validate_price_stage(
+            _make_context(strategy_id='strat_a'),
+            PriceStageLimits(
+                max_deviation_bps_by_strategy={'strat_a': Decimal('10')},
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('11'),
+                reference_price_source='origo_mid',
+            ),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'PRICE_DEVIATION_LIMIT'
+
+    def test_per_strategy_cap_overrides_account_level(self) -> None:
+        decision = validate_price_stage(
+            _make_context(strategy_id='strat_a'),
+            PriceStageLimits(
+                max_deviation_bps=Decimal('100'),
+                max_deviation_bps_by_strategy={'strat_a': Decimal('10')},
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('50'),
+                reference_price_source='origo_mid',
+            ),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'PRICE_DEVIATION_LIMIT'
+
+    def test_strategy_without_cap_is_not_collared(self) -> None:
+        decision = validate_price_stage(
+            _make_context(strategy_id='strat_b'),
+            PriceStageLimits(
+                max_deviation_bps_by_strategy={'strat_a': Decimal('10')},
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('999'),
+                reference_price_source='origo_mid',
+            ),
+        )
+        assert decision.allowed is True
+
+    def test_collar_denies_when_action_reference_price_missing(self) -> None:
+        decision = validate_price_stage(
+            _make_context(strategy_id='strat_a', reference_price=None),
+            PriceStageLimits(
+                max_deviation_bps_by_strategy={'strat_a': Decimal('10')},
+                reference_price_source='origo_mid',
+            ),
+            snapshot=PriceCheckSnapshot(
+                deviation_bps=Decimal('5'),
+                reference_price_source='origo_mid',
+            ),
+        )
+        assert decision.allowed is False
+        assert decision.reason_code == 'PRICE_SYSTEM_DATA_UNAVAILABLE'
 
     def test_denies_when_snapshot_missing_for_configured_limit(self) -> None:
         decision = validate_price_stage(
