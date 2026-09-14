@@ -34,6 +34,18 @@ class TradeOutcome:
             provided on CANCELED/EXPIRED to indicate unfilled remainder.
         reject_reason: Venue rejection reason; required for REJECTED.
         cancel_reason: Cancellation reason; optional for CANCELED.
+        execution_slippage_bps: Signed displacement of the average fill
+            price from the mid price sampled before submission, in basis
+            points, as `(avg - mid) / mid * 10000`. Not a cost and not
+            adjusted for side: a SELL filling below the mid reads negative
+            while being the worse outcome, so ranking on the sign inverts
+            one side. Present only on fill outcomes, and None there where
+            no estimate was taken.
+        arrival_slippage_bps: The same displacement measured against the
+            reference price the decision carried, on the same terms, and
+            None where the command carried no reference price. The two are
+            independent: an outcome may carry one and not the other, since
+            their inputs arrive by different routes.
     '''
 
     outcome_id: str
@@ -47,6 +59,8 @@ class TradeOutcome:
     remaining_size: Decimal | None = None
     reject_reason: str | None = None
     cancel_reason: str | None = None
+    execution_slippage_bps: Decimal | None = None
+    arrival_slippage_bps: Decimal | None = None
 
     def __post_init__(self) -> None:
         '''Validate invariants at construction time.'''
@@ -70,6 +84,8 @@ class TradeOutcome:
         if self.timestamp.tzinfo is not timezone.utc:
             msg = 'TradeOutcome.timestamp must be UTC'
             raise ValueError(msg)
+
+        self._validate_slippage_fields()
 
         if self.outcome_type.is_fill:
             self._validate_fill_fields()
@@ -105,6 +121,36 @@ class TradeOutcome:
 
             if self.remaining_size < _ZERO:
                 msg = 'TradeOutcome.remaining_size must be non-negative'
+                raise ValueError(msg)
+
+    def _validate_slippage_fields(self) -> None:
+        '''Validate the optional execution-quality measures.
+
+        Absent is meaningful and distinct from zero: zero says execution
+        landed on the benchmark, absent says nothing was measured. Either
+        may be negative, since both are signed displacements rather than
+        costs.
+
+        Both are properties of an execution, so an outcome carrying no fill
+        carries no measurement — a rejection or an acknowledgement reporting
+        execution quality would be describing an execution that did not
+        happen. A terminal outcome following a partial does not carry the
+        earlier fill's measurement either: that belongs to the PARTIAL the
+        fill produced.
+        '''
+
+        for name in ('execution_slippage_bps', 'arrival_slippage_bps'):
+            value = getattr(self, name)
+
+            if value is None:
+                continue
+
+            if not self.outcome_type.is_fill:
+                msg = f"TradeOutcome.{name} must be None for non-fill outcomes"
+                raise ValueError(msg)
+
+            if not isinstance(value, Decimal) or not value.is_finite():
+                msg = f"TradeOutcome.{name} must be a finite Decimal or None"
                 raise ValueError(msg)
 
     def _validate_fill_fields(self) -> None:
