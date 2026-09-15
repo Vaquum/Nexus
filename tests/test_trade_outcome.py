@@ -392,3 +392,140 @@ class TestTradeOutcomeRemainingSizeValidation:
             remaining_size=Decimal('0'),
         )
         assert outcome.remaining_size == Decimal('0')
+
+
+class TestTradeOutcomeSlippage:
+    @staticmethod
+    def _filled(**slippage: object) -> TradeOutcome:
+        return TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.FILLED,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('500'),
+            actual_fees=Decimal('0.5'),
+            **slippage,
+        )
+
+    def test_slippage_absent_by_default(self) -> None:
+        outcome = _fill_outcome()
+
+        assert outcome.execution_slippage_bps is None
+        assert outcome.arrival_slippage_bps is None
+
+    def test_slippage_carried_when_measured(self) -> None:
+        outcome = self._filled(
+            execution_slippage_bps=Decimal('4'),
+            arrival_slippage_bps=Decimal('14.014'),
+        )
+
+        assert outcome.execution_slippage_bps == Decimal('4')
+        assert outcome.arrival_slippage_bps == Decimal('14.014')
+
+    @pytest.mark.parametrize(
+        'name', ['execution_slippage_bps', 'arrival_slippage_bps'],
+    )
+    def test_negative_slippage_is_valid(self, name: str) -> None:
+
+        '''A displacement is signed, so either side of the benchmark is real.
+
+        A sell filling below its benchmark reads negative and is the worse
+        outcome; rejecting negatives would discard exactly that case.
+        '''
+
+        outcome = self._filled(**{name: Decimal('-12.5')})
+
+        assert getattr(outcome, name) == Decimal('-12.5')
+
+    @pytest.mark.parametrize(
+        'name', ['execution_slippage_bps', 'arrival_slippage_bps'],
+    )
+    def test_zero_slippage_is_distinct_from_absent(self, name: str) -> None:
+
+        '''Zero is a measurement: execution landed on the benchmark.
+
+        A consumer coalescing absent to zero would read an unmeasured fill
+        as a perfect one.
+        '''
+
+        outcome = self._filled(**{name: Decimal('0')})
+
+        assert getattr(outcome, name) == Decimal('0')
+        assert getattr(outcome, name) is not None
+
+    @pytest.mark.parametrize(
+        'name', ['execution_slippage_bps', 'arrival_slippage_bps'],
+    )
+    @pytest.mark.parametrize(
+        'value', [Decimal('NaN'), Decimal('Infinity'), 4, '4'],
+    )
+    def test_non_finite_or_non_decimal_slippage_refused(
+        self, name: str, value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match='must be a finite Decimal or None'):
+            self._filled(**{name: value})
+
+    @pytest.mark.parametrize(
+        'name', ['execution_slippage_bps', 'arrival_slippage_bps'],
+    )
+    @pytest.mark.parametrize(
+        'outcome_type',
+        [
+            TradeOutcomeType.ACK,
+            TradeOutcomeType.CANCELED,
+            TradeOutcomeType.EXPIRED,
+            TradeOutcomeType.REJECTED,
+        ],
+    )
+    def test_non_fill_outcome_carries_no_measurement(
+        self, name: str, outcome_type: TradeOutcomeType,
+    ) -> None:
+
+        '''An outcome with no fill describes no execution to measure.
+
+        A terminal outcome following a partial does not inherit that fill's
+        measurement either: it belongs to the PARTIAL the fill produced.
+        '''
+
+        extra: dict[str, object] = {name: Decimal('4')}
+
+        if outcome_type == TradeOutcomeType.REJECTED:
+            extra['reject_reason'] = 'insufficient balance'
+
+        with pytest.raises(ValueError, match='must be None for non-fill'):
+            TradeOutcome(
+                outcome_id='out_001',
+                command_id='cmd_001',
+                outcome_type=outcome_type,
+                timestamp=_now(),
+                **extra,
+            )
+
+    @pytest.mark.parametrize(
+        'name', ['execution_slippage_bps', 'arrival_slippage_bps'],
+    )
+    def test_partial_outcome_may_carry_a_measurement(self, name: str) -> None:
+
+        '''A partial is where a partly-filled command's measurement lives.
+
+        A command that fills partly and is then cancelled emits this before
+        its terminal outcome, so gating on fills keeps the number rather
+        than dropping it with the outcome that carried no fill.
+        '''
+
+        outcome = TradeOutcome(
+            outcome_id='out_001',
+            command_id='cmd_001',
+            outcome_type=TradeOutcomeType.PARTIAL,
+            timestamp=_now(),
+            fill_size=Decimal('0.01'),
+            fill_price=Decimal('50000'),
+            fill_notional=Decimal('500'),
+            actual_fees=Decimal('0.5'),
+            remaining_size=Decimal('0.005'),
+            **{name: Decimal('14.014')},
+        )
+
+        assert getattr(outcome, name) == Decimal('14.014')
