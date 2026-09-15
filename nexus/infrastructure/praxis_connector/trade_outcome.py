@@ -34,18 +34,42 @@ class TradeOutcome:
             provided on CANCELED/EXPIRED to indicate unfilled remainder.
         reject_reason: Venue rejection reason; required for REJECTED.
         cancel_reason: Cancellation reason; optional for CANCELED.
-        execution_slippage_bps: Signed displacement of the average fill
-            price from the mid price sampled before submission, in basis
-            points, as `(avg - mid) / mid * 10000`. Not a cost and not
-            adjusted for side: a SELL filling below the mid reads negative
-            while being the worse outcome, so ranking on the sign inverts
-            one side. Present only on fill outcomes, and None there where
-            no estimate was taken.
+        execution_slippage_bps: Signed displacement of the command's
+            average fill price from the mid price sampled before
+            submission, in basis points, as `(avg - mid) / mid * 10000`.
+            That average covers every fill of the command so far, not the
+            increment this outcome reports, so it is not a displacement of
+            this outcome's own `fill_price`. Not a cost and not adjusted
+            for side: a SELL filling below the mid reads negative while
+            being the worse outcome, so ranking on the sign inverts one
+            side. Present only on fill outcomes, and None there where no
+            estimate was taken.
         arrival_slippage_bps: The same displacement measured against the
             reference price the decision carried, on the same terms, and
             None where the command carried no reference price. The two are
             independent: an outcome may carry one and not the other, since
             their inputs arrive by different routes.
+
+    Either measure may appear on any fill outcome of a command, each a
+    snapshot of the command to date. A consumer wanting one number per
+    command takes, for each field separately, the latest non-None value in
+    command order — not the value on the latest outcome. An outcome
+    carrying none says nothing was measured on it, never that an earlier
+    measure was retracted, so coalescing the two discards the measurement
+    on exactly the commands that reported one.
+
+    A command commonly reports a measure on an early outcome and none
+    afterwards. Both benchmarks are held by the producer's submitting path,
+    so an outcome raised elsewhere — a completion driven by the venue's
+    stream, say — carries neither, and the absence of arrival slippage
+    there is not evidence that the command carried no reference price.
+
+    A snapshot must not be weighted by the `fill_size` of the outcome
+    carrying it: the measure spans every fill so far while that size spans
+    one increment, so weighting counts the earlier fills again on every
+    outcome. Nor can successive snapshots be unwound into per-increment
+    slippage, since the producer persists these quotients and not the
+    prices behind them.
     '''
 
     outcome_id: str
