@@ -237,7 +237,6 @@ class Action:
                 msg = f"MODIFY requires: {', '.join(missing)}"
                 raise ValueError(msg)
 
-        elif self.action_type == ActionType.ABORT:
-            if self.command_id is None:
-                msg = 'ABORT requires: command_id'
-                raise ValueError(msg)
+        elif self.action_type == ActionType.ABORT and self.command_id is None:
+            msg = 'ABORT requires: command_id'
+            raise ValueError(msg)
