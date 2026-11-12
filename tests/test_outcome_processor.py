@@ -23,6 +23,7 @@ from nexus.infrastructure.wal_codec import deserialize_state, serialize_state
 
 _POOL = Decimal('10000')
 _ZERO = Decimal(0)
+_READER_PAUSE_SECONDS = 0.001
 
 
 def _now() -> datetime:
@@ -2094,7 +2095,7 @@ class TestPositionsLockHonoredByWriter:
 
     def test_concurrent_iteration_with_writer_does_not_raise(self) -> None:
         '''End-to-end: a foreground thread iterates `state.positions.values()`
-        under the lock; a worker thread runs a tight loop of grow/reduce
+        under the lock while a worker thread runs grow/reduce
         cycles via `OutcomeProcessor`. With the lock plumbed through, the
         reader sees no `RuntimeError: dictionary changed size during
         iteration`. Pre-fix this would race occasionally; post-fix the
@@ -2120,6 +2121,7 @@ class TestPositionsLockHonoredByWriter:
                         with real_lock:
                             for _ in instance_state.positions.values():
                                 pass
+                        stop_event.wait(_READER_PAUSE_SECONDS)
                 except Exception as exc:
                     iteration_failures.append(exc)
 
@@ -2174,6 +2176,8 @@ class TestPositionsLockHonoredByWriter:
             stop_event.set()
             r.join(timeout=15)
 
+            assert not w.is_alive(), 'writer did not finish'
+            assert not r.is_alive(), 'reader did not finish'
             assert not iteration_failures, (
                 f'reader observed exceptions during iteration: '
                 f'{iteration_failures[:3]}'
@@ -2195,8 +2199,8 @@ class TestFinalMajor02RiskLockCoverage:
     '''
 
     def test_writer_vs_refresher_no_iteration_error(self) -> None:
-        '''Writer thread tight-loops _update_strategy_risk_state for
-        new strategy_ids while the foreground thread tight-loops
+        '''Writer thread calls _update_strategy_risk_state for
+        new strategy_ids while the refresher repeatedly calls
         StateStore.refresh_rolling_losses(state). Pre-fix the dict
         insert during iteration would raise; post-fix the lock
         serialises and all writes land.
@@ -2213,45 +2217,47 @@ class TestFinalMajor02RiskLockCoverage:
             store = StateStore(Path(tmp))
             proc = OutcomeProcessor(controller, instance_state, store)
 
-            stop_event = threading.Event()
+            iterations = 500
+            round_start = threading.Barrier(2, timeout=15)
             iteration_failures: list[Exception] = []
 
             def writer() -> None:
-                try:
-                    for i in range(500):
-                        proc._update_strategy_risk_state(
-                            f'strat_{i}', Decimal('-1.0'),
-                        )
-                finally:
-                    stop_event.set()
+                for i in range(iterations):
+                    round_start.wait()
+                    proc._update_strategy_risk_state(
+                        f'strat_{i}', Decimal('-1.0'),
+                    )
 
             def refresher() -> None:
                 try:
-                    while not stop_event.is_set():
+                    for _ in range(iterations):
+                        round_start.wait()
                         store.refresh_rolling_losses(instance_state)
                 except Exception as exc:
                     iteration_failures.append(exc)
+                    round_start.abort()
 
             r = threading.Thread(target=refresher, daemon=True)
             w = threading.Thread(target=writer, daemon=True)
             r.start()
             w.start()
             w.join(timeout=15)
-            stop_event.set()
             r.join(timeout=15)
 
+            assert not w.is_alive(), 'writer did not finish'
+            assert not r.is_alive(), 'refresher did not finish'
             assert not iteration_failures, (
                 f'refresher observed exceptions during iteration: '
                 f'{iteration_failures[:3]}'
             )
-            assert len(instance_state.risk.per_strategy) == 500, (
+            assert len(instance_state.risk.per_strategy) == iterations, (
                 f'writer did not complete: '
                 f'len={len(instance_state.risk.per_strategy)}'
             )
 
     def test_writer_vs_validator_metrics_no_iteration_error(self) -> None:
-        '''Writer thread tight-loops _update_strategy_risk_state for
-        new strategy_ids while a reader thread tight-loops
+        '''Writer thread calls _update_strategy_risk_state for
+        new strategy_ids while a reader thread repeatedly calls
         state.risk.to_risk_check_metrics() (the validator's path).
         Pre-fix the property iterators (rolling_loss_24h/7d/30d sum
         comprehensions) raced with the dict insert; post-fix
@@ -2270,38 +2276,40 @@ class TestFinalMajor02RiskLockCoverage:
             store = StateStore(Path(tmp))
             proc = OutcomeProcessor(controller, instance_state, store)
 
-            stop_event = threading.Event()
+            iterations = 500
+            round_start = threading.Barrier(2, timeout=15)
             reader_failures: list[Exception] = []
 
             def writer() -> None:
-                try:
-                    for i in range(500):
-                        proc._update_strategy_risk_state(
-                            f'strat_{i}', Decimal('-2.0'),
-                        )
-                finally:
-                    stop_event.set()
+                for i in range(iterations):
+                    round_start.wait()
+                    proc._update_strategy_risk_state(
+                        f'strat_{i}', Decimal('-2.0'),
+                    )
 
             def reader() -> None:
                 try:
-                    while not stop_event.is_set():
+                    for _ in range(iterations):
+                        round_start.wait()
                         instance_state.risk.to_risk_check_metrics()
                 except Exception as exc:
                     reader_failures.append(exc)
+                    round_start.abort()
 
             r = threading.Thread(target=reader, daemon=True)
             w = threading.Thread(target=writer, daemon=True)
             r.start()
             w.start()
             w.join(timeout=15)
-            stop_event.set()
             r.join(timeout=15)
 
+            assert not w.is_alive(), 'writer did not finish'
+            assert not r.is_alive(), 'reader did not finish'
             assert not reader_failures, (
                 f'reader observed exceptions during property iteration: '
                 f'{reader_failures[:3]}'
             )
-            assert len(instance_state.risk.per_strategy) == 500
+            assert len(instance_state.risk.per_strategy) == iterations
 
 
 class TestFinalMajor08RealizedPnlIsNetOfFees:
