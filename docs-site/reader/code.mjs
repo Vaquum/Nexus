@@ -13,7 +13,7 @@ export function initCode(root=document,selectRange=href=>history.replaceState(hi
     figure.querySelector('[data-wrap]').addEventListener('click',event=>{
       const off=figure.classList.toggle('nowrap');event.currentTarget.setAttribute('aria-pressed',String(!off));
     });
-    if(figure.querySelectorAll('.code-line').length>18){
+    if(!figure.classList.contains('expanded')&&figure.querySelectorAll('.code-line').length>18){
       const expand=document.createElement('button');expand.type='button';expand.textContent='Expand';expand.setAttribute('aria-expanded','false');
       figure.querySelector('.code-bar').lastElementChild.prepend(expand);
       expand.addEventListener('click',()=>{const full=figure.classList.toggle('expanded');expand.setAttribute('aria-expanded',String(full));expand.textContent=full?'Collapse':'Expand';});

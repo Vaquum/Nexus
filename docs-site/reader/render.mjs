@@ -66,7 +66,8 @@ function renderMarkdown(page,pages,revision){
     }
     append(grammar?Prism.tokenize(source.replace(/\n$/,''),grammar):source.replace(/\n$/,''));
     const lines=renderedLines.map((line,i)=>`<span class="code-line" id="${id}-L${i+1}"><a class="line-number" href="#${id}-L${i+1}" aria-hidden="true" tabindex="-1">${i+1}</a><span class="code-src">${line||' '}</span></span>`).join('');
-    return `<figure class="code" id="${id}" data-source="${Buffer.from(source).toString('base64')}"><figcaption class="code-bar"><span>${escape(language)}</span><span><button type="button" data-wrap aria-pressed="true" hidden>Wrap</button> <button type="button" data-copy hidden>Copy</button></span></figcaption><pre><code>${lines}</code></pre></figure>`;
+    const figure=page.language?'class="code expanded" data-passage=""':'class="code"';
+    return `<figure ${figure} id="${id}" data-source="${Buffer.from(source).toString('base64')}"><figcaption class="code-bar"><span>${escape(language)}</span><span><button type="button" data-wrap aria-pressed="true" hidden>Wrap</button> <button type="button" data-copy hidden>Copy</button></span></figcaption><pre><code>${lines}</code></pre></figure>`;
   };
   const originalTableOpen=md.renderer.rules.table_open||(()=>'<table>');const originalTableClose=md.renderer.rules.table_close||(()=>'</table>');
   md.renderer.rules.table_open=(...args)=>'<div class="table-scroll" tabindex="0" role="region" aria-label="Scrollable reference table">'+originalTableOpen(...args);

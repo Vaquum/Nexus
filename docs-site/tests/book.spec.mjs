@@ -73,3 +73,24 @@ test('example code renders the tracked source and survives a code-range reload',
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(source);
   }
 });
+
+test('code-only examples resume the reading position without a fragment', async ({page}) => {
+  await page.setViewportSize({width: page.viewportSize().width, height: 420});
+  for (const route of ['./reference/example-manifest/', './reference/example-strategy/']) {
+    await page.goto(route);
+    await expect(page.getByRole('button', {name: 'Search', exact: true})).toBeVisible();
+    await page.locator('main article figure.code').evaluate(figure => {
+      const rect = figure.getBoundingClientRect();
+      scrollTo({top: scrollY + rect.top + rect.height / 3, behavior: 'instant'});
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const key = 'reader:' + document.body.dataset.product + ':' + document.body.dataset.content;
+      return JSON.parse(localStorage.getItem(key))?.passage;
+    })).toBe('code-1');
+    const before = await page.evaluate(() => scrollY);
+    expect(before).toBeGreaterThan(0);
+    await page.reload();
+    expect(new URL(page.url()).hash).toBe('');
+    await expect.poll(async () => Math.abs((await page.evaluate(() => scrollY)) - before)).toBeLessThan(3);
+  }
+});
