@@ -1,0 +1,24 @@
+{
+  "product": {
+    "id": "nexus",
+    "name": "Nexus",
+    "wordmark": "NEXUS",
+    "basePath": "/nexus",
+    "origin": "https://docs.vaquum.fi",
+    "repository": "https://github.com/Vaquum/Nexus",
+    "subject": "Trading decisions"
+  },
+  "pages": {
+    "README.md": {"route": "/", "part": "Book", "bookOrder": 0},
+    "docs/TechnicalDebt.md": {"route": "/reference/technical-debt/", "part": "Reference", "navigationGroup": "Maintenance"},
+    "examples/logreg_binary_evsfd.yaml": {"route": "/reference/example-manifest/", "part": "Reference", "navigationGroup": "Strategy example", "title": "Example Manifest", "language": "yaml"},
+    "examples/strategies/logreg_binary_evsfd.py": {"route": "/reference/example-strategy/", "part": "Reference", "navigationGroup": "Strategy example", "title": "Example Strategy", "language": "python"},
+    "docs/Developer/README.md": {"route": "/developer/home/", "part": "Developer", "navigationGroup": "Maintenance"},
+    "CHANGELOG.md": {"route": "/changelog/", "part": "Developer", "navigationGroup": "Maintenance"}
+  },
+  "referenceLinks": {
+    "System behavior": [
+      {"title": "Praxis and Nexus wiki", "url": "https://github.com/Vaquum/Praxis/blob/main/docs/wiki/README.md"}
+    ]
+  }
+}
