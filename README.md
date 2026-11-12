@@ -24,7 +24,7 @@
 
 <hr />
 
-<a id="nexus"></a>
+<a id="nexus" data-reader-heading="plain"></a>
 
 # Nexus — Decision layer
 

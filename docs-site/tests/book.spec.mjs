@@ -1,6 +1,13 @@
 import fs from 'node:fs/promises';
 import {test, expect} from '@playwright/test';
 
+test('book opens at the authored introduction', async ({page}) => {
+  await page.goto('./#nexus');
+  await expect(page.locator('.hero h1')).toHaveAttribute('id', 'nexus');
+  await expect(page.locator('.hero-lead')).toContainText('Manifest-driven decision layer');
+  await expect(page.locator('main article > :first-child')).toContainText('Nexus consumes prediction series');
+});
+
 test('book links open references and return to the same passage', async ({page}) => {
   await page.goto('./');
   await expect(page.getByRole('heading', {level: 1})).toHaveText('Nexus — Decision layer');

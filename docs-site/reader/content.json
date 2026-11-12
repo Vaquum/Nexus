@@ -9,7 +9,7 @@
     "subject": "Trading decisions"
   },
   "pages": {
-    "README.md": {"route": "/", "part": "Book", "bookOrder": 0},
+    "README.md": {"route": "/", "part": "Book", "bookOrder": 0, "omitPreamble": true},
     "docs/TechnicalDebt.md": {"route": "/reference/technical-debt/", "part": "Reference", "navigationGroup": "Maintenance"},
     "examples/logreg_binary_evsfd.yaml": {"route": "/reference/example-manifest/", "part": "Reference", "navigationGroup": "Strategy example", "title": "Example Manifest", "language": "yaml"},
     "examples/strategies/logreg_binary_evsfd.py": {"route": "/reference/example-strategy/", "part": "Reference", "navigationGroup": "Strategy example", "title": "Example Strategy", "language": "python"},
