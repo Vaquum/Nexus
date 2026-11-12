@@ -928,3 +928,9 @@
 ### Fix
 
 - State the scope of `execution_slippage_bps` and `arrival_slippage_bps` on the Praxis-connector [`TradeOutcome`](nexus/infrastructure/praxis_connector/trade_outcome.py). Both are displacements of the command's cumulative average fill price, not of the `fill_price` the carrying outcome reports, and the previous wording said only "the average fill price" — a reader pairing that with the delta `fill_price` beside it would compute increment slippage against the wrong price. Any fill outcome of a command may carry a snapshot, so a consumer wanting one number takes, for each field separately, the latest non-`None` value in command order rather than the value on the latest outcome — an outcome carrying none reports that nothing was measured on it, not that an earlier measure was retracted. A snapshot must not be weighted by that outcome's `fill_size`, which would count the earlier fills again on every outcome, and successive snapshots cannot be unwound into per-increment slippage, the producer persisting these quotients and not the prices behind them. Documentation only; no behaviour changes
+
+## v0.76.2 on 12th of November, 2026
+
+### Fix
+
+- Restrict Polars to 1.x to retain the `read_ipc(memory_map=True)` calls in the [prediction loop](nexus/strategy/predict_loop.py).
